@@ -4,11 +4,11 @@ Date: 2026-06-26
 
 ## Summary
 
-Voice Toolbox is a local-first voice workflow app for TTS and ASR. The first provider is MiMo, using real MiMo APIs from the start. The product starts as a single-user local app, with data boundaries that can later support multi-user workspaces.
+Voice Toolbox is a local-first voice workflow app for TTS and ASR. The first provider is MiMo, using real MiMo APIs from the start. The first version is a single-user local app.
 
 The initial implementation has two top-level domains:
 
-- TTS: built-in voices, voice design, voice clone, style control, optional streaming.
+- TTS: built-in voices, voice design, voice clone, and style control.
 - ASR: audio transcription.
 
 The implementation uses Python for backend, CLI, provider adapters, and artifact handling. React provides a single-page toolbox UI that calls the same backend/core used by the CLI.
@@ -22,15 +22,20 @@ The implementation uses Python for backend, CLI, provider adapters, and artifact
 - Save every generated or transcribed result as an artifact under `data/artifacts/`.
 - Provide both CLI-first usage and a single-page React UI.
 - Store local configuration in `.env` for development speed.
-- Keep the domain model ready for future providers such as OpenAI-compatible APIs, `mlx-audio`, and CUDA-backed libraries.
+- Keep future-provider seams explicit: provider registry, provider config storage interface, artifact store interface, and typed request/response models.
 
 ## Non-Goals
 
-- No multi-user login or workspace permission model in the first version.
+- No multi-user login, workspace permission model, owner columns, or per-user encryption in the first version.
+- No claim that v1 storage is multi-user-ready. Multi-user support will require a later storage model with owners, auth, and non-local secret handling.
 - No cloud artifact storage in the first version.
 - No model marketplace or provider plugin installer in the first version.
 - No guessed provider schemas. Provider-specific calls must be based on confirmed docs or clearly disabled.
 - No standalone desktop packaging in the first version.
+- No streaming UX or streaming API in the first version. MiMo streaming behavior will be verified after synchronous TTS/ASR are stable.
+- No reusable designed voice library in the first version unless MiMo documents a reusable voice handle.
+- No ASR timestamps, SRT, VTT, or verbose JSON in the first version.
+- No background worker or job state machine in the first version.
 
 ## Approach Options
 
@@ -102,29 +107,37 @@ The Python package owns domain models, provider contracts, MiMo adapter, artifac
 
 Main backend layers:
 
-- Domain models: typed request and response objects for TTS, ASR, artifacts, providers, and jobs.
-- Provider registry: resolves provider IDs such as `mimo`.
+- Domain models: typed request and response objects for TTS, ASR, artifacts, providers, and operation results.
+- Provider registry: resolves provider IDs such as `mimo`, exposes capabilities, and performs capability preflight.
 - Provider adapter: implements provider capabilities behind the shared interface.
 - Artifact store: writes generated audio and transcription outputs under `data/artifacts/`.
+- Metadata store: records artifact metadata in SQLite.
 - CLI: calls the domain layer directly.
 - FastAPI app: calls the domain layer through HTTP endpoints.
 
+The future-provider seams are interfaces, not v1 multi-user implementation:
+
+- `ProviderConfigStore`: reads provider settings from `.env` in v1; can later be backed by database rows or a secret manager.
+- `ArtifactStore`: writes local files in v1; can later be backed by S3-compatible object storage.
+- `MetadataStore`: uses SQLite in v1; can later be backed by PostgreSQL with `owner_id` and workspace scoping.
+
 ## Provider Model
 
-Every provider exposes capabilities instead of hard-coded UI features.
+Every provider exposes capabilities for UI gating and preflight validation.
 
 Core capabilities:
 
 - `tts.builtin`
 - `tts.design`
 - `tts.clone`
-- `tts.stream`
 - `asr.transcribe`
 
 Provider contract:
 
 ```python
-class VoiceProvider:
+from typing import Protocol
+
+class VoiceProvider(Protocol):
     id: str
     name: str
 
@@ -134,6 +147,8 @@ class VoiceProvider:
     async def synthesize(self, request: TTSRequest) -> AudioArtifact: ...
     async def transcribe(self, request: ASRRequest) -> TranscriptArtifact: ...
 ```
+
+TTS design and clone dispatch through `TTSRequest.mode`. The registry checks `mode` against provider capabilities before invoking `synthesize`. If provider code is called directly with an unsupported request, it must raise `UnsupportedCapability`. This makes `capabilities()` both a UI switch and a runtime contract.
 
 MiMo is the first concrete provider. Future providers can implement only the capabilities they support.
 
@@ -148,12 +163,13 @@ Configuration:
   - Singapore Token Plan: `https://token-plan-sgp.xiaomimimo.com/v1`
   - Pay-as-you-go API: `https://api.xiaomimimo.com/v1`
 
-MiMo TTS uses Chat Completions as the primary path because it supports style control, voice design, and voice clone.
+MiMo TTS and ASR both use Chat Completions. The app must not use OpenAI `/audio/speech` or `/audio/transcriptions` endpoints for MiMo v1.
 
 Built-in TTS:
 
 - Model: `mimo-v2.5-tts`
-- Audio format: `wav`, `mp3`, or `pcm16`
+- Endpoint: `POST /v1/chat/completions`
+- Audio format: `wav` or `mp3` in v1. `pcm16` is reserved for later streaming work because it requires explicit sample-rate handling.
 - Built-in voices:
   - `mimo_default`
   - `冰糖`
@@ -172,40 +188,68 @@ Built-in TTS:
 Voice design:
 
 - Model: `mimo-v2.5-tts-voicedesign`
+- Endpoint: `POST /v1/chat/completions`
 - `messages[].role=user`: required voice description.
 - `messages[].role=assistant`: target preview or synthesis text.
 - `audio.optimize_text_preview`: supported boolean.
 - Built-in voices are not used for this model.
+- Output is a one-shot synthesized audio artifact. The current MiMo documentation does not define a reusable designed voice ID or voice token, so v1 will not persist designed voices as reusable voice records.
 
 Voice clone:
 
 - Model: `mimo-v2.5-tts-voiceclone`
-- Audio sample is passed through `audio.voice`.
-- `audio.voice` format: `data:{MIME_TYPE};base64,{BASE64_AUDIO}`.
+- Endpoint: `POST /v1/chat/completions`
+- Public API and CLI receive a sample file path/upload; the provider adapter converts it into `audio.voice`.
+- Provider `audio.voice` format: `data:{MIME_TYPE};base64,{BASE64_AUDIO}`.
 - Supported sample MIME values:
   - `audio/mpeg`
   - `audio/mp3`
   - `audio/wav`
 - Supported sample file types: `mp3`, `wav`.
-- Base64-encoded sample string must not exceed 10 MB.
+- The pure base64 payload must not exceed 10 MiB. Because base64 expands data, the UI and CLI should warn that raw audio must be roughly 7.5 MiB or smaller before encoding.
 - `messages[].role=user`: optional style instruction, may be empty.
 - `messages[].role=assistant`: required target text to synthesize.
 - UI and CLI must include an explicit consent confirmation before clone calls.
-
-Streaming:
-
-- `mimo-v2.5-tts` supports low-latency streaming.
-- Streaming output should request `audio.format="pcm16"`.
-- `mimo-v2.5-tts-voicedesign` and `mimo-v2.5-tts-voiceclone` accept streaming calls but return once after inference completes, so the UI must label these as compatibility streaming, not low-latency streaming.
+- Request metadata and logs must record clone sample file name, size, MIME type, and consent status, but never the base64 payload or data URL.
 
 ASR:
 
 - Model: `mimo-v2.5-asr`
-- Endpoint: OpenAI-compatible audio transcription.
-- Input files: common audio formats including `wav`, `mp3`, `m4a`, `flac`, and `ogg`.
-- Response format:
-  - default text response.
-  - optional verbose response when timestamps are requested.
+- Endpoint: `POST /v1/chat/completions`
+- Input shape:
+
+```json
+{
+  "model": "mimo-v2.5-asr",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_audio",
+          "input_audio": {
+            "data": "data:audio/wav;base64,{BASE64_AUDIO}"
+          }
+        }
+      ]
+    }
+  ],
+  "asr_options": {
+    "language": "auto"
+  }
+}
+```
+
+- Python SDK call must pass `asr_options` through `extra_body`.
+- Supported input file types: `wav`, `mp3`.
+- Supported MIME values:
+  - `audio/wav`
+  - `audio/mpeg`
+  - `audio/mp3`
+- Supported language values: `auto`, `zh`, `en`.
+- The pure base64 payload must not exceed 10 MiB. The UI and CLI should warn that raw audio must be roughly 7.5 MiB or smaller before encoding.
+- Output is `completion.choices[0].message.content` as plain text.
+- Streaming, timestamps, `response_format`, SRT, VTT, and verbose JSON are not documented for MiMo ASR v1 and are out of scope for the first version.
 
 ## Data Model
 
@@ -223,43 +267,43 @@ ASR:
 - model
 - text
 - style instruction
-- output format
-- streaming flag
+- output format: `wav` or `mp3`
 - built-in voice ID for built-in mode
 - voice design description and `optimize_text_preview` for design mode
-- clone sample path, MIME type, and consent flag for clone mode
+- clone sample path, MIME type, raw byte size, base64 payload size, and consent flag for clone mode
 
 `ASRRequest`:
 
 - provider ID
 - model
 - input audio path
-- language hint
-- response format
-- timestamp flag
+- MIME type
+- raw byte size
+- base64 payload size
+- language: `auto`, `zh`, or `en`
 
 `Artifact`:
 
 - ID
-- kind: `audio`, `transcript`, or `metadata`
+- kind: `audio` or `transcript`
 - provider ID
 - source operation
 - file path under `data/artifacts/`
 - MIME type
 - created time
-- request metadata without secrets
+- request metadata allowlist without secrets, base64 payloads, or data URLs
 
-`Job`:
+`OperationResult`:
 
-- ID
+- operation ID
 - operation
-- status
+- status: `completed` or `failed`
 - started time
 - finished time
 - artifact IDs
 - error summary
 
-The first version may execute jobs synchronously while still recording job-like metadata. The model should not prevent later background workers.
+The first version executes operations synchronously. There are no `/jobs` endpoints and no pending/running job states in v1.
 
 ## Storage
 
@@ -267,13 +311,21 @@ Local files:
 
 - `.env`: local secrets and provider settings.
 - `.env.example`: documented environment variables without secrets.
-- `data/voice_toolbox.sqlite`: local SQLite database for job and artifact metadata.
+- `data/voice_toolbox.sqlite`: local SQLite database for artifact and operation metadata.
 - `data/artifacts/`: generated audio, transcripts, and sidecar metadata.
+
+SQLite startup behavior:
+
+- Use simple startup schema creation for v1.
+- Enable WAL mode.
+- Configure a busy timeout.
+- Keep metadata writes short and retry bounded write conflicts.
 
 Git ignore rules:
 
 - `.env`
 - `data/voice_toolbox.sqlite`
+- `data/voice_toolbox.sqlite-*`
 - `data/artifacts/*`
 - keep `data/artifacts/.gitkeep`
 
@@ -320,7 +372,7 @@ python -m voice_toolbox tts clone \
 ```bash
 python -m voice_toolbox asr transcribe \
   --file input.wav \
-  --format text
+  --language auto
 ```
 
 The CLI must fail fast when `MIMO_API_KEY` is missing.
@@ -330,23 +382,32 @@ The CLI must fail fast when `MIMO_API_KEY` is missing.
 Initial HTTP endpoints:
 
 ```text
-GET  /health
-GET  /providers
-GET  /providers/{provider_id}/models
-GET  /providers/{provider_id}/voices
+GET  /v1/health
+GET  /v1/providers
+GET  /v1/providers/{provider_id}/models
+GET  /v1/providers/{provider_id}/voices
 
-POST /tts/synthesize
-POST /tts/design
-POST /tts/clone
-POST /asr/transcribe
+POST /v1/tts/synthesize
+POST /v1/tts/design
+POST /v1/tts/clone
+POST /v1/asr/transcribe
 
-GET  /jobs
-GET  /jobs/{job_id}
-GET  /artifacts/{artifact_id}
-GET  /artifacts/{artifact_id}/download
+GET  /v1/artifacts/{artifact_id}
+GET  /v1/artifacts/{artifact_id}/download
 ```
 
-For file uploads, the API accepts multipart form data. For clone requests, the backend validates sample size, sample type, and consent before calling MiMo.
+Endpoint semantics:
+
+- `/v1/artifacts/{artifact_id}` returns JSON metadata.
+- `/v1/artifacts/{artifact_id}/download` returns raw artifact bytes.
+- Browser-facing upload endpoints accept multipart form data where files are involved.
+- The provider layer never receives multipart data. API handlers read uploaded files, validate size/type/consent, and pass normalized request models to the provider adapter.
+- Clone and ASR provider calls encode file bytes as base64 data URLs in Chat Completions JSON.
+
+CORS:
+
+- Development allows the React dev origin, normally `http://localhost:5173`.
+- Production/local packaged mode should use same-origin serving or a configured allowlist.
 
 ## UI Design
 
@@ -365,8 +426,7 @@ Common TTS controls:
 
 - text input
 - style instruction input
-- output format selector
-- streaming toggle when supported
+- output format selector: `wav` or `mp3`
 - submit button
 - audio preview player
 - artifact link
@@ -382,28 +442,30 @@ Design mode controls:
 - voice description input
 - optimize text preview toggle
 - model fixed to `mimo-v2.5-tts-voicedesign`
+- explanatory label that designed voices are one-shot synthesis outputs in v1, not reusable voice assets
 
 Clone mode controls:
 
 - sample file upload
 - consent checkbox
 - MIME/type validation display
+- base64 size warning
 - model fixed to `mimo-v2.5-tts-voiceclone`
 
 ASR controls:
 
 - audio file upload
-- response format selector
-- timestamps toggle
+- language selector: `auto`, `zh`, `en`
 - submit button
 - transcript viewer
 - artifact link
+- no response-format selector or timestamp toggle in v1
 
 A compact side panel contains provider settings:
 
 - provider selector
 - base URL selector
-- API key status only, never the key value
+- API key status based only on whether the env var is present, never the key value
 - capability list
 
 The UI should be quiet and tool-like: dense but readable, clear labels, predictable controls, no marketing-style hero.
@@ -416,9 +478,18 @@ Validation errors are caught before provider calls:
 - missing text
 - missing voice description for design
 - missing sample file for clone
+- missing ASR file
 - clone sample format not `mp3` or `wav`
-- clone sample base64 size above 10 MB
+- ASR file format not `mp3` or `wav`
+- clone or ASR base64 payload size above 10 MiB
 - clone consent not confirmed
+- unsupported provider capability
+
+Provider calls:
+
+- Use bounded HTTP timeouts.
+- Retry only transient network failures and 429/5xx responses with a small bounded backoff.
+- Do not retry validation errors or 4xx provider request errors other than 429.
 
 Provider errors preserve:
 
@@ -426,9 +497,38 @@ Provider errors preserve:
 - operation
 - HTTP status when available
 - shortest useful provider message
-- request metadata without secrets or base64 audio payloads
+- request metadata allowlist without secrets, base64 payloads, or data URLs
 
 Artifacts are only marked complete after file write succeeds.
+
+## Metadata Redaction
+
+Metadata and logs use an allowlist. Allowed request metadata keys:
+
+- provider ID
+- model
+- operation
+- TTS mode
+- output format
+- built-in voice ID
+- voice design description length, not full text when sidecar privacy mode is enabled
+- style instruction length, not full text when sidecar privacy mode is enabled
+- source text length, not full text when sidecar privacy mode is enabled
+- uploaded file name
+- uploaded file MIME type
+- raw byte size
+- base64 payload size
+- language
+- consent status
+
+Forbidden metadata/log values:
+
+- API keys
+- Authorization headers
+- `api-key` headers
+- base64 payloads
+- data URLs
+- raw uploaded audio bytes
 
 ## Security and Consent
 
@@ -436,27 +536,33 @@ The app is local-first, but it still handles sensitive audio. The first version 
 
 - Keep API keys out of logs, artifacts, request metadata, and UI responses.
 - Require explicit consent for voice clone requests.
-- Store clone consent status in job metadata.
-- Avoid writing raw base64 clone samples to logs or sidecar metadata.
+- Store clone consent status in operation metadata.
+- Avoid writing raw base64 clone samples or ASR audio data to logs or sidecar metadata.
 - Document that users must only clone voices they have rights to use.
 
 ## Testing
 
 Unit tests:
 
-- provider registry resolution
+- provider registry capability preflight
+- unsupported capability behavior
 - MiMo request construction for built-in TTS
 - MiMo request construction for voice design
 - MiMo request construction for voice clone data URL
-- clone validation for MIME type, file extension, size, and consent
-- ASR request path validation
+- MiMo request construction for ASR Chat Completions with `extra_body.asr_options`
+- clone validation for MIME type, file extension, base64 size, and consent
+- ASR validation for MIME type, file extension, base64 size, and language
 - artifact path creation
+- metadata redaction allowlist excludes secrets, base64 payloads, and data URLs
+- SQLite startup enables WAL and busy timeout
 
 Integration tests:
 
 - CLI argument parsing for all four commands
 - API validation paths with fake provider
 - artifact creation with fake provider
+- CORS allows configured dev origin
+- `/v1/artifacts/{id}` returns metadata and `/v1/artifacts/{id}/download` returns bytes
 
 Manual smoke tests with real MiMo:
 
@@ -464,23 +570,23 @@ Manual smoke tests with real MiMo:
 - voice design with a short description
 - voice clone with a small `wav` or `mp3` sample
 - ASR transcription of a short `wav`
+- ASR transcription of a short `mp3`
 
 ## Implementation Order
 
 1. Python package skeleton and typed domain models.
-2. Artifact store and local settings loader.
+2. Artifact store, metadata store, local settings loader, SQLite WAL setup, and redaction allowlist.
 3. Provider registry and fake provider for tests.
-4. MiMo provider for TTS built-in, TTS design, TTS clone, and ASR.
-5. CLI commands.
-6. FastAPI endpoints.
-7. React single-page toolbox UI.
-8. Smoke test docs.
+4. MiMo built-in TTS request construction plus real MiMo smoke test.
+5. MiMo voice design, voice clone, and ASR provider support plus targeted real MiMo smoke tests.
+6. CLI commands.
+7. FastAPI `/v1` endpoints and CORS.
+8. React single-page toolbox UI.
+9. Smoke test docs.
 
-## Open Decisions
+## Resolved Decisions
 
-All required MVP decisions are closed:
-
-- Run shape: local-first single user, ready for later multi-user.
+- Run shape: local-first single user.
 - Initial provider: MiMo.
 - Provider calls: real API calls, no guessed schemas.
 - Tech stack: Python backend/core plus React UI.
@@ -488,3 +594,5 @@ All required MVP decisions are closed:
 - Artifacts: `data/artifacts/`.
 - Interface shape: CLI first plus single-page UI.
 - Product domains: TTS and ASR only; voice design and voice clone live under TTS.
+- TTS and ASR provider calls both use MiMo Chat Completions in v1.
+- Streaming and ASR timestamps are deferred until documented and smoke-tested.
