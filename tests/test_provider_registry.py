@@ -58,6 +58,16 @@ def test_fake_provider_accepts_empty_capabilities() -> None:
         registry.ensure_asr_capability("fake")
 
 
+def test_fake_provider_models_follow_capabilities() -> None:
+    assert FakeProvider(capabilities=set()).list_models() == []
+    assert {model.capability for model in FakeProvider().list_models()} == {
+        "asr",
+        "tts.builtin",
+        "tts.clone",
+        "tts.design",
+    }
+
+
 def test_registry_raises_for_unknown_provider() -> None:
     registry = ProviderRegistry([FakeProvider(capabilities={"tts.builtin"})])
     request = TTSRequest(
@@ -84,9 +94,41 @@ def test_fake_provider_returns_deterministic_artifacts(tmp_path: Path) -> None:
     audio = provider.synthesize(tts_request)
     transcript = provider.transcribe(asr_request)
 
-    assert audio.id == "fake-tts-builtin"
+    assert audio.id == "fake-tts-1"
     assert audio.provider_id == "fake"
     assert audio.path.read_bytes() == b"FAKE_WAV:hello:Mia"
-    assert transcript.id == "fake-asr"
+    assert transcript.id == "fake-asr-2"
     assert transcript.provider_id == "fake"
     assert transcript.path.read_text(encoding="utf-8") == "fake transcript"
+
+
+def test_fake_provider_repeated_artifacts_do_not_collide(tmp_path: Path) -> None:
+    provider = FakeProvider(capabilities={"tts.builtin", "asr"}, artifact_root=tmp_path)
+    tts_request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+    asr_request = ASRRequest(
+        audio_path=tmp_path / "input.wav",
+        mime_type="audio/wav",
+        raw_byte_size=10,
+        base64_size=16,
+    )
+
+    first_audio = provider.synthesize(tts_request)
+    second_audio = provider.synthesize(tts_request)
+    first_transcript = provider.transcribe(asr_request)
+    second_transcript = provider.transcribe(asr_request)
+
+    assert first_audio.id == "fake-tts-1"
+    assert second_audio.id == "fake-tts-2"
+    assert first_transcript.id == "fake-asr-3"
+    assert second_transcript.id == "fake-asr-4"
+    assert len({first_audio.path, second_audio.path, first_transcript.path, second_transcript.path}) == 4
+
+
+def test_fake_provider_closes_implicit_temp_root() -> None:
+    provider = FakeProvider()
+    artifact_root = provider.artifact_root
+
+    assert artifact_root.exists()
+    provider.close()
+
+    assert not artifact_root.exists()

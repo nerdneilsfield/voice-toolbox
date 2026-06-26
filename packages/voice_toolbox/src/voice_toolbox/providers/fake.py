@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from types import TracebackType
 
 from voice_toolbox.artifacts import ArtifactStore
 from voice_toolbox.models import (
@@ -33,22 +34,31 @@ class FakeProvider:
             if capabilities is None
             else capabilities
         )
+        self._operation_counter = 0
+        self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
         if artifact_store is not None:
             self._artifact_store = artifact_store
+            self._artifact_root = artifact_store.root
         else:
-            root = Path(artifact_root) if artifact_root is not None else Path(tempfile.mkdtemp())
+            if artifact_root is None:
+                self._temp_dir = tempfile.TemporaryDirectory()
+                root = Path(self._temp_dir.name)
+            else:
+                root = Path(artifact_root)
+            self._artifact_root = root
             self._artifact_store = ArtifactStore(root)
 
     def capabilities(self) -> set[str]:
         return set(self._capabilities)
 
     def list_models(self) -> list[ModelInfo]:
-        return [
+        models = [
             ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
             ModelInfo(id="fake-design", name="Fake Voice Design", capability="tts.design"),
             ModelInfo(id="fake-clone", name="Fake Voice Clone", capability="tts.clone"),
             ModelInfo(id="fake-asr", name="Fake ASR", capability="asr"),
         ]
+        return [model for model in models if model.capability in self._capabilities]
 
     def list_voices(self) -> list[VoiceInfo]:
         return [
@@ -56,13 +66,33 @@ class FakeProvider:
             VoiceInfo(id="Chen", name="Chen", language="zh", gender="male"),
         ]
 
+    @property
+    def artifact_root(self) -> Path:
+        return self._artifact_root
+
+    def close(self) -> None:
+        if self._temp_dir is not None:
+            self._temp_dir.cleanup()
+            self._temp_dir = None
+
+    def __enter__(self) -> FakeProvider:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
     def synthesize(self, request: TTSRequest) -> AudioArtifact:
         capability = TTS_MODE_CAPABILITIES[request.mode]
         if capability not in self._capabilities:
             raise UnsupportedCapability(f"fake provider does not support capability: {capability}")
 
         return self._artifact_store.write_audio(
-            operation_id=f"fake-tts-{request.mode.value}",
+            operation_id=self._next_operation_id("tts"),
             provider_id=self.id,
             operation="tts",
             audio=self._audio_bytes(request),
@@ -82,7 +112,7 @@ class FakeProvider:
             raise UnsupportedCapability("fake provider does not support capability: asr")
 
         return self._artifact_store.write_transcript(
-            operation_id="fake-asr",
+            operation_id=self._next_operation_id("asr"),
             provider_id=self.id,
             operation="asr",
             text="fake transcript",
@@ -104,3 +134,7 @@ class FakeProvider:
         if request.mode == TTSMode.DESIGN:
             return f"FAKE_WAV:{request.text or ''}:{request.voice_description}".encode()
         return f"FAKE_WAV:{request.text}:{request.clone_mime_type}".encode()
+
+    def _next_operation_id(self, operation: str) -> str:
+        self._operation_counter += 1
+        return f"fake-{operation}-{self._operation_counter}"
