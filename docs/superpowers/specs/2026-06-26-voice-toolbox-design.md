@@ -8,16 +8,16 @@ Voice Toolbox is a local-first voice workflow app for TTS and ASR. The first pro
 
 The initial implementation has two top-level domains:
 
-- TTS: built-in voices, voice design, voice clone, and style control.
+- TTS: built-in voices, voice design, voice clone, natural-language style control, and audio tag control.
 - ASR: audio transcription.
 
-The implementation uses Python for backend, CLI, provider adapters, and artifact handling. React provides a single-page toolbox UI that calls the same backend/core used by the CLI.
+The implementation uses Python for backend, CLI, provider adapters, and artifact handling. React provides a single-page toolbox UI that calls the same backend/core used by the CLI. Python dependencies use `uv`; frontend dependencies use `pnpm`.
 
 ## Goals
 
 - Provide one local interface for MiMo TTS and ASR.
 - Hide provider-specific API details behind a provider abstraction.
-- Support MiMo built-in TTS, voice design, and voice clone through the TTS domain.
+- Support MiMo built-in TTS, voice design, voice clone, and TTS audio tag control through the TTS domain.
 - Support MiMo ASR through the ASR domain.
 - Save every generated or transcribed result as an artifact under `data/artifacts/`.
 - Provide both CLI-first usage and a single-page React UI.
@@ -34,8 +34,10 @@ The implementation uses Python for backend, CLI, provider adapters, and artifact
 - No standalone desktop packaging in the first version.
 - No streaming UX or streaming API in the first version. MiMo streaming behavior will be verified after synchronous TTS/ASR are stable.
 - No reusable designed voice library in the first version unless MiMo documents a reusable voice handle.
+- No dedicated Director Mode builder in the first version. Director Mode is supported as natural-language text in the existing style instruction field.
 - No ASR timestamps, SRT, VTT, or verbose JSON in the first version.
 - No background worker or job state machine in the first version.
+- No unverified TTS `mp3` output in the first version. TTS output defaults to `wav`; `mp3` output is deferred until a real MiMo smoke test confirms it.
 
 ## Approach Options
 
@@ -105,6 +107,11 @@ voice-toolbox/
 
 The Python package owns domain models, provider contracts, MiMo adapter, artifact storage, and CLI commands. The API app imports the same package and exposes HTTP endpoints. The React app calls the API and does not know provider-specific request schemas.
 
+Development import path:
+
+- `apps/api/` imports the core package through an editable install, for example `uv pip install -e packages/voice_toolbox`.
+- `apps/web/` talks to the API at `http://127.0.0.1:8000` in development.
+
 Main backend layers:
 
 - Domain models: typed request and response objects for TTS, ASR, artifacts, providers, and operation results.
@@ -157,11 +164,12 @@ MiMo is the first concrete provider. Future providers can implement only the cap
 Configuration:
 
 - `MIMO_API_KEY`: required for real calls.
-- `MIMO_BASE_URL`: optional; default `https://token-plan-cn.xiaomimimo.com/v1`.
-- Supported base URLs:
-  - China Token Plan: `https://token-plan-cn.xiaomimimo.com/v1`
-  - Singapore Token Plan: `https://token-plan-sgp.xiaomimimo.com/v1`
-  - Pay-as-you-go API: `https://api.xiaomimimo.com/v1`
+- `MIMO_BASE_URL`: optional; default `https://api.xiaomimimo.com/v1`, the base URL used by the official TTS and ASR examples.
+- Token Plan base URLs are accepted as advanced configuration only after local smoke testing:
+  - China Token Plan candidate: `https://token-plan-cn.xiaomimimo.com/v1`
+  - Singapore Token Plan candidate: `https://token-plan-sgp.xiaomimimo.com/v1`
+- Authentication uses the OpenAI Python SDK `api_key` parameter, which sends `Authorization: Bearer ...`. The app does not manually inject `api-key` headers in v1.
+- MiMo models and built-in voices are hard-coded provider constants in v1. The app must not call a remote `/voices` endpoint for MiMo unless MiMo later documents one.
 
 MiMo TTS and ASR both use Chat Completions. The app must not use OpenAI `/audio/speech` or `/audio/transcriptions` endpoints for MiMo v1.
 
@@ -169,9 +177,9 @@ Built-in TTS:
 
 - Model: `mimo-v2.5-tts`
 - Endpoint: `POST /v1/chat/completions`
-- Audio format: `wav` or `mp3` in v1. `pcm16` is reserved for later streaming work because it requires explicit sample-rate handling.
+- Audio format: `wav` in v1. `mp3` output is not enabled until verified by a real MiMo smoke test. `pcm16` is reserved for later streaming work; MiMo examples write it as 24 kHz mono signed 16-bit PCM.
 - Built-in voices:
-  - `mimo_default`
+  - `mimo_default` (cluster-dependent: China cluster resolves to `冰糖`; other clusters resolve to `Mia`)
   - `冰糖`
   - `茉莉`
   - `苏打`
@@ -182,15 +190,23 @@ Built-in TTS:
   - `Dean`
 - Request shape:
   - `messages[].role=user`: optional natural language style instruction.
-  - `messages[].role=assistant`: required target text to synthesize.
+  - `messages[].role=assistant`: required target text to synthesize. This text may include MiMo audio tags.
   - `audio.voice`: selected built-in voice.
+
+Audio tag control:
+
+- Tags are embedded directly in `assistant.content`, not in `user.content`.
+- Supported bracket styles pass through unchanged: `()`, `（）`, and `[]`.
+- Examples include `(唱歌)歌词`, `(东北话)文本`, `[叹气]`, `(深呼吸)`, laughter/crying/breathing tags, dialect tags, and role-play tags.
+- Singing mode is only supported by `mimo-v2.5-tts`; it should start the target text with `(唱歌)` and works best with Chinese lyrics.
+- The UI should keep one target text field and provide lightweight tag insertion helpers for common tags such as singing, dialect, sigh, laugh, whisper, and pause. The provider performs no special validation for tags.
 
 Voice design:
 
 - Model: `mimo-v2.5-tts-voicedesign`
 - Endpoint: `POST /v1/chat/completions`
 - `messages[].role=user`: required voice description.
-- `messages[].role=assistant`: target preview or synthesis text.
+- `messages[].role=assistant`: target preview or synthesis text. When `audio.optimize_text_preview=true`, this assistant message may be omitted and MiMo can generate suitable preview text.
 - `audio.optimize_text_preview`: supported boolean.
 - Built-in voices are not used for this model.
 - Output is a one-shot synthesized audio artifact. The current MiMo documentation does not define a reusable designed voice ID or voice token, so v1 will not persist designed voices as reusable voice records.
@@ -206,11 +222,12 @@ Voice clone:
   - `audio/mp3`
   - `audio/wav`
 - Supported sample file types: `mp3`, `wav`.
-- The pure base64 payload must not exceed 10 MiB. Because base64 expands data, the UI and CLI should warn that raw audio must be roughly 7.5 MiB or smaller before encoding.
+- The pure base64 payload must not exceed 10 MiB. MiMo documents this as 10 MB; v1 interprets the limit conservatively as 10 MiB. Because base64 expands data, the UI and CLI should warn that raw audio must be roughly 7.5 MiB or smaller before encoding.
 - `messages[].role=user`: optional style instruction, may be empty.
 - `messages[].role=assistant`: required target text to synthesize.
 - UI and CLI must include an explicit consent confirmation before clone calls.
 - Request metadata and logs must record clone sample file name, size, MIME type, and consent status, but never the base64 payload or data URL.
+- Uploaded clone samples are temporary inputs in v1. API handlers may spool them to a temp file while processing, then delete them after the provider call completes or fails. Clone samples are not saved as artifacts in v1.
 
 ASR:
 
@@ -247,7 +264,7 @@ ASR:
   - `audio/mpeg`
   - `audio/mp3`
 - Supported language values: `auto`, `zh`, `en`.
-- The pure base64 payload must not exceed 10 MiB. The UI and CLI should warn that raw audio must be roughly 7.5 MiB or smaller before encoding.
+- The pure base64 payload must not exceed 10 MiB. MiMo documents this as 10 MB; v1 interprets the limit conservatively as 10 MiB. The UI and CLI should warn that raw audio must be roughly 7.5 MiB or smaller before encoding.
 - Output is `completion.choices[0].message.content` as plain text.
 - Streaming, timestamps, `response_format`, SRT, VTT, and verbose JSON are not documented for MiMo ASR v1 and are out of scope for the first version.
 
@@ -265,9 +282,9 @@ ASR:
 - provider ID
 - mode: `builtin`, `design`, or `clone`
 - model
-- text
-- style instruction
-- output format: `wav` or `mp3`
+- target text, which may include MiMo audio tags; optional only for design mode when `optimize_text_preview=true`
+- natural-language style instruction for `user.content`
+- output format: `wav`
 - built-in voice ID for built-in mode
 - voice design description and `optimize_text_preview` for design mode
 - clone sample path, MIME type, raw byte size, base64 payload size, and consent flag for clone mode
@@ -292,6 +309,14 @@ ASR:
 - MIME type
 - created time
 - request metadata allowlist without secrets, base64 payloads, or data URLs
+
+Artifact naming:
+
+- Store files under `data/artifacts/YYYYMMDD/`.
+- Use operation IDs in filenames, for example `{operation_id}.wav`, `{operation_id}.txt`, and `{operation_id}.json`.
+- Audio artifacts use the selected output MIME type, initially `audio/wav`.
+- Transcript artifacts are stored as `.txt` with MIME `text/plain; charset=utf-8`.
+- Sidecar metadata is a same-operation `.json` file that contains redacted operation and artifact metadata.
 
 `OperationResult`:
 
@@ -329,6 +354,13 @@ Git ignore rules:
 - `data/artifacts/*`
 - keep `data/artifacts/.gitkeep`
 
+API key configuration:
+
+- v1 expects users to set `MIMO_API_KEY` in `.env`.
+- `.env.example` documents `MIMO_API_KEY` and `MIMO_BASE_URL`.
+- The UI does not write secrets back to `.env` in v1.
+- If the key is missing, CLI and UI show a setup message pointing to `.env` and `.env.example`.
+
 ## CLI Design
 
 The CLI must support both module execution and console script alias:
@@ -361,6 +393,8 @@ python -m voice_toolbox tts design \
   --format wav
 ```
 
+When `--optimize-text-preview` is set for `tts design`, `--text` may be omitted.
+
 ```bash
 python -m voice_toolbox tts clone \
   --sample voice.wav \
@@ -376,6 +410,8 @@ python -m voice_toolbox asr transcribe \
 ```
 
 The CLI must fail fast when `MIMO_API_KEY` is missing.
+
+For clone calls, `--consent` means the caller confirms they have rights to use the sample voice. In interactive CLI mode, omitting `--consent` should prompt for confirmation before failing.
 
 ## API Design
 
@@ -407,7 +443,13 @@ Endpoint semantics:
 CORS:
 
 - Development allows the React dev origin, normally `http://localhost:5173`.
-- Production/local packaged mode should use same-origin serving or a configured allowlist.
+- Non-dev local serving should prefer same-origin. The API binds to `127.0.0.1` by default and only binds externally when explicitly configured.
+
+Development ports:
+
+- FastAPI: `127.0.0.1:8000`.
+- React dev server: `127.0.0.1:5173`.
+- React dev requests should proxy `/v1/*` to `http://127.0.0.1:8000`.
 
 ## UI Design
 
@@ -425,8 +467,9 @@ The TTS tab has a segmented mode control:
 Common TTS controls:
 
 - text input
+- audio tag insertion helpers for common MiMo tags
 - style instruction input
-- output format selector: `wav` or `mp3`
+- output format selector fixed to `wav` in v1
 - submit button
 - audio preview player
 - artifact link
@@ -443,6 +486,7 @@ Design mode controls:
 - optimize text preview toggle
 - model fixed to `mimo-v2.5-tts-voicedesign`
 - explanatory label that designed voices are one-shot synthesis outputs in v1, not reusable voice assets
+- when optimize text preview is enabled, target text becomes optional
 
 Clone mode controls:
 
@@ -487,8 +531,8 @@ Validation errors are caught before provider calls:
 
 Provider calls:
 
-- Use bounded HTTP timeouts.
-- Retry only transient network failures and 429/5xx responses with a small bounded backoff.
+- Use bounded HTTP timeouts: 60 seconds for TTS, 90 seconds for ASR, and 30 seconds for metadata-style provider calls if added later.
+- Retry only transient network failures and 429/5xx responses with a small bounded backoff: at most 2 retries, exponential backoff starting at 1 second.
 - Do not retry validation errors or 4xx provider request errors other than 429.
 
 Provider errors preserve:
@@ -511,9 +555,9 @@ Metadata and logs use an allowlist. Allowed request metadata keys:
 - TTS mode
 - output format
 - built-in voice ID
-- voice design description length, not full text when sidecar privacy mode is enabled
-- style instruction length, not full text when sidecar privacy mode is enabled
-- source text length, not full text when sidecar privacy mode is enabled
+- voice design description length
+- style instruction length
+- source text length
 - uploaded file name
 - uploaded file MIME type
 - raw byte size
@@ -547,12 +591,15 @@ Unit tests:
 - provider registry capability preflight
 - unsupported capability behavior
 - MiMo request construction for built-in TTS
+- MiMo request construction for built-in TTS with audio tags in `assistant.content`
 - MiMo request construction for voice design
+- MiMo request construction for voice design with omitted text when `optimize_text_preview=true`
 - MiMo request construction for voice clone data URL
 - MiMo request construction for ASR Chat Completions with `extra_body.asr_options`
 - clone validation for MIME type, file extension, base64 size, and consent
 - ASR validation for MIME type, file extension, base64 size, and language
 - artifact path creation
+- artifact naming and transcript MIME type
 - metadata redaction allowlist excludes secrets, base64 payloads, and data URLs
 - SQLite startup enables WAL and busy timeout
 
@@ -567,7 +614,9 @@ Integration tests:
 Manual smoke tests with real MiMo:
 
 - built-in TTS with `冰糖`
+- built-in TTS with `(唱歌)` tag in Chinese lyrics
 - voice design with a short description
+- voice design with `optimize_text_preview=true` and no target text
 - voice clone with a small `wav` or `mp3` sample
 - ASR transcription of a short `wav`
 - ASR transcription of a short `mp3`
@@ -596,3 +645,5 @@ Manual smoke tests with real MiMo:
 - Product domains: TTS and ASR only; voice design and voice clone live under TTS.
 - TTS and ASR provider calls both use MiMo Chat Completions in v1.
 - Streaming and ASR timestamps are deferred until documented and smoke-tested.
+- TTS output is `wav` only in v1. `mp3` output is deferred until smoke-tested.
+- Default MiMo base URL is `https://api.xiaomimimo.com/v1`; Token Plan base URLs are advanced candidates until smoke-tested.
