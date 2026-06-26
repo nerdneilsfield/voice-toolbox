@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Voice Toolbox local data
+data/voice_toolbox.sqlite
+data/voice_toolbox.sqlite-*
+data/artifacts/*
+!data/artifacts/.gitkeep
