@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from voice_toolbox.models import TTSMode, TTSRequest
+from voice_toolbox.models import ASRRequest, TTSMode, TTSRequest
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability, VoiceProvider
 
 TTS_MODE_CAPABILITIES = {
@@ -25,6 +25,10 @@ class ProviderRegistry:
             raise ProviderError(f"unknown provider: {provider_id}") from exc
 
     def ensure_tts_capability(self, provider_id: str, request: TTSRequest) -> VoiceProvider:
+        if request.provider_id != provider_id:
+            raise ProviderError(
+                f"provider_id mismatch: requested {request.provider_id}, got {provider_id}"
+            )
         provider = self.get(provider_id)
         capability = TTS_MODE_CAPABILITIES[request.mode]
         if capability not in provider.capabilities():
@@ -33,7 +37,13 @@ class ProviderRegistry:
             )
         return provider
 
-    def ensure_asr_capability(self, provider_id: str) -> VoiceProvider:
+    def ensure_asr_capability(
+        self, provider_id: str, request: ASRRequest | None = None
+    ) -> VoiceProvider:
+        if request is not None and request.provider_id != provider_id:
+            raise ProviderError(
+                f"provider_id mismatch: requested {request.provider_id}, got {provider_id}"
+            )
         provider = self.get(provider_id)
         if "asr" not in provider.capabilities():
             raise UnsupportedCapability(f"provider {provider_id} does not support capability: asr")

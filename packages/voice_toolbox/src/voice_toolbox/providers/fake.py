@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 from types import TracebackType
+from uuid import uuid4
 
 from voice_toolbox.artifacts import ArtifactStore
 from voice_toolbox.models import (
@@ -32,8 +33,9 @@ class FakeProvider:
         self._capabilities = (
             {"tts.builtin", "tts.design", "tts.clone", "asr"}
             if capabilities is None
-            else capabilities
+            else set(capabilities)
         )
+        self._operation_prefix = uuid4().hex
         self._operation_counter = 0
         self._closed = False
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
@@ -141,7 +143,7 @@ class FakeProvider:
 
     def _next_operation_id(self, operation: str) -> str:
         self._operation_counter += 1
-        return f"fake-{operation}-{self._operation_counter}"
+        return f"fake-{self._operation_prefix}-{operation}-{self._operation_counter}"
 
     def _ensure_open(self) -> None:
         if self._closed:

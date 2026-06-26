@@ -34,11 +34,38 @@ def test_registry_allows_supported_tts_mode() -> None:
     assert provider.id == "fake"
 
 
+def test_registry_rejects_tts_provider_id_mismatch() -> None:
+    registry = ProviderRegistry([FakeProvider(capabilities={"tts.builtin"})])
+    request = TTSRequest(
+        provider_id="mimo",
+        mode=TTSMode.BUILTIN,
+        text="hello",
+        voice_id="Mia",
+    )
+
+    with pytest.raises(ProviderError, match="provider_id mismatch"):
+        registry.ensure_tts_capability("fake", request)
+
+
 def test_registry_blocks_unsupported_asr() -> None:
     registry = ProviderRegistry([FakeProvider(capabilities={"tts.builtin"})])
 
     with pytest.raises(UnsupportedCapability):
         registry.ensure_asr_capability("fake")
+
+
+def test_registry_rejects_asr_provider_id_mismatch(tmp_path: Path) -> None:
+    registry = ProviderRegistry([FakeProvider(capabilities={"asr"})])
+    request = ASRRequest(
+        provider_id="mimo",
+        audio_path=tmp_path / "input.wav",
+        mime_type="audio/wav",
+        raw_byte_size=10,
+        base64_size=16,
+    )
+
+    with pytest.raises(ProviderError, match="provider_id mismatch"):
+        registry.ensure_asr_capability("fake", request)
 
 
 def test_fake_provider_accepts_empty_capabilities() -> None:
@@ -94,10 +121,12 @@ def test_fake_provider_returns_deterministic_artifacts(tmp_path: Path) -> None:
     audio = provider.synthesize(tts_request)
     transcript = provider.transcribe(asr_request)
 
-    assert audio.id == "fake-tts-1"
+    assert audio.id.startswith("fake-")
+    assert audio.id.endswith("-tts-1")
     assert audio.provider_id == "fake"
     assert audio.path.read_bytes() == b"FAKE_WAV:hello:Mia"
-    assert transcript.id == "fake-asr-2"
+    assert transcript.id.startswith("fake-")
+    assert transcript.id.endswith("-asr-2")
     assert transcript.provider_id == "fake"
     assert transcript.path.read_text(encoding="utf-8") == "fake transcript"
 
@@ -117,11 +146,25 @@ def test_fake_provider_repeated_artifacts_do_not_collide(tmp_path: Path) -> None
     first_transcript = provider.transcribe(asr_request)
     second_transcript = provider.transcribe(asr_request)
 
-    assert first_audio.id == "fake-tts-1"
-    assert second_audio.id == "fake-tts-2"
-    assert first_transcript.id == "fake-asr-3"
-    assert second_transcript.id == "fake-asr-4"
+    assert first_audio.id.endswith("-tts-1")
+    assert second_audio.id.endswith("-tts-2")
+    assert first_transcript.id.endswith("-asr-3")
+    assert second_transcript.id.endswith("-asr-4")
     assert len({first_audio.path, second_audio.path, first_transcript.path, second_transcript.path}) == 4
+
+
+def test_fake_provider_instances_do_not_collide_on_same_artifact_root(tmp_path: Path) -> None:
+    first_provider = FakeProvider(capabilities={"tts.builtin"}, artifact_root=tmp_path)
+    second_provider = FakeProvider(capabilities={"tts.builtin"}, artifact_root=tmp_path)
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+
+    first_audio = first_provider.synthesize(request)
+    second_audio = second_provider.synthesize(request)
+
+    assert first_audio.id != second_audio.id
+    assert first_audio.path != second_audio.path
+    assert first_audio.path.exists()
+    assert second_audio.path.exists()
 
 
 def test_fake_provider_closes_implicit_temp_root() -> None:
