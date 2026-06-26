@@ -16,7 +16,7 @@ from voice_toolbox.models import (
     VoiceInfo,
 )
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
-from voice_toolbox.providers.registry import TTS_MODE_CAPABILITIES
+from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES
 
 
 class FakeProvider:
@@ -31,7 +31,7 @@ class FakeProvider:
         artifact_root: Path | str | None = None,
     ) -> None:
         self._capabilities = (
-            {"tts.builtin", "tts.design", "tts.clone", "asr"}
+            {"tts.builtin", "tts.design", "tts.clone", ASR_CAPABILITY}
             if capabilities is None
             else set(capabilities)
         )
@@ -59,7 +59,7 @@ class FakeProvider:
             ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
             ModelInfo(id="fake-design", name="Fake Voice Design", capability="tts.design"),
             ModelInfo(id="fake-clone", name="Fake Voice Clone", capability="tts.clone"),
-            ModelInfo(id="fake-asr", name="Fake ASR", capability="asr"),
+            ModelInfo(id="fake-asr", name="Fake ASR", capability=ASR_CAPABILITY),
         ]
         return [model for model in models if model.capability in self._capabilities]
 
@@ -114,8 +114,10 @@ class FakeProvider:
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
         self._ensure_open()
-        if "asr" not in self._capabilities:
-            raise UnsupportedCapability("fake provider does not support capability: asr")
+        if ASR_CAPABILITY not in self._capabilities:
+            raise UnsupportedCapability(
+                f"fake provider does not support capability: {ASR_CAPABILITY}"
+            )
 
         return self._artifact_store.write_transcript(
             operation_id=self._next_operation_id("asr"),

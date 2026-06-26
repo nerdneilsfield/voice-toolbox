@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import os
 import tempfile
 from collections.abc import Callable
@@ -9,7 +10,7 @@ from types import TracebackType
 from typing import Any
 from uuid import uuid4
 
-from openai import APIConnectionError, APITimeoutError, OpenAI, RateLimitError
+from openai import APITimeoutError, OpenAI, RateLimitError
 
 from voice_toolbox.artifacts import ArtifactStore
 from voice_toolbox.models import (
@@ -22,12 +23,17 @@ from voice_toolbox.models import (
     VoiceInfo,
 )
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
-from voice_toolbox.providers.registry import TTS_MODE_CAPABILITIES
+from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES
 from voice_toolbox.settings import get_mimo_api_key, load_settings
 
 MAX_BASE64_AUDIO_SIZE = 10 * 1024 * 1024
 TTS_TIMEOUT_SECONDS = 60.0
 ASR_TIMEOUT_SECONDS = 90.0
+CLONE_MIME_SUFFIXES = {
+    "audio/wav": {".wav"},
+    "audio/mpeg": {".mp3"},
+    "audio/mp3": {".mp3"},
+}
 
 MIMO_MODELS = [
     {"id": "mimo-v2.5-tts", "capability": "tts.builtin"},
@@ -87,6 +93,7 @@ def _build_tts_body(request: TTSRequest) -> dict[str, Any]:
         return body
 
     if request.mode == TTSMode.CLONE:
+        _validate_clone_audio_input(request)
         if request.clone_base64_size is not None:
             _validate_base64_size(request.clone_base64_size)
         if request.style_instruction:
@@ -173,7 +180,7 @@ class MimoProvider:
             self._artifact_store = ArtifactStore(root)
 
     def capabilities(self) -> set[str]:
-        return {"tts.builtin", "tts.design", "tts.clone", "asr"}
+        return {"tts.builtin", "tts.design", "tts.clone", ASR_CAPABILITY}
 
     def list_models(self) -> list[ModelInfo]:
         return [
@@ -218,7 +225,7 @@ class MimoProvider:
 
         try:
             audio = base64.b64decode(audio_payload, validate=True)
-        except ValueError as exc:
+        except (binascii.Error, ValueError) as exc:
             raise ProviderError("mimo response audio data is not valid base64") from exc
 
         return self._artifact_store.write_audio(
@@ -280,8 +287,6 @@ class MimoProvider:
                 raise
             except RateLimitError as exc:
                 last_error = exc
-            except APIConnectionError as exc:
-                last_error = exc
             if attempt == 1:
                 break
         assert last_error is not None
@@ -306,6 +311,20 @@ def _validate_tts_request(request: TTSRequest) -> None:
         raise ProviderError("mimo TTS output format must be wav")
 
 
+def _validate_clone_audio_input(request: TTSRequest) -> None:
+    if request.clone_sample_path is None or request.clone_mime_type is None:
+        raise ProviderError("clone mode requires clone sample path and MIME type")
+    allowed_suffixes = CLONE_MIME_SUFFIXES.get(request.clone_mime_type)
+    if allowed_suffixes is None:
+        raise ProviderError("mimo clone sample MIME type must be audio/wav, audio/mpeg, or audio/mp3")
+    suffix = request.clone_sample_path.suffix.lower()
+    if suffix not in allowed_suffixes:
+        expected = ", ".join(sorted(allowed_suffixes))
+        raise ProviderError(
+            f"mimo clone sample suffix must be {expected} for {request.clone_mime_type}"
+        )
+
+
 def _validate_base64_size(base64_size: int) -> None:
     if base64_size > MAX_BASE64_AUDIO_SIZE:
         raise ProviderError("mimo audio base64 payload exceeds 10 MiB")
@@ -319,9 +338,12 @@ def _message_audio_data(completion: Any) -> str:
     try:
         message = _get_value(_get_value(completion, "choices")[0], "message")
         audio = _get_value(message, "audio")
-        return _get_value(audio, "data")
+        data = _get_value(audio, "data")
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
         raise ProviderError("mimo response is missing audio data") from exc
+    if not isinstance(data, str):
+        raise ProviderError("mimo response audio data is not text")
+    return data
 
 
 def _message_content(completion: Any) -> str:

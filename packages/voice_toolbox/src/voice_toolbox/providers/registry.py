@@ -8,6 +8,7 @@ TTS_MODE_CAPABILITIES = {
     TTSMode.DESIGN: "tts.design",
     TTSMode.CLONE: "tts.clone",
 }
+ASR_CAPABILITY = "asr.transcribe"
 
 
 class ProviderRegistry:
@@ -45,6 +46,8 @@ class ProviderRegistry:
                 f"provider_id mismatch: requested {request.provider_id}, got {provider_id}"
             )
         provider = self.get(provider_id)
-        if "asr" not in provider.capabilities():
-            raise UnsupportedCapability(f"provider {provider_id} does not support capability: asr")
+        if ASR_CAPABILITY not in provider.capabilities():
+            raise UnsupportedCapability(
+                f"provider {provider_id} does not support capability: {ASR_CAPABILITY}"
+            )
         return provider

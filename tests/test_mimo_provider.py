@@ -4,7 +4,9 @@ import base64
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from pydantic import ValidationError
 
 from voice_toolbox.models import ASRRequest, TTSMode, TTSRequest
@@ -19,17 +21,20 @@ from voice_toolbox.providers.mimo import (
 
 
 class FakeChatCompletions:
-    def __init__(self, completion: object) -> None:
-        self.completion = completion
+    def __init__(self, completion: object | list[object]) -> None:
+        self.responses = completion if isinstance(completion, list) else [completion]
         self.calls: list[dict[str, object]] = []
 
     def create(self, **kwargs: object) -> object:
         self.calls.append(kwargs)
-        return self.completion
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class FakeClient:
-    def __init__(self, completion: object) -> None:
+    def __init__(self, completion: object | list[object]) -> None:
         self.chat = SimpleNamespace(completions=FakeChatCompletions(completion))
 
 
@@ -46,9 +51,17 @@ def _tts_completion(payload: bytes = b"WAV") -> object:
 
 
 def _asr_completion(text: str = "hello transcript") -> object:
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
-    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+
+def _api_request() -> httpx.Request:
+    return httpx.Request("POST", "https://example.test/v1/chat/completions")
+
+
+def _rate_limit_error() -> RateLimitError:
+    request = _api_request()
+    response = httpx.Response(429, request=request)
+    return RateLimitError("rate limited", response=response, body=None)
 
 
 def test_builtin_tts_places_tags_in_assistant_content() -> None:
@@ -126,6 +139,35 @@ def test_clone_builds_data_url_and_never_metadata_payload(tmp_path: Path) -> Non
     assert "audio" not in artifact.metadata or "voice" not in artifact.metadata
 
 
+def test_clone_rejects_unsupported_mime_before_data_url(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.wav"
+    sample.write_bytes(b"clone audio")
+    request = TTSRequest(
+        mode=TTSMode.CLONE,
+        text="hello",
+        clone_sample_path=sample,
+        clone_mime_type="audio/ogg",
+        consent_confirmed=True,
+    )
+
+    with pytest.raises(ProviderError, match="MIME"):
+        _build_tts_body(request)
+
+
+def test_clone_rejects_unsupported_suffix_before_reading_file(tmp_path: Path) -> None:
+    missing_flac = tmp_path / "missing.flac"
+    request = TTSRequest(
+        mode=TTSMode.CLONE,
+        text="hello",
+        clone_sample_path=missing_flac,
+        clone_mime_type="audio/wav",
+        consent_confirmed=True,
+    )
+
+    with pytest.raises(ProviderError, match="suffix"):
+        _build_tts_body(request)
+
+
 def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) -> None:
     audio = tmp_path / "input.wav"
     audio.write_bytes(b"asr audio")
@@ -170,6 +212,24 @@ def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) ->
     assert artifact.path.read_text(encoding="utf-8") == "你好"
 
 
+def test_non_text_asr_transcript_raises_provider_error(tmp_path: Path) -> None:
+    audio = tmp_path / "input.wav"
+    audio.write_bytes(b"asr audio")
+    completion = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content={"text": "hello"}))]
+    )
+    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=FakeClient(completion))
+    request = ASRRequest(
+        audio_path=audio,
+        mime_type="audio/wav",
+        raw_byte_size=len(b"asr audio"),
+        base64_size=len(base64.b64encode(b"asr audio").decode("ascii")),
+    )
+
+    with pytest.raises(ProviderError, match="not text"):
+        provider.transcribe(request)
+
+
 def test_bearer_auth_client_is_created_from_api_key(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
@@ -189,6 +249,71 @@ def test_bearer_auth_client_is_created_from_api_key(tmp_path: Path) -> None:
         "base_url": "https://example.test/v1",
         "max_retries": 0,
     }
+
+
+def test_api_connection_error_is_not_retried(tmp_path: Path) -> None:
+    error = APIConnectionError(request=_api_request())
+    client = FakeClient(error)
+    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=client)
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+
+    with pytest.raises(APIConnectionError):
+        provider.synthesize(request)
+
+    assert len(client.chat.completions.calls) == 1
+
+
+def test_rate_limit_error_retries_once(tmp_path: Path) -> None:
+    client = FakeClient([_rate_limit_error(), _tts_completion(b"OK")])
+    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=client)
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+
+    artifact = provider.synthesize(request)
+
+    assert len(client.chat.completions.calls) == 2
+    assert artifact.path.read_bytes() == b"OK"
+
+
+def test_api_timeout_error_is_not_retried(tmp_path: Path) -> None:
+    client = FakeClient(APITimeoutError(_api_request()))
+    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=client)
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+
+    with pytest.raises(APITimeoutError):
+        provider.synthesize(request)
+
+    assert len(client.chat.completions.calls) == 1
+
+
+def test_malformed_audio_payload_raises_provider_error(tmp_path: Path) -> None:
+    completion = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(audio=SimpleNamespace(data="not-base64")))]
+    )
+    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=FakeClient(completion))
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+
+    with pytest.raises(ProviderError, match="valid base64"):
+        provider.synthesize(request)
+
+
+def test_missing_audio_payload_raises_provider_error(tmp_path: Path) -> None:
+    completion = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace())])
+    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=FakeClient(completion))
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+
+    with pytest.raises(ProviderError, match="missing audio data"):
+        provider.synthesize(request)
+
+
+def test_non_string_audio_payload_raises_provider_error(tmp_path: Path) -> None:
+    completion = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(audio=SimpleNamespace(data=123)))]
+    )
+    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=FakeClient(completion))
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+
+    with pytest.raises(ProviderError, match="audio data is not text"):
+        provider.synthesize(request)
 
 
 def test_model_resolution_explicit_request_model_wins(tmp_path: Path) -> None:

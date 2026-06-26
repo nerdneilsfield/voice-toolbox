@@ -55,7 +55,7 @@ def test_registry_blocks_unsupported_asr() -> None:
 
 
 def test_registry_rejects_asr_provider_id_mismatch(tmp_path: Path) -> None:
-    registry = ProviderRegistry([FakeProvider(capabilities={"asr"})])
+    registry = ProviderRegistry([FakeProvider(capabilities={"asr.transcribe"})])
     request = ASRRequest(
         provider_id="mimo",
         audio_path=tmp_path / "input.wav",
@@ -88,7 +88,7 @@ def test_fake_provider_accepts_empty_capabilities() -> None:
 def test_fake_provider_models_follow_capabilities() -> None:
     assert FakeProvider(capabilities=set()).list_models() == []
     assert {model.capability for model in FakeProvider().list_models()} == {
-        "asr",
+        "asr.transcribe",
         "tts.builtin",
         "tts.clone",
         "tts.design",
@@ -109,7 +109,7 @@ def test_registry_raises_for_unknown_provider() -> None:
 
 
 def test_fake_provider_returns_deterministic_artifacts(tmp_path: Path) -> None:
-    provider = FakeProvider(capabilities={"tts.builtin", "asr"}, artifact_root=tmp_path)
+    provider = FakeProvider(capabilities={"tts.builtin", "asr.transcribe"}, artifact_root=tmp_path)
     tts_request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
     asr_request = ASRRequest(
         audio_path=tmp_path / "input.wav",
@@ -132,7 +132,7 @@ def test_fake_provider_returns_deterministic_artifacts(tmp_path: Path) -> None:
 
 
 def test_fake_provider_repeated_artifacts_do_not_collide(tmp_path: Path) -> None:
-    provider = FakeProvider(capabilities={"tts.builtin", "asr"}, artifact_root=tmp_path)
+    provider = FakeProvider(capabilities={"tts.builtin", "asr.transcribe"}, artifact_root=tmp_path)
     tts_request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
     asr_request = ASRRequest(
         audio_path=tmp_path / "input.wav",
