@@ -7,7 +7,14 @@ from typing import Any
 
 from voice_toolbox.models import AudioArtifact, TranscriptArtifact
 
-SENSITIVE_METADATA_KEYS = {"api_key", "data_url"}
+SENSITIVE_METADATA_KEYS = {
+    "api_key",
+    "audio_bytes",
+    "base64",
+    "base64_payload",
+    "data_url",
+    "raw_audio",
+}
 LENGTH_METADATA_KEYS = {"source_text", "style_instruction", "voice_description"}
 
 

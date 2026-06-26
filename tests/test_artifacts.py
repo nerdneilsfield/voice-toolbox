@@ -20,6 +20,28 @@ def test_redact_metadata_excludes_api_key_and_data_url_and_maps_source_text_leng
     assert metadata["provider"] == "mimo"
 
 
+def test_redact_metadata_excludes_audio_payload_keys() -> None:
+    metadata = redact_metadata(
+        {
+            "base64": "AAAA",
+            "base64_payload": "BBBB",
+            "data_url": "data:audio/wav;base64,CCCC",
+            "raw_audio": b"audio",
+            "audio_bytes": b"bytes",
+            "api_key": "secret",
+            "provider": "mimo",
+        }
+    )
+
+    assert "base64" not in metadata
+    assert "base64_payload" not in metadata
+    assert "data_url" not in metadata
+    assert "raw_audio" not in metadata
+    assert "audio_bytes" not in metadata
+    assert "api_key" not in metadata
+    assert metadata["provider"] == "mimo"
+
+
 def test_redact_metadata_maps_prompt_fields_to_lengths() -> None:
     metadata = redact_metadata(
         {
