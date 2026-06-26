@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 import typer
 from pydantic import ValidationError
@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from voice_toolbox.models import ASRRequest, AudioArtifact, TranscriptArtifact, TTSMode, TTSRequest
 from voice_toolbox.providers import ProviderError, ProviderRegistry
 from voice_toolbox.providers.mimo import MimoProvider
+from voice_toolbox.settings import has_mimo_api_key
 
 app = typer.Typer(help="Voice Toolbox")
 tts_app = typer.Typer(help="Text-to-speech commands")
@@ -26,11 +27,15 @@ ProviderOption = Annotated[str, typer.Option("--provider", help="Provider id.")]
 TextOption = Annotated[str, typer.Option("--text", help="Text to synthesize.")]
 OptionalTextOption = Annotated[str | None, typer.Option("--text", help="Text to synthesize.")]
 ModelOption = Annotated[str | None, typer.Option("--model", help="Provider model id.")]
+FormatOption = Annotated[str, typer.Option("--format", help="Output format; v1 supports wav.")]
 StyleOption = Annotated[
     str | None,
     typer.Option("--style", help="Optional style instruction."),
 ]
+
+
 def build_provider_registry() -> ProviderRegistry:
+    _ensure_default_provider_configured()
     return ProviderRegistry([MimoProvider(artifact_root=Path.cwd())])
 
 
@@ -45,6 +50,7 @@ def synthesize(
     voice: Annotated[str, typer.Option("--voice", help="Voice id.")],
     provider: ProviderOption = DEFAULT_PROVIDER,
     model: ModelOption = None,
+    output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
     style: StyleOption = None,
 ) -> None:
     request = _build_tts_request(
@@ -54,6 +60,7 @@ def synthesize(
         text=text,
         style_instruction=style,
         voice_id=voice,
+        output_format=output_format,
     )
     artifact = _synthesize(provider, request)
     _print_audio_artifact(artifact)
@@ -69,6 +76,7 @@ def design(
     ] = False,
     provider: ProviderOption = DEFAULT_PROVIDER,
     model: ModelOption = None,
+    output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
 ) -> None:
     request = _build_tts_request(
         provider_id=provider,
@@ -77,6 +85,7 @@ def design(
         text=text,
         voice_description=description,
         optimize_text_preview=optimize_text_preview,
+        output_format=output_format,
     )
     artifact = _synthesize(provider, request)
     _print_audio_artifact(artifact)
@@ -92,6 +101,7 @@ def clone(
     ] = False,
     provider: ProviderOption = DEFAULT_PROVIDER,
     model: ModelOption = None,
+    output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
     style: StyleOption = None,
 ) -> None:
     sample = _normalize_existing_audio_path(sample)
@@ -108,6 +118,7 @@ def clone(
         clone_raw_byte_size=raw_byte_size,
         clone_base64_size=base64_size,
         consent_confirmed=consent_confirmed,
+        output_format=output_format,
     )
     artifact = _synthesize(provider, request)
     _print_audio_artifact(artifact)
@@ -142,9 +153,9 @@ def transcribe(
     _print_transcript_artifact(artifact)
 
 
-def _build_tts_request(**fields: object) -> TTSRequest:
+def _build_tts_request(*, output_format: str = DEFAULT_OUTPUT_FORMAT, **fields: object) -> TTSRequest:
     try:
-        return TTSRequest(output_format=DEFAULT_OUTPUT_FORMAT, **fields)
+        return TTSRequest(output_format=_normalize_output_format(output_format), **fields)
     except ValidationError as exc:
         _fail(str(exc))
 
@@ -194,7 +205,18 @@ def _audio_upload_metadata(path: Path) -> tuple[str, int, int]:
     return mime_type, raw_byte_size, base64_size
 
 
-def _fail(message: str) -> None:
+def _normalize_output_format(output_format: str) -> Literal["wav"]:
+    if output_format != DEFAULT_OUTPUT_FORMAT:
+        _fail("unsupported output format; expected wav")
+    return DEFAULT_OUTPUT_FORMAT
+
+
+def _ensure_default_provider_configured() -> None:
+    if not has_mimo_api_key():
+        _fail("MIMO_API_KEY is required for provider mimo; set it in environment or .env")
+
+
+def _fail(message: str) -> NoReturn:
     typer.echo(f"Error: {message}", err=True)
     raise typer.Exit(code=1)
 

@@ -89,6 +89,54 @@ def test_tts_synthesize_prints_audio_artifact(monkeypatch, tmp_path: Path) -> No
     assert provider.tts_requests[0].output_format == "wav"
 
 
+def test_tts_synthesize_accepts_format_wav(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        ["tts", "synthesize", "--text", "hello", "--voice", "Mia", "--format", "wav"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.tts_requests[0].output_format == "wav"
+
+
+def test_tts_synthesize_rejects_unsupported_format(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        ["tts", "synthesize", "--text", "hello", "--voice", "Mia", "--format", "mp3"],
+    )
+
+    assert result.exit_code != 0
+    assert "format" in result.output.lower()
+    assert "wav" in result.output
+    assert provider.tts_requests == []
+
+
+def test_default_mimo_provider_fails_fast_without_api_key(monkeypatch) -> None:
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
+
+    def fail_if_constructed(**_: object) -> object:
+        raise AssertionError("MimoProvider should not be constructed without MIMO_API_KEY")
+
+    monkeypatch.setattr(cli, "MimoProvider", fail_if_constructed)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        ["tts", "synthesize", "--text", "hello", "--voice", "Mia"],
+    )
+
+    assert result.exit_code != 0
+    assert "MIMO_API_KEY" in result.output
+    assert ".env" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_tts_design_optimized_preview_works_without_text(monkeypatch, tmp_path: Path) -> None:
     provider = _install_recording_provider(monkeypatch, tmp_path)
     runner = CliRunner()
@@ -108,6 +156,27 @@ def test_tts_design_optimized_preview_works_without_text(monkeypatch, tmp_path: 
     assert provider.tts_requests[0].voice_description == "warm narrator"
     assert provider.tts_requests[0].optimize_text_preview is True
     assert provider.tts_requests[0].text is None
+
+
+def test_tts_design_accepts_format_wav(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "tts",
+            "design",
+            "--description",
+            "warm narrator",
+            "--optimize-text-preview",
+            "--format",
+            "wav",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.tts_requests[0].output_format == "wav"
 
 
 def test_tts_clone_fails_without_consent_in_non_tty(monkeypatch, tmp_path: Path) -> None:
@@ -145,6 +214,31 @@ def test_tts_clone_succeeds_with_consent(monkeypatch, tmp_path: Path) -> None:
     assert request.clone_raw_byte_size == 4
     assert request.clone_base64_size == 8
     assert request.consent_confirmed is True
+
+
+def test_tts_clone_accepts_format_wav(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    sample = tmp_path / "voice.wav"
+    sample.write_bytes(b"abcd")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "tts",
+            "clone",
+            "--sample",
+            str(sample),
+            "--text",
+            "hello",
+            "--consent",
+            "--format",
+            "wav",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.tts_requests[0].output_format == "wav"
 
 
 def test_asr_transcribe_auto_language_succeeds(monkeypatch, tmp_path: Path) -> None:
