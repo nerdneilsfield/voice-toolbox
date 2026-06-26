@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Annotated, Literal, NoReturn
+from typing import Annotated, Any, Literal, NoReturn, cast
 
 import typer
 from pydantic import ValidationError
@@ -22,6 +22,7 @@ SUPPORTED_AUDIO_MIME_BY_SUFFIX = {
     ".wav": "audio/wav",
     ".mp3": "audio/mpeg",
 }
+AudioMime = Literal["audio/wav", "audio/mpeg", "audio/mp3"]
 
 ProviderOption = Annotated[str, typer.Option("--provider", help="Provider id.")]
 TextOption = Annotated[str, typer.Option("--text", help="Text to synthesize.")]
@@ -93,8 +94,8 @@ def design(
 
 @tts_app.command()
 def clone(
-    sample: Annotated[Path, typer.Option("--sample", help="Voice sample wav/mp3.")] = ...,
-    text: TextOption = ...,
+    sample: Annotated[Path | None, typer.Option("--sample", help="Voice sample wav/mp3.")] = None,
+    text: OptionalTextOption = None,
     consent: Annotated[
         bool,
         typer.Option("--consent", help="Confirm rights and consent for uploaded voice sample."),
@@ -104,6 +105,10 @@ def clone(
     output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
     style: StyleOption = None,
 ) -> None:
+    if sample is None:
+        _fail("--sample is required")
+    if text is None:
+        _fail("--text is required")
     sample = _normalize_existing_audio_path(sample)
     consent_confirmed = _confirm_clone_consent(consent)
     mime_type, raw_byte_size, base64_size = _audio_upload_metadata(sample)
@@ -126,7 +131,7 @@ def clone(
 
 @asr_app.command()
 def transcribe(
-    file: Annotated[Path, typer.Option("--file", help="Audio file wav/mp3.")] = ...,
+    file: Annotated[Path | None, typer.Option("--file", help="Audio file wav/mp3.")] = None,
     language: Annotated[
         Literal["auto", "zh", "en"],
         typer.Option("--language", help="Language hint."),
@@ -134,6 +139,8 @@ def transcribe(
     provider: ProviderOption = DEFAULT_PROVIDER,
     model: Annotated[str, typer.Option("--model", help="Provider ASR model id.")] = "mimo-v2.5-asr",
 ) -> None:
+    if file is None:
+        _fail("--file is required")
     file = _normalize_existing_audio_path(file)
     mime_type, raw_byte_size, base64_size = _audio_upload_metadata(file)
     try:
@@ -153,7 +160,7 @@ def transcribe(
     _print_transcript_artifact(artifact)
 
 
-def _build_tts_request(*, output_format: str = DEFAULT_OUTPUT_FORMAT, **fields: object) -> TTSRequest:
+def _build_tts_request(*, output_format: str = DEFAULT_OUTPUT_FORMAT, **fields: Any) -> TTSRequest:
     try:
         return TTSRequest(output_format=_normalize_output_format(output_format), **fields)
     except ValidationError as exc:
@@ -195,14 +202,14 @@ def _normalize_existing_audio_path(path: Path) -> Path:
     return path
 
 
-def _audio_upload_metadata(path: Path) -> tuple[str, int, int]:
+def _audio_upload_metadata(path: Path) -> tuple[AudioMime, int, int]:
     suffix = path.suffix.lower()
     mime_type = SUPPORTED_AUDIO_MIME_BY_SUFFIX.get(suffix)
     if mime_type is None:
         _fail("unsupported audio suffix; expected .wav or .mp3")
     raw_byte_size = path.stat().st_size
     base64_size = ((raw_byte_size + 2) // 3) * 4
-    return mime_type, raw_byte_size, base64_size
+    return cast(AudioMime, mime_type), raw_byte_size, base64_size
 
 
 def _normalize_output_format(output_format: str) -> Literal["wav"]:

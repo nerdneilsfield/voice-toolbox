@@ -72,13 +72,13 @@ _MODEL_NAMES = {
 
 def _build_tts_body(request: TTSRequest) -> dict[str, Any]:
     _validate_tts_request(request)
+    audio: dict[str, Any] = {"format": request.output_format}
     body: dict[str, Any] = {
         "model": _resolve_tts_model(request),
         "messages": [],
-        "audio": {"format": request.output_format},
+        "audio": audio,
     }
     messages = body["messages"]
-    audio = body["audio"]
 
     if request.mode == TTSMode.BUILTIN:
         if request.style_instruction:

@@ -6,7 +6,7 @@
 
 **Architecture:** A Python core package owns typed models, validation, MiMo provider calls, artifact storage, and CLI commands. FastAPI and React sit on top of that core without provider-specific logic in the UI. Provider calls are synchronous in v1; provider protocol methods are normal `def` methods, FastAPI handlers may also be normal `def` handlers, and artifacts plus redacted metadata are persisted locally.
 
-**Tech Stack:** Python 3.11+, `uv`, Pydantic, OpenAI Python SDK, Typer, FastAPI, SQLite, pytest, React, TypeScript, Vite, pnpm.
+**Tech Stack:** Python 3.11+, `uv`, Pydantic, OpenAI Python SDK, Typer, FastAPI, SQLite, pytest, React, TypeScript, Vite, bun.
 
 ---
 
@@ -762,7 +762,7 @@ rtk git commit -m "feat: add voice toolbox api"
 
 - [ ] **Step 1: Scaffold Vite React app files**
 
-Use `pnpm` with Vite + React + TypeScript. Configure Vite dev server host `127.0.0.1`, port `5173`, and proxy `/v1` to `http://127.0.0.1:8000`.
+Use `bun` with Vite + React + TypeScript. Configure Vite dev server host `127.0.0.1`, port `5173`, and proxy `/v1` to `http://127.0.0.1:8000`.
 
 - [ ] **Step 2: Implement API client**
 
@@ -796,8 +796,8 @@ In `App.tsx`, implement:
 - [ ] **Step 4: Run frontend checks**
 
 ```bash
-rtk pnpm --dir apps/web install
-rtk pnpm --dir apps/web build
+rtk bun install --cwd apps/web
+rtk bun run --cwd apps/web build
 ```
 
 Expected: build succeeds.
@@ -833,7 +833,7 @@ Create `docs/smoke/mimo.md` with commands for:
 Update `README.md` with:
 
 - Setup using `uv`.
-- Frontend setup using `pnpm`.
+- Frontend setup using `bun`.
 - `.env` setup from `.env.example`.
 - API server command binding `127.0.0.1:8000`.
 - Web dev command binding `127.0.0.1:5173`.
@@ -844,7 +844,7 @@ Update `README.md` with:
 
 ```bash
 rtk uv run pytest -v
-rtk pnpm --dir apps/web build
+rtk bun run --cwd apps/web build
 ```
 
 Expected: all Python tests pass and web build succeeds.

@@ -11,7 +11,7 @@ The initial implementation has two top-level domains:
 - TTS: built-in voices, voice design, voice clone, natural-language style control, and audio tag control.
 - ASR: audio transcription.
 
-The implementation uses Python for backend, CLI, provider adapters, and artifact handling. React provides a single-page toolbox UI that calls the same backend/core used by the CLI. Python dependencies use `uv`; frontend dependencies use `pnpm`.
+The implementation uses Python for backend, CLI, provider adapters, and artifact handling. React provides a single-page toolbox UI that calls the same backend/core used by the CLI. Python dependencies use `uv`; frontend dependencies use `bun`.
 
 ## Goals
 

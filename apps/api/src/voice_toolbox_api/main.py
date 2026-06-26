@@ -5,7 +5,7 @@ import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -407,7 +407,7 @@ def _normalize_mime_type(mime_type: str | None) -> Literal["audio/wav", "audio/m
     normalized = "audio/mpeg" if mime_type == "audio/mp3" else mime_type
     if normalized not in SUPPORTED_UPLOAD_MIME_TYPES:
         raise HTTPException(status_code=422, detail="audio MIME type must be wav or mp3")
-    return normalized  # type: ignore[return-value]
+    return cast(Literal["audio/wav", "audio/mpeg", "audio/mp3"], normalized)
 
 
 def _suffix_for_upload(filename: str | None) -> str:

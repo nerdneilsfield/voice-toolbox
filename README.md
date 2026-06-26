@@ -10,10 +10,10 @@ Install Python dependencies with `uv`:
 rtk uv sync --extra dev
 ```
 
-Install frontend dependencies with `pnpm`:
+Install frontend dependencies with `bun`:
 
 ```bash
-rtk pnpm --dir apps/web install
+rtk bun install --cwd apps/web
 ```
 
 Create local environment config:
@@ -33,16 +33,27 @@ https://api.xiaomimimo.com/v1
 Start API server on `127.0.0.1:8000`:
 
 ```bash
-rtk uv run --env-file .env uvicorn voice_toolbox_api.main:app --host 127.0.0.1 --port 8000
+rtk make backend-test-server
 ```
 
 Start web dev server on `127.0.0.1:5173`:
 
 ```bash
-rtk pnpm --dir apps/web dev
+rtk make frontend-test-server
 ```
 
 The Vite dev server proxies `/v1/*` to `http://127.0.0.1:8000`.
+
+## Make Targets
+
+```bash
+rtk make test
+rtk make check
+rtk make backend-test-server
+rtk make frontend-test-server
+```
+
+`make check` runs backend tests, `ruff`, `ty`, frontend type checks, and the web build.
 
 ## CLI Examples
 
