@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -174,6 +175,55 @@ def test_artifact_metadata_and_download_read_sidecar(tmp_path: Path) -> None:
     assert download.status_code == 200
     assert download.content == b"fake transcript"
     assert download.headers["content-type"].startswith("text/plain")
+
+
+def test_artifact_download_rejects_sidecar_path_outside_artifact_root(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("do not serve", encoding="utf-8")
+    sidecar_dir = tmp_path / "data" / "artifacts" / "20260101"
+    sidecar_dir.mkdir(parents=True)
+    (sidecar_dir / "evil.json").write_text(
+        json.dumps(
+            {
+                "id": "evil",
+                "kind": "transcript",
+                "provider_id": "mimo",
+                "operation": "asr",
+                "path": str(secret),
+                "mime_type": "text/plain; charset=utf-8",
+                "created_at": "2026-01-01T00:00:00Z",
+                "metadata": {"operation": "asr"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metadata = client.get("/v1/artifacts/evil")
+    download = client.get("/v1/artifacts/evil/download")
+
+    assert metadata.status_code in {404, 422}
+    assert download.status_code in {404, 422}
+    assert download.content != b"do not serve"
+
+
+def test_upload_routes_reject_unsupported_suffix_even_when_mime_allowed(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    asr = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.flac", b"abcde", "audio/wav")},
+    )
+    clone = client.post(
+        "/v1/tts/clone",
+        data={"text": "hello", "consent_confirmed": "true"},
+        files={"sample": ("sample.flac", b"voice", "audio/wav")},
+    )
+
+    assert asr.status_code == 422
+    assert clone.status_code == 422
+    assert provider.asr_requests == []
+    assert provider.tts_requests == []
 
 
 def test_cors_allows_vite_origin(tmp_path: Path) -> None:

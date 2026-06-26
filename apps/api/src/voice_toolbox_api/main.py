@@ -183,15 +183,16 @@ def create_app(
 
     @app.get("/v1/artifacts/{artifact_id}")
     def artifact_metadata(artifact_id: str) -> dict[str, Any]:
-        return _read_artifact_sidecar(root, artifact_id)
+        artifact = _read_artifact_sidecar(root, artifact_id)
+        return artifact.model_dump(mode="json")
 
     @app.get("/v1/artifacts/{artifact_id}/download")
     def artifact_download(artifact_id: str) -> FileResponse:
-        sidecar = _read_artifact_sidecar(root, artifact_id)
-        path = Path(sidecar["path"])
-        if not path.exists():
+        artifact = _read_artifact_sidecar(root, artifact_id)
+        path = artifact.path
+        if not path.is_file():
             raise HTTPException(status_code=404, detail="artifact file not found")
-        return FileResponse(path, media_type=sidecar["mime_type"], filename=path.name)
+        return FileResponse(path, media_type=artifact.mime_type, filename=path.name)
 
     return app
 
@@ -314,21 +315,37 @@ def _normalize_mime_type(mime_type: str | None) -> Literal["audio/wav", "audio/m
 
 def _suffix_for_upload(filename: str | None) -> str:
     suffix = Path(filename or "").suffix.lower()
-    return suffix if suffix in {".wav", ".mp3"} else ".wav"
+    if suffix not in {".wav", ".mp3"}:
+        raise HTTPException(status_code=422, detail="audio file suffix must be .wav or .mp3")
+    return suffix
 
 
 def _base64_size(contents: bytes) -> int:
     return len(base64.b64encode(contents).decode("ascii"))
 
 
-def _read_artifact_sidecar(root: Path, artifact_id: str) -> dict[str, Any]:
+def _read_artifact_sidecar(root: Path, artifact_id: str) -> Artifact:
     if not SAFE_OPERATION_ID_PATTERN.fullmatch(artifact_id):
         raise HTTPException(status_code=404, detail="artifact not found")
-    matches = sorted((root / "data" / "artifacts").glob(f"*/{artifact_id}.json"))
+    artifact_root = (root / "data" / "artifacts").resolve(strict=False)
+    matches = sorted(artifact_root.glob(f"*/{artifact_id}.json"))
     if not matches:
         raise HTTPException(status_code=404, detail="artifact not found")
-    with matches[-1].open(encoding="utf-8") as sidecar_file:
-        return json.load(sidecar_file)
+    try:
+        with matches[-1].open(encoding="utf-8") as sidecar_file:
+            payload = json.load(sidecar_file)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="artifact sidecar is invalid") from exc
+    try:
+        artifact = Artifact.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="artifact sidecar is invalid") from exc
+    if artifact.id != artifact_id:
+        raise HTTPException(status_code=422, detail="artifact sidecar id mismatch")
+    path = artifact.path.resolve(strict=False)
+    if not path.is_relative_to(artifact_root):
+        raise HTTPException(status_code=422, detail="artifact path is outside artifact root")
+    return artifact.model_copy(update={"path": path})
 
 
 app = create_app()
