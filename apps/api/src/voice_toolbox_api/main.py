@@ -1,0 +1,334 @@
+from __future__ import annotations
+
+import base64
+import json
+import tempfile
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Annotated, Any, Literal
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import ValidationError
+
+from voice_toolbox.artifacts import SAFE_OPERATION_ID_PATTERN
+from voice_toolbox.models import (
+    ASRRequest,
+    Artifact,
+    OperationResult,
+    OperationStatus,
+    TTSMode,
+    TTSRequest,
+)
+from voice_toolbox.providers.base import ProviderError
+from voice_toolbox.providers.mimo import MimoProvider
+from voice_toolbox.providers.registry import ProviderRegistry
+from voice_toolbox.settings import get_mimo_api_key, has_mimo_api_key
+
+CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
+DEFAULT_ARTIFACT_ROOT = Path.cwd()
+SUPPORTED_UPLOAD_MIME_TYPES = {"audio/wav", "audio/mpeg", "audio/mp3"}
+
+
+def create_app(
+    *,
+    registry: ProviderRegistry | None = None,
+    artifact_root: Path | str | None = None,
+    has_mimo_api_key_func: Callable[[], bool] = has_mimo_api_key,
+) -> FastAPI:
+    root = Path(artifact_root) if artifact_root is not None else _infer_artifact_root(registry)
+    provider_registry = registry or _build_default_registry(root)
+
+    app = FastAPI(
+        title="Voice Toolbox API",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+    app.state.provider_registry = provider_registry
+    app.state.artifact_root = root
+    app.state.has_mimo_api_key_func = has_mimo_api_key_func
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/v1/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/v1/providers")
+    def providers(http_request: Request) -> dict[str, list[dict[str, Any]]]:
+        provider_registry = _registry_from_request(http_request)
+        return {
+            "providers": [
+                _provider_summary(provider, http_request.app.state.has_mimo_api_key_func)
+                for provider in provider_registry._providers.values()
+            ]
+        }
+
+    @app.get("/v1/providers/{provider_id}/voices")
+    def voices(provider_id: str, http_request: Request) -> dict[str, list[dict[str, Any]]]:
+        provider_registry = _registry_from_request(http_request)
+        provider = _get_provider(provider_registry, provider_id)
+        return {"voices": [voice.model_dump(mode="json") for voice in provider.list_voices()]}
+
+    @app.post("/v1/tts/builtin")
+    def synthesize_builtin(
+        http_request: Request,
+        provider_id: Annotated[str, Form()] = "mimo",
+        text: Annotated[str, Form()] = "",
+        voice_id: Annotated[str, Form()] = "",
+        style_instruction: Annotated[str | None, Form()] = None,
+        model: Annotated[str | None, Form()] = None,
+    ) -> dict[str, Any]:
+        request = _build_tts_request(
+            provider_id=provider_id,
+            mode=TTSMode.BUILTIN,
+            model=model,
+            text=text,
+            voice_id=voice_id,
+            style_instruction=style_instruction,
+        )
+        return _run_tts(_registry_from_request(http_request), provider_id, request)
+
+    @app.post("/v1/tts/design")
+    def synthesize_design(
+        http_request: Request,
+        provider_id: Annotated[str, Form()] = "mimo",
+        voice_description: Annotated[str, Form()] = "",
+        text: Annotated[str | None, Form()] = None,
+        optimize_text_preview: Annotated[bool, Form()] = False,
+        model: Annotated[str | None, Form()] = None,
+    ) -> dict[str, Any]:
+        request = _build_tts_request(
+            provider_id=provider_id,
+            mode=TTSMode.DESIGN,
+            model=model,
+            text=text,
+            voice_description=voice_description,
+            optimize_text_preview=optimize_text_preview,
+        )
+        return _run_tts(_registry_from_request(http_request), provider_id, request)
+
+    @app.post("/v1/tts/clone")
+    def synthesize_clone(
+        http_request: Request,
+        sample: Annotated[UploadFile, File()],
+        provider_id: Annotated[str, Form()] = "mimo",
+        text: Annotated[str, Form()] = "",
+        consent_confirmed: Annotated[bool, Form()] = False,
+        style_instruction: Annotated[str | None, Form()] = None,
+        model: Annotated[str | None, Form()] = None,
+    ) -> dict[str, Any]:
+        contents = _read_upload(sample)
+        mime_type = _normalize_mime_type(sample.content_type)
+        suffix = _suffix_for_upload(sample.filename)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+            temp_file.write(contents)
+            temp_path = Path(temp_file.name)
+        try:
+            request = _build_tts_request(
+                provider_id=provider_id,
+                mode=TTSMode.CLONE,
+                model=model,
+                text=text,
+                style_instruction=style_instruction,
+                clone_sample_path=temp_path,
+                clone_mime_type=mime_type,
+                clone_raw_byte_size=len(contents),
+                clone_base64_size=_base64_size(contents),
+                consent_confirmed=consent_confirmed,
+            )
+            return _run_tts(_registry_from_request(http_request), provider_id, request)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    @app.post("/v1/asr/transcribe")
+    def transcribe(
+        http_request: Request,
+        file: Annotated[UploadFile, File()],
+        provider_id: Annotated[str, Form()] = "mimo",
+        model: Annotated[str, Form()] = "mimo-v2.5-asr",
+        language: Annotated[Literal["auto", "zh", "en"], Form()] = "auto",
+    ) -> dict[str, Any]:
+        contents = _read_upload(file)
+        mime_type = _normalize_mime_type(file.content_type)
+        suffix = _suffix_for_upload(file.filename)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+            temp_file.write(contents)
+            temp_path = Path(temp_file.name)
+        try:
+            request = _build_asr_request(
+                provider_id=provider_id,
+                model=model,
+                audio_path=temp_path,
+                mime_type=mime_type,
+                raw_byte_size=len(contents),
+                base64_size=_base64_size(contents),
+                language=language,
+            )
+            provider_registry = _registry_from_request(http_request)
+            provider = _ensure_asr_provider(provider_registry, provider_id, request)
+            artifact = provider.transcribe(request)
+            return _operation_payload(artifact)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    @app.get("/v1/artifacts/{artifact_id}")
+    def artifact_metadata(artifact_id: str) -> dict[str, Any]:
+        return _read_artifact_sidecar(root, artifact_id)
+
+    @app.get("/v1/artifacts/{artifact_id}/download")
+    def artifact_download(artifact_id: str) -> FileResponse:
+        sidecar = _read_artifact_sidecar(root, artifact_id)
+        path = Path(sidecar["path"])
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="artifact file not found")
+        return FileResponse(path, media_type=sidecar["mime_type"], filename=path.name)
+
+    return app
+
+
+def _infer_artifact_root(registry: ProviderRegistry | None) -> Path:
+    if registry is not None:
+        for provider in registry._providers.values():
+            artifact_root = getattr(provider, "artifact_root", None)
+            if artifact_root is not None:
+                return Path(artifact_root)
+    return DEFAULT_ARTIFACT_ROOT
+
+
+def _registry_from_request(request: Request) -> ProviderRegistry:
+    return request.app.state.provider_registry
+
+
+def _build_default_registry(root: Path) -> ProviderRegistry:
+    api_key = get_mimo_api_key() or "missing-mimo-api-key"
+    return ProviderRegistry([MimoProvider(api_key=api_key, artifact_root=root)])
+
+
+def _provider_summary(provider: Any, has_mimo_api_key_func: Callable[[], bool]) -> dict[str, Any]:
+    summary = {
+        "id": provider.id,
+        "name": provider.name,
+        "capabilities": sorted(provider.capabilities()),
+        "models": [model.model_dump(mode="json") for model in provider.list_models()],
+    }
+    if provider.id == "mimo":
+        summary["has_api_key"] = bool(has_mimo_api_key_func())
+    return summary
+
+
+def _get_provider(provider_registry: ProviderRegistry, provider_id: str) -> Any:
+    try:
+        return provider_registry.get(provider_id)
+    except ProviderError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _ensure_tts_provider(
+    provider_registry: ProviderRegistry,
+    provider_id: str,
+    request: TTSRequest,
+) -> Any:
+    try:
+        return provider_registry.ensure_tts_capability(provider_id, request)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _ensure_asr_provider(
+    provider_registry: ProviderRegistry,
+    provider_id: str,
+    request: ASRRequest,
+) -> Any:
+    try:
+        return provider_registry.ensure_asr_capability(provider_id, request)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _build_tts_request(**kwargs: Any) -> TTSRequest:
+    try:
+        return TTSRequest(**kwargs)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+def _build_asr_request(**kwargs: Any) -> ASRRequest:
+    try:
+        return ASRRequest(**kwargs)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+def _run_tts(
+    provider_registry: ProviderRegistry,
+    provider_id: str,
+    request: TTSRequest,
+) -> dict[str, Any]:
+    provider = _ensure_tts_provider(provider_registry, provider_id, request)
+    try:
+        artifact = provider.synthesize(request)
+    except ProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _operation_payload(artifact)
+
+
+def _operation_payload(artifact: Artifact) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    operation = OperationResult(
+        operation_id=artifact.id,
+        operation=artifact.operation,
+        status=OperationStatus.COMPLETED,
+        started_at=now,
+        finished_at=now,
+        artifact_ids=[artifact.id],
+    )
+    return {
+        "operation": operation.model_dump(mode="json"),
+        "artifact": artifact.model_dump(mode="json"),
+    }
+
+
+def _read_upload(upload: UploadFile) -> bytes:
+    contents = upload.file.read()
+    if not contents:
+        raise HTTPException(status_code=422, detail="upload file is empty")
+    return contents
+
+
+def _normalize_mime_type(mime_type: str | None) -> Literal["audio/wav", "audio/mpeg", "audio/mp3"]:
+    normalized = "audio/mpeg" if mime_type == "audio/mp3" else mime_type
+    if normalized not in SUPPORTED_UPLOAD_MIME_TYPES:
+        raise HTTPException(status_code=422, detail="audio MIME type must be wav or mp3")
+    return normalized  # type: ignore[return-value]
+
+
+def _suffix_for_upload(filename: str | None) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    return suffix if suffix in {".wav", ".mp3"} else ".wav"
+
+
+def _base64_size(contents: bytes) -> int:
+    return len(base64.b64encode(contents).decode("ascii"))
+
+
+def _read_artifact_sidecar(root: Path, artifact_id: str) -> dict[str, Any]:
+    if not SAFE_OPERATION_ID_PATTERN.fullmatch(artifact_id):
+        raise HTTPException(status_code=404, detail="artifact not found")
+    matches = sorted((root / "data" / "artifacts").glob(f"*/{artifact_id}.json"))
+    if not matches:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    with matches[-1].open(encoding="utf-8") as sidecar_file:
+        return json.load(sidecar_file)
+
+
+app = create_app()
