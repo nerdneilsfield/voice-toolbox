@@ -28,7 +28,11 @@ class FakeProvider:
         artifact_store: ArtifactStore | None = None,
         artifact_root: Path | str | None = None,
     ) -> None:
-        self._capabilities = capabilities or {"tts.builtin", "tts.design", "tts.clone", "asr"}
+        self._capabilities = (
+            {"tts.builtin", "tts.design", "tts.clone", "asr"}
+            if capabilities is None
+            else capabilities
+        )
         if artifact_store is not None:
             self._artifact_store = artifact_store
         else:

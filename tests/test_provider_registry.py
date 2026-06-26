@@ -41,6 +41,23 @@ def test_registry_blocks_unsupported_asr() -> None:
         registry.ensure_asr_capability("fake")
 
 
+def test_fake_provider_accepts_empty_capabilities() -> None:
+    provider = FakeProvider(capabilities=set())
+    registry = ProviderRegistry([provider])
+    request = TTSRequest(
+        provider_id="fake",
+        mode=TTSMode.BUILTIN,
+        text="hello",
+        voice_id="Mia",
+    )
+
+    assert provider.capabilities() == set()
+    with pytest.raises(UnsupportedCapability):
+        registry.ensure_tts_capability("fake", request)
+    with pytest.raises(UnsupportedCapability):
+        registry.ensure_asr_capability("fake")
+
+
 def test_registry_raises_for_unknown_provider() -> None:
     registry = ProviderRegistry([FakeProvider(capabilities={"tts.builtin"})])
     request = TTSRequest(
