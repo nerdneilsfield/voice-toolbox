@@ -54,8 +54,9 @@ class ArtifactStore:
     ) -> AudioArtifact:
         self._validate_operation_id(operation_id)
         path = self._artifact_dir() / f"{operation_id}.wav"
-        self._ensure_available(path)
-        path.write_bytes(audio)
+        self._ensure_sidecar_available(path)
+        with path.open("xb") as audio_file:
+            audio_file.write(audio)
         artifact = AudioArtifact(
             id=operation_id,
             provider_id=provider_id,
@@ -78,8 +79,9 @@ class ArtifactStore:
     ) -> TranscriptArtifact:
         self._validate_operation_id(operation_id)
         path = self._artifact_dir() / f"{operation_id}.txt"
-        self._ensure_available(path)
-        path.write_text(text, encoding="utf-8")
+        self._ensure_sidecar_available(path)
+        with path.open("x", encoding="utf-8") as transcript_file:
+            transcript_file.write(text)
         artifact = TranscriptArtifact(
             id=operation_id,
             provider_id=provider_id,
@@ -100,10 +102,8 @@ class ArtifactStore:
         if not SAFE_OPERATION_ID_PATTERN.fullmatch(operation_id):
             raise ValueError("operation_id must contain only letters, numbers, underscores, or hyphens")
 
-    def _ensure_available(self, artifact_path: Path) -> None:
+    def _ensure_sidecar_available(self, artifact_path: Path) -> None:
         sidecar_path = artifact_path.with_suffix(".json")
-        if artifact_path.exists():
-            raise FileExistsError(f"artifact already exists: {artifact_path}")
         if sidecar_path.exists():
             raise FileExistsError(f"artifact sidecar already exists: {sidecar_path}")
 
@@ -112,7 +112,5 @@ class ArtifactStore:
         if sidecar_path.exists():
             raise FileExistsError(f"artifact sidecar already exists: {sidecar_path}")
         payload = artifact.model_dump(mode="json")
-        sidecar_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        with sidecar_path.open("x", encoding="utf-8") as sidecar_file:
+            sidecar_file.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
