@@ -109,7 +109,7 @@ The Python package owns domain models, provider contracts, MiMo adapter, artifac
 
 Development import path:
 
-- `apps/api/` imports the core package through an editable install, for example `uv pip install -e packages/voice_toolbox`.
+- Root `pyproject.toml` packages both `voice_toolbox` and `voice_toolbox_api`. Development installs the repository root, for example `uv pip install -e .`.
 - `apps/web/` talks to the API at `http://127.0.0.1:8000` in development.
 
 Main backend layers:
@@ -149,15 +149,17 @@ class VoiceProvider(Protocol):
     name: str
 
     def capabilities(self) -> set[str]: ...
-    async def list_models(self) -> list[ModelInfo]: ...
-    async def list_voices(self) -> list[VoiceInfo]: ...
-    async def synthesize(self, request: TTSRequest) -> AudioArtifact: ...
-    async def transcribe(self, request: ASRRequest) -> TranscriptArtifact: ...
+    def list_models(self) -> list[ModelInfo]: ...
+    def list_voices(self) -> list[VoiceInfo]: ...
+    def synthesize(self, request: TTSRequest) -> AudioArtifact: ...
+    def transcribe(self, request: ASRRequest) -> TranscriptArtifact: ...
 ```
 
 TTS design and clone dispatch through `TTSRequest.mode`. The registry checks `mode` against provider capabilities before invoking `synthesize`. If provider code is called directly with an unsupported request, it must raise `UnsupportedCapability`. This makes `capabilities()` both a UI switch and a runtime contract.
 
 MiMo is the first concrete provider. Future providers can implement only the capabilities they support.
+
+Provider calls are synchronous in v1. FastAPI may expose normal `def` handlers so blocking provider work runs in the framework's threadpool instead of blocking the event loop.
 
 ## MiMo Provider Details
 
@@ -442,7 +444,7 @@ Endpoint semantics:
 
 CORS:
 
-- Development allows the React dev origin, normally `http://localhost:5173`.
+- Development allows the React dev origin `http://127.0.0.1:5173`.
 - Non-dev local serving should prefer same-origin. The API binds to `127.0.0.1` by default and only binds externally when explicitly configured.
 
 Development ports:

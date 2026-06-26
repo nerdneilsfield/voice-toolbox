@@ -4,7 +4,7 @@
 
 **Goal:** Build the local-first Voice Toolbox MVP with MiMo-backed TTS and ASR, CLI-first workflows, a FastAPI backend, and a React toolbox UI.
 
-**Architecture:** A Python core package owns typed models, validation, MiMo provider calls, artifact storage, and CLI commands. FastAPI and React sit on top of that core without provider-specific logic in the UI. Provider calls are synchronous in v1; artifacts and redacted metadata are persisted locally.
+**Architecture:** A Python core package owns typed models, validation, MiMo provider calls, artifact storage, and CLI commands. FastAPI and React sit on top of that core without provider-specific logic in the UI. Provider calls are synchronous in v1; provider protocol methods are normal `def` methods, FastAPI handlers may also be normal `def` handlers, and artifacts plus redacted metadata are persisted locally.
 
 **Tech Stack:** Python 3.11+, `uv`, Pydantic, OpenAI Python SDK, Typer, FastAPI, SQLite, pytest, React, TypeScript, Vite, pnpm.
 
@@ -27,6 +27,7 @@
 - `packages/voice_toolbox/src/voice_toolbox/cli.py`: Typer CLI.
 - `packages/voice_toolbox/src/voice_toolbox/__main__.py`: `python -m voice_toolbox` entry.
 - `apps/api/src/voice_toolbox_api/main.py`: FastAPI app and `/v1` routes.
+- Root `pyproject.toml` packages both `voice_toolbox` and `voice_toolbox_api` by including both source roots. There is no separate `apps/api/pyproject.toml` in v1.
 - `apps/web/`: Vite React app.
 - `tests/`: unit and integration tests.
 - `docs/smoke/mimo.md`: real MiMo smoke test checklist.
@@ -105,6 +106,10 @@ dependencies = [
   "uvicorn>=0.30",
 ]
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project.optional-dependencies]
 dev = [
   "httpx>=0.27",
@@ -120,7 +125,7 @@ voice-toolbox = "voice_toolbox.cli:app"
 package = true
 
 [tool.setuptools.packages.find]
-where = ["packages/voice_toolbox/src"]
+where = ["packages/voice_toolbox/src", "apps/api/src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -188,7 +193,7 @@ Create `tests/test_models.py`:
 import pytest
 from pydantic import ValidationError
 
-from voice_toolbox.models import ASRRequest, TTSMode, TTSRequest
+from voice_toolbox.models import ASRRequest, ModelInfo, OperationResult, TTSMode, TTSRequest, VoiceInfo
 
 
 def test_tts_design_allows_missing_text_when_optimized() -> None:
@@ -236,6 +241,26 @@ def test_asr_language_is_limited() -> None:
     )
 
     assert request.language == "auto"
+
+
+def test_provider_info_models_have_required_fields() -> None:
+    model = ModelInfo(id="mimo-v2.5-tts", name="MiMo TTS")
+    voice = VoiceInfo(id="mimo_default", name="MiMo-默认", note="cluster-dependent")
+
+    assert model.id == "mimo-v2.5-tts"
+    assert voice.note == "cluster-dependent"
+
+
+def test_operation_result_has_timestamps() -> None:
+    result = OperationResult(
+        operation_id="op_123",
+        operation="tts.synthesize",
+        status="completed",
+        started_at="2026-06-26T12:00:00Z",
+        finished_at="2026-06-26T12:00:01Z",
+    )
+
+    assert result.started_at.endswith("Z")
 ```
 
 - [ ] **Step 2: Implement domain models**
@@ -271,6 +296,21 @@ class ProviderConfig(BaseModel):
     base_url: str = "https://api.xiaomimimo.com/v1"
     api_key_env: str = "MIMO_API_KEY"
     default_output_format: Literal["wav"] = "wav"
+
+
+class ModelInfo(BaseModel):
+    id: str
+    name: str
+    capability: str | None = None
+    note: str | None = None
+
+
+class VoiceInfo(BaseModel):
+    id: str
+    name: str
+    language: str | None = None
+    gender: str | None = None
+    note: str | None = None
 
 
 class TTSRequest(BaseModel):
@@ -332,10 +372,20 @@ class Artifact(BaseModel):
     metadata: dict[str, str | int | bool | None]
 
 
+class AudioArtifact(Artifact):
+    kind: Literal[ArtifactKind.AUDIO] = ArtifactKind.AUDIO
+
+
+class TranscriptArtifact(Artifact):
+    kind: Literal[ArtifactKind.TRANSCRIPT] = ArtifactKind.TRANSCRIPT
+
+
 class OperationResult(BaseModel):
     operation_id: str
     operation: str
     status: OperationStatus
+    started_at: str
+    finished_at: str
     artifact_ids: list[str] = Field(default_factory=list)
     error_summary: str | None = None
 ```
@@ -384,11 +434,21 @@ def test_artifact_store_writes_transcript_and_sidecar(tmp_path) -> None:
     assert artifact.path.read_text() == "hello"
     sidecar = artifact.path.with_suffix(".json")
     assert json.loads(sidecar.read_text())["metadata"]["source_text_length"] == 5
+
+
+def test_storage_creates_tables(tmp_path) -> None:
+    from voice_toolbox.storage import MetadataStore
+
+    db_path = tmp_path / "voice_toolbox.sqlite"
+    store = MetadataStore(db_path)
+    tables = store.table_names()
+
+    assert {"artifacts", "operations"}.issubset(tables)
 ```
 
 - [ ] **Step 4: Implement settings, storage, and artifact helpers**
 
-Create `packages/voice_toolbox/src/voice_toolbox/settings.py` with `.env` loading and key status. Create `storage.py` with `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout=5000`. Create `artifacts.py` with `ArtifactStore`, `write_audio`, `write_transcript`, and `redact_metadata`. Keep the redaction allowlist limited to spec keys and convert text fields to length fields.
+Create `packages/voice_toolbox/src/voice_toolbox/settings.py` with `.env` loading and key status. Create `storage.py` with `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout=5000`, `CREATE TABLE IF NOT EXISTS artifacts (...)`, `CREATE TABLE IF NOT EXISTS operations (...)`, and insert helpers for both tables. Create `artifacts.py` with `ArtifactStore`, `write_audio`, `write_transcript`, and `redact_metadata`. `ArtifactStore` receives `operation_id` from the caller and creates `data/artifacts/YYYYMMDD/` directories before writing. Redaction mapping must be explicit: `source_text -> source_text_length`, `style_instruction -> style_instruction_length`, and `voice_description -> voice_description_length`.
 
 - [ ] **Step 5: Run tests**
 
@@ -450,11 +510,18 @@ def test_registry_allows_supported_tts_mode() -> None:
     )
 
     assert registry.ensure_tts_capability("fake", request).id == "fake"
+
+
+def test_registry_blocks_unsupported_asr() -> None:
+    registry = ProviderRegistry([FakeProvider(capabilities={"tts.builtin"})])
+
+    with pytest.raises(UnsupportedCapability):
+        registry.ensure_asr_capability("fake")
 ```
 
 - [ ] **Step 2: Implement provider protocol and registry**
 
-Create `base.py` with `VoiceProvider` `Protocol`, `ProviderError`, and `UnsupportedCapability`. Create `registry.py` with mode-to-capability mapping:
+Create `base.py` with synchronous `VoiceProvider` `Protocol`, `ProviderError`, and `UnsupportedCapability`. The protocol returns `list[ModelInfo]`, `list[VoiceInfo]`, `AudioArtifact`, and `TranscriptArtifact`. Create `registry.py` with mode-to-capability mapping:
 
 ```python
 TTS_MODE_CAPABILITIES = {
@@ -464,7 +531,7 @@ TTS_MODE_CAPABILITIES = {
 }
 ```
 
-`ensure_tts_capability()` returns the provider or raises `UnsupportedCapability`.
+`ensure_tts_capability()` and `ensure_asr_capability()` return the provider or raise `UnsupportedCapability`.
 
 - [ ] **Step 3: Implement fake provider**
 
@@ -531,7 +598,7 @@ MIMO_MODELS = [
 ]
 
 MIMO_VOICES = [
-    {"id": "mimo_default", "name": "MiMo default", "note": "cluster-dependent"},
+    {"id": "mimo_default", "name": "MiMo-默认", "note": "cluster-dependent"},
     {"id": "冰糖", "name": "冰糖", "language": "zh", "gender": "female"},
     {"id": "茉莉", "name": "茉莉", "language": "zh", "gender": "female"},
     {"id": "苏打", "name": "苏打", "language": "zh", "gender": "male"},
@@ -544,6 +611,8 @@ MIMO_VOICES = [
 ```
 
 Add a 10 MiB base64-size validator for clone and ASR. Keep `wav` as the only TTS output format.
+
+Resolve TTS model IDs at provider entry: if `request.model` is set, use it; otherwise map `builtin -> mimo-v2.5-tts`, `design -> mimo-v2.5-tts-voicedesign`, and `clone -> mimo-v2.5-tts-voiceclone`.
 
 - [ ] **Step 3: Implement request builders before live calls**
 
@@ -561,7 +630,8 @@ Implement `MimoProvider.synthesize()` and `MimoProvider.transcribe()` with the O
 
 - TTS timeout: 60 seconds.
 - ASR timeout: 90 seconds.
-- Retry 429/5xx and connection failures before request body is sent.
+- Retry 429 and connection failures before request body is sent.
+- Do not retry HTTP 500 for generation calls. If retry support for 502/503/504 is added later, it must remain bounded and covered by tests.
 - Do not retry connection-level read timeout for TTS/ASR generation calls because the provider may have accepted the request and a retry can double bill.
 
 - [ ] **Step 5: Run provider tests**
@@ -572,7 +642,17 @@ rtk uv run pytest tests/test_mimo_provider.py -v
 
 Expected: all tests pass without real MiMo credentials.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Optionally run one early real MiMo smoke test**
+
+Run only when `MIMO_API_KEY` is available:
+
+```bash
+rtk uv run voice-toolbox tts synthesize --text "你好，MiMo smoke test。" --voice 冰糖 --format wav
+```
+
+Expected: command writes a wav artifact. This verifies Bearer auth, default `https://api.xiaomimimo.com/v1`, and the Chat Completions body before API/UI work begins. If it fails due to auth header shape, add an `api-key` header fallback in `MimoProvider` and cover it with a test before proceeding.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 rtk git add packages/voice_toolbox/src/voice_toolbox/providers/mimo.py tests/test_mimo_provider.py
@@ -641,6 +721,7 @@ Create tests for:
 
 - `GET /v1/health`
 - `GET /v1/providers`
+- `GET /v1/providers` includes `has_api_key: bool` for MiMo setup status.
 - `GET /v1/providers/mimo/voices` returns hard-coded MiMo voices.
 - `POST /v1/asr/transcribe` accepts multipart upload, normalizes to provider model, and returns an operation result.
 - `GET /v1/artifacts/{id}` returns JSON metadata.
