@@ -231,7 +231,7 @@ def create_app(
     @app.get("/v1/artifacts/{artifact_id}")
     def artifact_metadata(artifact_id: str) -> dict[str, Any]:
         artifact = _read_artifact_sidecar(root, artifact_id)
-        return artifact.model_dump(mode="json")
+        return _safe_artifact_payload(artifact)
 
     @app.get("/v1/artifacts/{artifact_id}/download")
     def artifact_download(artifact_id: str) -> FileResponse:

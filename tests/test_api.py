@@ -270,6 +270,8 @@ def test_artifact_metadata_and_download_read_sidecar(tmp_path: Path) -> None:
     assert metadata.status_code == 200
     assert metadata.json()["id"] == artifact_id
     assert metadata.json()["metadata"]["operation"] == "asr"
+    assert "path" not in metadata.json()
+    assert metadata.json()["download_url"].endswith(f"/v1/artifacts/{artifact_id}/download")
     assert download.status_code == 200
     assert download.content == b"fake transcript"
     assert download.headers["content-type"].startswith("text/plain")
