@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from pydantic import ValidationError
+
+from voice_toolbox.models import ASRRequest, TTSMode, TTSRequest
+from voice_toolbox.providers.base import ProviderError
+from voice_toolbox.providers.mimo import (
+    MAX_BASE64_AUDIO_SIZE,
+    MimoProvider,
+    _audio_file_to_data_url,
+    _build_asr_body,
+    _build_tts_body,
+)
+
+
+class FakeChatCompletions:
+    def __init__(self, completion: object) -> None:
+        self.completion = completion
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        return self.completion
+
+
+class FakeClient:
+    def __init__(self, completion: object) -> None:
+        self.chat = SimpleNamespace(completions=FakeChatCompletions(completion))
+
+
+def _tts_completion(payload: bytes = b"WAV") -> object:
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    audio=SimpleNamespace(data=base64.b64encode(payload).decode("ascii"))
+                )
+            )
+        ]
+    )
+
+
+def _asr_completion(text: str = "hello transcript") -> object:
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
+    )
+
+
+def test_builtin_tts_places_tags_in_assistant_content() -> None:
+    request = TTSRequest(
+        mode=TTSMode.BUILTIN,
+        text="(唱歌)啦啦啦[叹气]",
+        style_instruction="Use a bright singing style.",
+        voice_id="冰糖",
+    )
+
+    body = _build_tts_body(request)
+
+    assert body["model"] == "mimo-v2.5-tts"
+    assert body["messages"] == [
+        {"role": "user", "content": "Use a bright singing style."},
+        {"role": "assistant", "content": "(唱歌)啦啦啦[叹气]"},
+    ]
+    assert body["audio"] == {"voice": "冰糖", "format": "wav"}
+
+
+def test_design_optimized_preview_omits_assistant_message_when_text_missing() -> None:
+    request = TTSRequest(
+        mode=TTSMode.DESIGN,
+        voice_description="Warm alto voice with gentle pacing.",
+        optimize_text_preview=True,
+    )
+
+    body = _build_tts_body(request)
+
+    assert body["model"] == "mimo-v2.5-tts-voicedesign"
+    assert body["messages"] == [
+        {"role": "user", "content": "Warm alto voice with gentle pacing."}
+    ]
+    assert body["audio"] == {"format": "wav", "optimize_text_preview": True}
+    assert all(message["role"] != "assistant" for message in body["messages"])
+
+
+def test_clone_builds_data_url_and_never_metadata_payload(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.wav"
+    sample.write_bytes(b"clone audio")
+    expected_payload = base64.b64encode(b"clone audio").decode("ascii")
+    request = TTSRequest(
+        mode=TTSMode.CLONE,
+        text="hello",
+        style_instruction="calm",
+        clone_sample_path=sample,
+        clone_mime_type="audio/wav",
+        consent_confirmed=True,
+    )
+
+    body = _build_tts_body(request)
+
+    assert body["model"] == "mimo-v2.5-tts-voiceclone"
+    assert body["audio"] == {
+        "voice": f"data:audio/wav;base64,{expected_payload}",
+        "format": "wav",
+    }
+
+    client = FakeClient(_tts_completion())
+    provider = MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+    )
+    artifact = provider.synthesize(request)
+    sidecar = artifact.path.with_suffix(".json").read_text(encoding="utf-8")
+
+    assert client.chat.completions.calls[0]["timeout"] == 60.0
+    assert artifact.metadata["uploaded_file_name"] == "sample.wav"
+    assert artifact.metadata["uploaded_file_mime_type"] == "audio/wav"
+    assert artifact.metadata["base64_size"] == len(expected_payload)
+    assert "clone audio" not in sidecar
+    assert expected_payload not in sidecar
+    assert "data:audio/wav;base64" not in sidecar
+    assert "audio" not in artifact.metadata or "voice" not in artifact.metadata
+
+
+def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) -> None:
+    audio = tmp_path / "input.wav"
+    audio.write_bytes(b"asr audio")
+    data_url, raw_size, base64_size = _audio_file_to_data_url(audio, "audio/wav")
+    request = ASRRequest(
+        audio_path=audio,
+        mime_type="audio/wav",
+        raw_byte_size=raw_size,
+        base64_size=base64_size,
+        language="zh",
+    )
+
+    body = _build_asr_body(request, data_url)
+
+    assert body == {
+        "model": "mimo-v2.5-asr",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": data_url},
+                    }
+                ],
+            }
+        ],
+    }
+
+    client = FakeClient(_asr_completion("你好"))
+    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=client)
+    artifact = provider.transcribe(request)
+
+    assert client.chat.completions.calls == [
+        {
+            "model": "mimo-v2.5-asr",
+            "messages": body["messages"],
+            "extra_body": {"asr_options": {"language": "zh"}},
+            "timeout": 90.0,
+        }
+    ]
+    assert artifact.path.read_text(encoding="utf-8") == "你好"
+
+
+def test_bearer_auth_client_is_created_from_api_key(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def client_factory(**kwargs: object) -> FakeClient:
+        captured.update(kwargs)
+        return FakeClient(_tts_completion())
+
+    MimoProvider(
+        api_key="mimo-key",
+        base_url="https://example.test/v1",
+        artifact_root=tmp_path,
+        client_factory=client_factory,
+    )
+
+    assert captured == {
+        "api_key": "mimo-key",
+        "base_url": "https://example.test/v1",
+        "max_retries": 0,
+    }
+
+
+def test_model_resolution_explicit_request_model_wins(tmp_path: Path) -> None:
+    explicit = TTSRequest(
+        mode=TTSMode.BUILTIN,
+        model="custom-tts",
+        text="hello",
+        voice_id="Mia",
+    )
+    design = TTSRequest(
+        mode=TTSMode.DESIGN,
+        voice_description="clear voice",
+        optimize_text_preview=True,
+    )
+    clone_sample = tmp_path / "sample.wav"
+    clone_sample.write_bytes(b"x")
+    clone = TTSRequest(
+        mode=TTSMode.CLONE,
+        text="hello",
+        clone_sample_path=clone_sample,
+        clone_mime_type="audio/wav",
+        consent_confirmed=True,
+        clone_raw_byte_size=1,
+        clone_base64_size=4,
+    )
+
+    assert _build_tts_body(explicit)["model"] == "custom-tts"
+    assert _build_tts_body(design)["model"] == "mimo-v2.5-tts-voicedesign"
+    assert _build_tts_body(clone)["model"] == "mimo-v2.5-tts-voiceclone"
+
+
+def test_clone_and_asr_base64_size_max_10_mib(tmp_path: Path) -> None:
+    clone_sample = tmp_path / "sample.wav"
+    clone_sample.write_bytes(b"x")
+    clone_request = TTSRequest(
+        mode=TTSMode.CLONE,
+        text="hello",
+        clone_sample_path=clone_sample,
+        clone_mime_type="audio/wav",
+        clone_base64_size=MAX_BASE64_AUDIO_SIZE + 1,
+        consent_confirmed=True,
+    )
+    asr_request = ASRRequest(
+        audio_path=clone_sample,
+        mime_type="audio/wav",
+        raw_byte_size=1,
+        base64_size=MAX_BASE64_AUDIO_SIZE + 1,
+    )
+
+    with pytest.raises(ProviderError, match="base64"):
+        _build_tts_body(clone_request)
+    provider = MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=FakeClient(_asr_completion()),
+    )
+    with pytest.raises(ProviderError, match="base64"):
+        provider.transcribe(asr_request)
+
+
+def test_tts_output_format_stays_wav_only() -> None:
+    with pytest.raises(ValidationError):
+        TTSRequest(
+            mode=TTSMode.BUILTIN,
+            text="hello",
+            voice_id="Mia",
+            output_format="mp3",
+        )
