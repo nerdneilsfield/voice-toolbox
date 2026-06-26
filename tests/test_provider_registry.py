@@ -132,3 +132,23 @@ def test_fake_provider_closes_implicit_temp_root() -> None:
     provider.close()
 
     assert not artifact_root.exists()
+
+
+def test_fake_provider_rejects_reuse_after_close() -> None:
+    provider = FakeProvider()
+    artifact_root = provider.artifact_root
+    tts_request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+    asr_request = ASRRequest(
+        audio_path=artifact_root / "input.wav",
+        mime_type="audio/wav",
+        raw_byte_size=10,
+        base64_size=16,
+    )
+
+    provider.close()
+
+    with pytest.raises(ProviderError, match="closed"):
+        provider.synthesize(tts_request)
+    with pytest.raises(ProviderError, match="closed"):
+        provider.transcribe(asr_request)
+    assert not artifact_root.exists()

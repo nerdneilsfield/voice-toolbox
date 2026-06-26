@@ -14,7 +14,7 @@ from voice_toolbox.models import (
     TTSRequest,
     VoiceInfo,
 )
-from voice_toolbox.providers.base import UnsupportedCapability
+from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.registry import TTS_MODE_CAPABILITIES
 
 
@@ -35,6 +35,7 @@ class FakeProvider:
             else capabilities
         )
         self._operation_counter = 0
+        self._closed = False
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
         if artifact_store is not None:
             self._artifact_store = artifact_store
@@ -74,6 +75,7 @@ class FakeProvider:
         if self._temp_dir is not None:
             self._temp_dir.cleanup()
             self._temp_dir = None
+        self._closed = True
 
     def __enter__(self) -> FakeProvider:
         return self
@@ -87,6 +89,7 @@ class FakeProvider:
         self.close()
 
     def synthesize(self, request: TTSRequest) -> AudioArtifact:
+        self._ensure_open()
         capability = TTS_MODE_CAPABILITIES[request.mode]
         if capability not in self._capabilities:
             raise UnsupportedCapability(f"fake provider does not support capability: {capability}")
@@ -108,6 +111,7 @@ class FakeProvider:
         )
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
+        self._ensure_open()
         if "asr" not in self._capabilities:
             raise UnsupportedCapability("fake provider does not support capability: asr")
 
@@ -138,3 +142,7 @@ class FakeProvider:
     def _next_operation_id(self, operation: str) -> str:
         self._operation_counter += 1
         return f"fake-{operation}-{self._operation_counter}"
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise ProviderError("fake provider is closed")
