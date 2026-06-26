@@ -5,7 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class TTSMode(StrEnum):
@@ -47,6 +47,8 @@ class VoiceInfo(BaseModel):
 
 
 class TTSRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     provider_id: str = "mimo"
     mode: TTSMode
     model: str | None = None
@@ -90,6 +92,8 @@ class TTSRequest(BaseModel):
 
 
 class ASRRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     provider_id: str = "mimo"
     model: str = "mimo-v2.5-asr"
     audio_path: Path

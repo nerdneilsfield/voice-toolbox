@@ -61,7 +61,7 @@ class MetadataStore:
 
         self.connection.execute(
             """
-            INSERT OR REPLACE INTO artifacts (
+            INSERT INTO artifacts (
                 id, kind, provider_id, operation, path, mime_type, created_at, metadata
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -86,7 +86,7 @@ class MetadataStore:
 
         self.connection.execute(
             """
-            INSERT OR REPLACE INTO operations (
+            INSERT INTO operations (
                 operation_id, operation, status, started_at, finished_at, artifact_ids, error_summary
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,

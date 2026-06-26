@@ -1,6 +1,11 @@
+from datetime import UTC, datetime
+import os
 import sqlite3
 
+import pytest
+
 from voice_toolbox.artifacts import ArtifactStore, redact_metadata
+from voice_toolbox.models import AudioArtifact, OperationResult, OperationStatus
 from voice_toolbox.settings import has_mimo_api_key, load_settings
 from voice_toolbox.storage import MetadataStore
 
@@ -138,6 +143,21 @@ def test_artifact_store_write_transcript_writes_text_and_json_sidecar(tmp_path) 
     assert '"source_text_length": 3' in sidecar_text
 
 
+def test_artifact_store_rejects_unsafe_operation_id_without_escape_file(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+
+    with pytest.raises(ValueError):
+        store.write_transcript(
+            operation_id="../evil",
+            provider_id="mimo",
+            operation="asr",
+            text="hello",
+        )
+
+    assert not (tmp_path / "data" / "evil.txt").exists()
+    assert not (tmp_path / "evil.txt").exists()
+
+
 def test_metadata_store_creates_artifacts_and_operations_tables(tmp_path) -> None:
     db_path = tmp_path / "metadata.sqlite"
     store = MetadataStore(db_path)
@@ -153,6 +173,66 @@ def test_metadata_store_creates_artifacts_and_operations_tables(tmp_path) -> Non
     assert "finished_at" in operation_columns
 
 
+def test_metadata_store_inserts_artifact_and_rejects_duplicate_id(tmp_path) -> None:
+    store = MetadataStore(tmp_path / "metadata.sqlite")
+    artifact = AudioArtifact(
+        id="op_123",
+        provider_id="mimo",
+        operation="tts",
+        path=tmp_path / "op_123.wav",
+        mime_type="audio/wav",
+        metadata={"provider_id": "mimo"},
+    )
+
+    store.insert_artifact(artifact)
+
+    row = store.connection.execute(
+        "SELECT id, kind, provider_id, operation, path, mime_type, metadata FROM artifacts"
+    ).fetchone()
+    assert row == (
+        "op_123",
+        "audio",
+        "mimo",
+        "tts",
+        str(tmp_path / "op_123.wav"),
+        "audio/wav",
+        '{"provider_id": "mimo"}',
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.insert_artifact(artifact)
+
+
+def test_metadata_store_inserts_operation_and_rejects_duplicate_id(tmp_path) -> None:
+    store = MetadataStore(tmp_path / "metadata.sqlite")
+    started_at = datetime(2026, 1, 1, tzinfo=UTC)
+    finished_at = datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC)
+    operation = OperationResult(
+        operation_id="op_123",
+        operation="tts",
+        status=OperationStatus.COMPLETED,
+        started_at=started_at,
+        finished_at=finished_at,
+        artifact_ids=["op_123"],
+    )
+
+    store.insert_operation(operation)
+
+    row = store.connection.execute(
+        "SELECT operation_id, operation, status, started_at, finished_at, artifact_ids "
+        "FROM operations"
+    ).fetchone()
+    assert row == (
+        "op_123",
+        "tts",
+        "completed",
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:00:01Z",
+        '["op_123"]',
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.insert_operation(operation)
+
+
 def test_load_settings_reads_mimo_base_url_from_env_file(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("MIMO_BASE_URL", raising=False)
     env_path = tmp_path / ".env"
@@ -164,6 +244,7 @@ def test_load_settings_reads_mimo_base_url_from_env_file(tmp_path, monkeypatch) 
     assert settings.base_url == "https://example.test/v1"
     assert settings.api_key_env == "MIMO_API_KEY"
     assert settings.default_output_format == "wav"
+    assert "MIMO_BASE_URL" not in os.environ
 
 
 def test_has_mimo_api_key_detects_env_file_key(tmp_path, monkeypatch) -> None:

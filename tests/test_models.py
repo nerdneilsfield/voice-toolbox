@@ -71,3 +71,24 @@ def test_operation_result_has_started_at_and_finished_at() -> None:
     assert result.started_at == started_at
     assert result.finished_at == finished_at
     assert result.artifact_ids == []
+
+
+def test_tts_request_rejects_unexpected_fields() -> None:
+    with pytest.raises(ValidationError):
+        TTSRequest(
+            mode=TTSMode.BUILTIN,
+            text="hello",
+            voice_id="voice-1",
+            unexpected="nope",
+        )
+
+
+def test_asr_request_rejects_unexpected_fields() -> None:
+    with pytest.raises(ValidationError):
+        ASRRequest(
+            audio_path=Path("input.wav"),
+            mime_type="audio/wav",
+            raw_byte_size=10,
+            base64_size=16,
+            unexpected="nope",
+        )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ ALLOWED_METADATA_KEYS = {
     "voice_id",
 }
 LENGTH_METADATA_KEYS = {"source_text", "style_instruction", "voice_description"}
+SAFE_OPERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def redact_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -50,6 +52,7 @@ class ArtifactStore:
         audio: bytes,
         metadata: dict[str, Any] | None = None,
     ) -> AudioArtifact:
+        self._validate_operation_id(operation_id)
         path = self._artifact_dir() / f"{operation_id}.wav"
         path.write_bytes(audio)
         artifact = AudioArtifact(
@@ -72,6 +75,7 @@ class ArtifactStore:
         text: str,
         metadata: dict[str, Any] | None = None,
     ) -> TranscriptArtifact:
+        self._validate_operation_id(operation_id)
         path = self._artifact_dir() / f"{operation_id}.txt"
         path.write_text(text, encoding="utf-8")
         artifact = TranscriptArtifact(
@@ -89,6 +93,10 @@ class ArtifactStore:
         path = self.root / "data" / "artifacts" / datetime.now(UTC).strftime("%Y%m%d")
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _validate_operation_id(self, operation_id: str) -> None:
+        if not SAFE_OPERATION_ID_PATTERN.fullmatch(operation_id):
+            raise ValueError("operation_id must contain only letters, numbers, underscores, or hyphens")
 
     def _write_sidecar(self, artifact: AudioArtifact | TranscriptArtifact) -> None:
         sidecar_path = artifact.path.with_suffix(".json")
