@@ -7,13 +7,19 @@ from typing import Any
 
 from voice_toolbox.models import AudioArtifact, TranscriptArtifact
 
-SENSITIVE_METADATA_KEYS = {
-    "api_key",
-    "audio_bytes",
-    "base64",
-    "base64_payload",
-    "data_url",
-    "raw_audio",
+ALLOWED_METADATA_KEYS = {
+    "base64_size",
+    "consent_confirmed",
+    "language",
+    "model",
+    "operation",
+    "output_format",
+    "provider_id",
+    "raw_byte_size",
+    "tts_mode",
+    "uploaded_file_mime_type",
+    "uploaded_file_name",
+    "voice_id",
 }
 LENGTH_METADATA_KEYS = {"source_text", "style_instruction", "voice_description"}
 
@@ -22,12 +28,11 @@ def redact_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     redacted: dict[str, Any] = {}
 
     for key, value in metadata.items():
-        if key in SENSITIVE_METADATA_KEYS:
-            continue
         if key in LENGTH_METADATA_KEYS:
             redacted[f"{key}_length"] = len(value) if value is not None else 0
             continue
-        redacted[key] = value
+        if key in ALLOWED_METADATA_KEYS:
+            redacted[key] = value
 
     return redacted
 
