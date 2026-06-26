@@ -6,8 +6,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from voice_toolbox.models import ASRRequest, TTSRequest, VoiceInfo
+from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.fake import FakeProvider
-from voice_toolbox.providers.mimo import MIMO_VOICES
+from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE, MIMO_VOICES
 from voice_toolbox.providers.registry import ProviderRegistry
 from voice_toolbox_api.main import create_app
 
@@ -23,6 +24,7 @@ class RecordingMimoProvider(FakeProvider):
         self.asr_uploaded_bytes: list[bytes] = []
         self.clone_sample_paths: list[Path] = []
         self.clone_sample_exists_during_call: list[bool] = []
+        self.asr_error: ProviderError | None = None
 
     def list_voices(self) -> list[VoiceInfo]:
         return [VoiceInfo(**voice) for voice in MIMO_VOICES]
@@ -35,12 +37,14 @@ class RecordingMimoProvider(FakeProvider):
         return super().synthesize(request)
 
     def transcribe(self, request: ASRRequest):
+        if self.asr_error is not None:
+            raise self.asr_error
         self.asr_requests.append(request)
         self.asr_uploaded_bytes.append(request.audio_path.read_bytes())
         return super().transcribe(request)
 
 
-def _client(tmp_path: Path, *, has_api_key: bool = False) -> tuple[TestClient, RecordingMimoProvider]:
+def _client(tmp_path: Path, *, has_api_key: bool = True) -> tuple[TestClient, RecordingMimoProvider]:
     provider = RecordingMimoProvider(tmp_path)
     app = create_app(
         registry=ProviderRegistry([provider]),
@@ -73,6 +77,16 @@ def test_providers_include_mimo_and_api_key_status(tmp_path: Path) -> None:
     assert "api_key" not in mimo
 
 
+def test_provider_models_route_lists_models(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+
+    response = client.get("/v1/providers/mimo/models")
+
+    assert response.status_code == 200
+    models = response.json()["models"]
+    assert {model["id"] for model in models} >= {"fake-tts", "fake-asr"}
+
+
 def test_mimo_voices_are_hard_coded(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
 
@@ -100,6 +114,10 @@ def test_asr_transcribe_accepts_multipart_and_returns_operation_result(tmp_path:
     assert payload["operation"]["artifact_ids"] == [payload["artifact"]["id"]]
     assert payload["artifact"]["kind"] == "transcript"
     assert payload["artifact"]["metadata"]["uploaded_file_mime_type"] == "audio/wav"
+    assert "path" not in payload["artifact"]
+    assert payload["artifact"]["download_url"].endswith(
+        f"/v1/artifacts/{payload['artifact']['id']}/download"
+    )
 
     request = provider.asr_requests[0]
     assert request.provider_id == "mimo"
@@ -156,6 +174,86 @@ def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) 
     assert not provider.clone_sample_paths[0].exists()
     assert "data:" not in str(clone.json())
     assert "base64," not in str(clone.json())
+    assert "path" not in clone.json()["artifact"]
+
+
+def test_tts_synthesize_route_dispatches_builtin(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/synthesize",
+        data={
+            "mode": "builtin",
+            "provider_id": "mimo",
+            "text": "hello",
+            "voice_id": "Mia",
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.tts_requests[-1].mode.value == "builtin"
+    assert provider.tts_requests[-1].text == "hello"
+    assert response.json()["artifact"]["kind"] == "audio"
+    assert "path" not in response.json()["artifact"]
+
+
+def test_upload_routes_reject_base64_payloads_over_10_mib_before_provider(
+    tmp_path: Path,
+) -> None:
+    client, provider = _client(tmp_path)
+    oversized = b"x" * ((MAX_BASE64_AUDIO_SIZE // 4) * 3 + 1)
+
+    asr = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.wav", oversized, "audio/wav")},
+    )
+    clone = client.post(
+        "/v1/tts/clone",
+        data={"text": "hello", "consent_confirmed": "true"},
+        files={"sample": ("sample.wav", oversized, "audio/wav")},
+    )
+
+    assert asr.status_code in {413, 422}
+    assert clone.status_code in {413, 422}
+    assert provider.asr_requests == []
+    assert provider.tts_requests == []
+
+
+def test_asr_provider_error_returns_502_without_traceback(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+    provider.asr_error = ProviderError("backend unavailable")
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.wav", b"abcde", "audio/wav")},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "backend unavailable"}
+    assert "Traceback" not in response.text
+
+
+def test_missing_mimo_api_key_fails_operations_but_not_provider_listing(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path, has_api_key=False)
+
+    providers = client.get("/v1/providers")
+    tts = client.post(
+        "/v1/tts/builtin",
+        data={"provider_id": "mimo", "text": "hello", "voice_id": "Mia"},
+    )
+    asr = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.wav", b"abcde", "audio/wav")},
+    )
+
+    mimo = next(provider for provider in providers.json()["providers"] if provider["id"] == "mimo")
+    assert providers.status_code == 200
+    assert mimo["has_api_key"] is False
+    assert tts.status_code == 503
+    assert asr.status_code == 503
+    assert "MIMO_API_KEY" in tts.json()["detail"]
+    assert provider.tts_requests == []
+    assert provider.asr_requests == []
 
 
 def test_artifact_metadata_and_download_read_sidecar(tmp_path: Path) -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import tempfile
 from collections.abc import Callable
@@ -23,13 +22,14 @@ from voice_toolbox.models import (
     TTSRequest,
 )
 from voice_toolbox.providers.base import ProviderError
-from voice_toolbox.providers.mimo import MimoProvider
+from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE, MimoProvider
 from voice_toolbox.providers.registry import ProviderRegistry
 from voice_toolbox.settings import get_mimo_api_key, has_mimo_api_key
 
 CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
 DEFAULT_ARTIFACT_ROOT = Path.cwd()
 SUPPORTED_UPLOAD_MIME_TYPES = {"audio/wav", "audio/mpeg", "audio/mp3"}
+MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
 
 
 def create_app(
@@ -79,6 +79,59 @@ def create_app(
         provider = _get_provider(provider_registry, provider_id)
         return {"voices": [voice.model_dump(mode="json") for voice in provider.list_voices()]}
 
+    @app.get("/v1/providers/{provider_id}/models")
+    def models(provider_id: str, http_request: Request) -> dict[str, list[dict[str, Any]]]:
+        provider_registry = _registry_from_request(http_request)
+        provider = _get_provider(provider_registry, provider_id)
+        return {"models": [model.model_dump(mode="json") for model in provider.list_models()]}
+
+    @app.post("/v1/tts/synthesize")
+    def synthesize(
+        http_request: Request,
+        sample: Annotated[UploadFile | None, File()] = None,
+        provider_id: Annotated[str, Form()] = "mimo",
+        mode: Annotated[TTSMode, Form()] = TTSMode.BUILTIN,
+        text: Annotated[str | None, Form()] = None,
+        voice_id: Annotated[str | None, Form()] = None,
+        voice_description: Annotated[str | None, Form()] = None,
+        optimize_text_preview: Annotated[bool, Form()] = False,
+        consent_confirmed: Annotated[bool, Form()] = False,
+        style_instruction: Annotated[str | None, Form()] = None,
+        model: Annotated[str | None, Form()] = None,
+    ) -> dict[str, Any]:
+        _ensure_provider_configured_for_operation(http_request, provider_id)
+        if mode == TTSMode.BUILTIN:
+            request = _build_tts_request(
+                provider_id=provider_id,
+                mode=TTSMode.BUILTIN,
+                model=model,
+                text=text,
+                voice_id=voice_id,
+                style_instruction=style_instruction,
+            )
+            return _run_tts(_registry_from_request(http_request), provider_id, request)
+        if mode == TTSMode.DESIGN:
+            request = _build_tts_request(
+                provider_id=provider_id,
+                mode=TTSMode.DESIGN,
+                model=model,
+                text=text,
+                voice_description=voice_description,
+                optimize_text_preview=optimize_text_preview,
+            )
+            return _run_tts(_registry_from_request(http_request), provider_id, request)
+        if sample is None:
+            raise HTTPException(status_code=422, detail="clone mode requires sample upload")
+        return _run_clone_upload(
+            http_request=http_request,
+            sample=sample,
+            provider_id=provider_id,
+            text=text or "",
+            consent_confirmed=consent_confirmed,
+            style_instruction=style_instruction,
+            model=model,
+        )
+
     @app.post("/v1/tts/builtin")
     def synthesize_builtin(
         http_request: Request,
@@ -88,6 +141,7 @@ def create_app(
         style_instruction: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
+        _ensure_provider_configured_for_operation(http_request, provider_id)
         request = _build_tts_request(
             provider_id=provider_id,
             mode=TTSMode.BUILTIN,
@@ -107,6 +161,7 @@ def create_app(
         optimize_text_preview: Annotated[bool, Form()] = False,
         model: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
+        _ensure_provider_configured_for_operation(http_request, provider_id)
         request = _build_tts_request(
             provider_id=provider_id,
             mode=TTSMode.DESIGN,
@@ -127,28 +182,16 @@ def create_app(
         style_instruction: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
-        contents = _read_upload(sample)
-        mime_type = _normalize_mime_type(sample.content_type)
-        suffix = _suffix_for_upload(sample.filename)
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
-            temp_file.write(contents)
-            temp_path = Path(temp_file.name)
-        try:
-            request = _build_tts_request(
-                provider_id=provider_id,
-                mode=TTSMode.CLONE,
-                model=model,
-                text=text,
-                style_instruction=style_instruction,
-                clone_sample_path=temp_path,
-                clone_mime_type=mime_type,
-                clone_raw_byte_size=len(contents),
-                clone_base64_size=_base64_size(contents),
-                consent_confirmed=consent_confirmed,
-            )
-            return _run_tts(_registry_from_request(http_request), provider_id, request)
-        finally:
-            temp_path.unlink(missing_ok=True)
+        _ensure_provider_configured_for_operation(http_request, provider_id)
+        return _run_clone_upload(
+            http_request=http_request,
+            sample=sample,
+            provider_id=provider_id,
+            text=text,
+            consent_confirmed=consent_confirmed,
+            style_instruction=style_instruction,
+            model=model,
+        )
 
     @app.post("/v1/asr/transcribe")
     def transcribe(
@@ -158,6 +201,7 @@ def create_app(
         model: Annotated[str, Form()] = "mimo-v2.5-asr",
         language: Annotated[Literal["auto", "zh", "en"], Form()] = "auto",
     ) -> dict[str, Any]:
+        _ensure_provider_configured_for_operation(http_request, provider_id)
         contents = _read_upload(file)
         mime_type = _normalize_mime_type(file.content_type)
         suffix = _suffix_for_upload(file.filename)
@@ -176,7 +220,10 @@ def create_app(
             )
             provider_registry = _registry_from_request(http_request)
             provider = _ensure_asr_provider(provider_registry, provider_id, request)
-            artifact = provider.transcribe(request)
+            try:
+                artifact = provider.transcribe(request)
+            except ProviderError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
             return _operation_payload(artifact)
         finally:
             temp_path.unlink(missing_ok=True)
@@ -211,7 +258,7 @@ def _registry_from_request(request: Request) -> ProviderRegistry:
 
 
 def _build_default_registry(root: Path) -> ProviderRegistry:
-    api_key = get_mimo_api_key() or "missing-mimo-api-key"
+    api_key = get_mimo_api_key()
     return ProviderRegistry([MimoProvider(api_key=api_key, artifact_root=root)])
 
 
@@ -270,6 +317,48 @@ def _build_asr_request(**kwargs: Any) -> ASRRequest:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
+def _ensure_provider_configured_for_operation(request: Request, provider_id: str) -> None:
+    if provider_id == "mimo" and not request.app.state.has_mimo_api_key_func():
+        raise HTTPException(
+            status_code=503,
+            detail="MIMO_API_KEY is required for provider mimo",
+        )
+
+
+def _run_clone_upload(
+    *,
+    http_request: Request,
+    sample: UploadFile,
+    provider_id: str,
+    text: str,
+    consent_confirmed: bool,
+    style_instruction: str | None,
+    model: str | None,
+) -> dict[str, Any]:
+    contents = _read_upload(sample)
+    mime_type = _normalize_mime_type(sample.content_type)
+    suffix = _suffix_for_upload(sample.filename)
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+        temp_file.write(contents)
+        temp_path = Path(temp_file.name)
+    try:
+        request = _build_tts_request(
+            provider_id=provider_id,
+            mode=TTSMode.CLONE,
+            model=model,
+            text=text,
+            style_instruction=style_instruction,
+            clone_sample_path=temp_path,
+            clone_mime_type=mime_type,
+            clone_raw_byte_size=len(contents),
+            clone_base64_size=_base64_size(contents),
+            consent_confirmed=consent_confirmed,
+        )
+        return _run_tts(_registry_from_request(http_request), provider_id, request)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def _run_tts(
     provider_registry: ProviderRegistry,
     provider_id: str,
@@ -295,14 +384,22 @@ def _operation_payload(artifact: Artifact) -> dict[str, Any]:
     )
     return {
         "operation": operation.model_dump(mode="json"),
-        "artifact": artifact.model_dump(mode="json"),
+        "artifact": _safe_artifact_payload(artifact),
     }
 
 
+def _safe_artifact_payload(artifact: Artifact) -> dict[str, Any]:
+    payload = artifact.model_dump(mode="json", exclude={"path"})
+    payload["download_url"] = f"/v1/artifacts/{artifact.id}/download"
+    return payload
+
+
 def _read_upload(upload: UploadFile) -> bytes:
-    contents = upload.file.read()
+    contents = upload.file.read(MAX_UPLOAD_RAW_BYTES + 1)
     if not contents:
         raise HTTPException(status_code=422, detail="upload file is empty")
+    if len(contents) > MAX_UPLOAD_RAW_BYTES:
+        raise HTTPException(status_code=413, detail="audio base64 payload exceeds 10 MiB")
     return contents
 
 
@@ -321,7 +418,7 @@ def _suffix_for_upload(filename: str | None) -> str:
 
 
 def _base64_size(contents: bytes) -> int:
-    return len(base64.b64encode(contents).decode("ascii"))
+    return ((len(contents) + 2) // 3) * 4
 
 
 def _read_artifact_sidecar(root: Path, artifact_id: str) -> Artifact:

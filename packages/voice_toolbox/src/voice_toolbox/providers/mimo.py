@@ -4,13 +4,14 @@ import base64
 import binascii
 import os
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 from uuid import uuid4
 
-from openai import APITimeoutError, OpenAI, RateLimitError
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
 
 from voice_toolbox.artifacts import ArtifactStore
 from voice_toolbox.models import (
@@ -29,6 +30,7 @@ from voice_toolbox.settings import get_mimo_api_key, load_settings
 MAX_BASE64_AUDIO_SIZE = 10 * 1024 * 1024
 TTS_TIMEOUT_SECONDS = 60.0
 ASR_TIMEOUT_SECONDS = 90.0
+RATE_LIMIT_BACKOFF_SECONDS = 0.25
 CLONE_MIME_SUFFIXES = {
     "audio/wav": {".wav"},
     "audio/mpeg": {".mp3"},
@@ -152,19 +154,26 @@ class MimoProvider:
         env_path: Path | str | None = None,
         client: Any | None = None,
         client_factory: Callable[..., Any] = OpenAI,
+        sleep_func: Callable[[float], None] = time.sleep,
     ) -> None:
         settings = load_settings(env_path)
         resolved_api_key = api_key if api_key is not None else get_mimo_api_key(env_path)
         resolved_base_url = base_url if base_url is not None else settings.base_url
 
-        self._client = client or client_factory(
-            api_key=resolved_api_key or "",
-            base_url=resolved_base_url,
-            max_retries=0,
-        )
+        if client is not None:
+            self._client = client
+        elif resolved_api_key:
+            self._client = client_factory(
+                api_key=resolved_api_key,
+                base_url=resolved_base_url,
+                max_retries=0,
+            )
+        else:
+            self._client = _MissingCredentialsClient()
         self._operation_prefix = uuid4().hex
         self._operation_counter = 0
         self._closed = False
+        self._sleep_func = sleep_func
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
 
         if artifact_store is not None:
@@ -279,18 +288,21 @@ class MimoProvider:
         if extra_body is not None:
             kwargs["extra_body"] = extra_body
 
-        last_error: Exception | None = None
         for attempt in range(2):
             try:
                 return self._client.chat.completions.create(**kwargs)
-            except APITimeoutError:
-                raise
             except RateLimitError as exc:
-                last_error = exc
-            if attempt == 1:
-                break
-        assert last_error is not None
-        raise last_error
+                if attempt == 0:
+                    self._sleep_func(RATE_LIMIT_BACKOFF_SECONDS)
+                    continue
+                raise ProviderError("mimo API rate limit exceeded") from exc
+            except APITimeoutError as exc:
+                raise ProviderError("mimo API request timed out") from exc
+            except APIConnectionError as exc:
+                raise ProviderError("mimo API connection failed") from exc
+            except APIStatusError as exc:
+                raise ProviderError(_api_status_error_message(exc)) from exc
+        raise ProviderError("mimo API request failed")
 
     def _ensure_tts_capability(self, request: TTSRequest) -> None:
         capability = TTS_MODE_CAPABILITIES[request.mode]
@@ -330,6 +342,15 @@ def _validate_base64_size(base64_size: int) -> None:
         raise ProviderError("mimo audio base64 payload exceeds 10 MiB")
 
 
+def _api_status_error_message(exc: APIStatusError) -> str:
+    status_code = getattr(exc, "status_code", None)
+    if status_code in {401, 403}:
+        return "mimo API authentication failed"
+    if status_code is not None:
+        return f"mimo API request failed with status {status_code}"
+    return "mimo API request failed"
+
+
 def _resolve_tts_model(request: TTSRequest) -> str:
     return request.model or _TTS_MODEL_BY_MODE[request.mode]
 
@@ -361,6 +382,21 @@ def _get_value(value: Any, key: str) -> Any:
     if isinstance(value, dict):
         return value[key]
     return getattr(value, key)
+
+
+class _MissingCredentialsClient:
+    def __init__(self) -> None:
+        self.chat = _MissingCredentialsChat()
+
+
+class _MissingCredentialsChat:
+    def __init__(self) -> None:
+        self.completions = _MissingCredentialsCompletions()
+
+
+class _MissingCredentialsCompletions:
+    def create(self, **_: Any) -> Any:
+        raise ProviderError("MIMO_API_KEY is required for provider mimo")
 
 
 def _tts_metadata(request: TTSRequest, body: dict[str, Any]) -> dict[str, Any]:

@@ -6,13 +6,14 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import APIConnectionError, APITimeoutError, RateLimitError
+from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from pydantic import ValidationError
 
 from voice_toolbox.models import ASRRequest, TTSMode, TTSRequest
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.mimo import (
     MAX_BASE64_AUDIO_SIZE,
+    RATE_LIMIT_BACKOFF_SECONDS,
     MimoProvider,
     _audio_file_to_data_url,
     _build_asr_body,
@@ -62,6 +63,12 @@ def _rate_limit_error() -> RateLimitError:
     request = _api_request()
     response = httpx.Response(429, request=request)
     return RateLimitError("rate limited", response=response, body=None)
+
+
+def _api_status_error(status_code: int) -> APIStatusError:
+    request = _api_request()
+    response = httpx.Response(status_code, request=request)
+    return APIStatusError("status failed", response=response, body=None)
 
 
 def test_builtin_tts_places_tags_in_assistant_content() -> None:
@@ -257,21 +264,46 @@ def test_api_connection_error_is_not_retried(tmp_path: Path) -> None:
     provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=client)
     request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
 
-    with pytest.raises(APIConnectionError):
+    with pytest.raises(ProviderError, match="connection failed"):
         provider.synthesize(request)
 
     assert len(client.chat.completions.calls) == 1
 
 
 def test_rate_limit_error_retries_once(tmp_path: Path) -> None:
+    sleep_calls: list[float] = []
     client = FakeClient([_rate_limit_error(), _tts_completion(b"OK")])
-    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=client)
+    provider = MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+        sleep_func=sleep_calls.append,
+    )
     request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
 
     artifact = provider.synthesize(request)
 
     assert len(client.chat.completions.calls) == 2
+    assert sleep_calls == [RATE_LIMIT_BACKOFF_SECONDS]
     assert artifact.path.read_bytes() == b"OK"
+
+
+def test_rate_limit_error_retries_once_then_provider_error(tmp_path: Path) -> None:
+    sleep_calls: list[float] = []
+    client = FakeClient([_rate_limit_error(), _rate_limit_error()])
+    provider = MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+        sleep_func=sleep_calls.append,
+    )
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+
+    with pytest.raises(ProviderError, match="rate limit"):
+        provider.synthesize(request)
+
+    assert len(client.chat.completions.calls) == 2
+    assert sleep_calls == [RATE_LIMIT_BACKOFF_SECONDS]
 
 
 def test_api_timeout_error_is_not_retried(tmp_path: Path) -> None:
@@ -279,7 +311,29 @@ def test_api_timeout_error_is_not_retried(tmp_path: Path) -> None:
     provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=client)
     request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
 
-    with pytest.raises(APITimeoutError):
+    with pytest.raises(ProviderError, match="timed out"):
+        provider.synthesize(request)
+
+    assert len(client.chat.completions.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("status_code", "message"),
+    [
+        (401, "authentication failed"),
+        (500, "status 500"),
+    ],
+)
+def test_api_status_errors_are_provider_errors_without_retry(
+    tmp_path: Path,
+    status_code: int,
+    message: str,
+) -> None:
+    client = FakeClient(_api_status_error(status_code))
+    provider = MimoProvider(api_key="secret", artifact_root=tmp_path, client=client)
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="Mia")
+
+    with pytest.raises(ProviderError, match=message):
         provider.synthesize(request)
 
     assert len(client.chat.completions.calls) == 1
