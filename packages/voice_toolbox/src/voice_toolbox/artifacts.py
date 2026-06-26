@@ -54,6 +54,7 @@ class ArtifactStore:
     ) -> AudioArtifact:
         self._validate_operation_id(operation_id)
         path = self._artifact_dir() / f"{operation_id}.wav"
+        self._ensure_available(path)
         path.write_bytes(audio)
         artifact = AudioArtifact(
             id=operation_id,
@@ -77,6 +78,7 @@ class ArtifactStore:
     ) -> TranscriptArtifact:
         self._validate_operation_id(operation_id)
         path = self._artifact_dir() / f"{operation_id}.txt"
+        self._ensure_available(path)
         path.write_text(text, encoding="utf-8")
         artifact = TranscriptArtifact(
             id=operation_id,
@@ -98,8 +100,17 @@ class ArtifactStore:
         if not SAFE_OPERATION_ID_PATTERN.fullmatch(operation_id):
             raise ValueError("operation_id must contain only letters, numbers, underscores, or hyphens")
 
+    def _ensure_available(self, artifact_path: Path) -> None:
+        sidecar_path = artifact_path.with_suffix(".json")
+        if artifact_path.exists():
+            raise FileExistsError(f"artifact already exists: {artifact_path}")
+        if sidecar_path.exists():
+            raise FileExistsError(f"artifact sidecar already exists: {sidecar_path}")
+
     def _write_sidecar(self, artifact: AudioArtifact | TranscriptArtifact) -> None:
         sidecar_path = artifact.path.with_suffix(".json")
+        if sidecar_path.exists():
+            raise FileExistsError(f"artifact sidecar already exists: {sidecar_path}")
         payload = artifact.model_dump(mode="json")
         sidecar_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),

@@ -143,6 +143,54 @@ def test_artifact_store_write_transcript_writes_text_and_json_sidecar(tmp_path) 
     assert '"source_text_length": 3' in sidecar_text
 
 
+def test_artifact_store_write_transcript_duplicate_id_preserves_original(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    first = store.write_transcript(
+        operation_id="op_123",
+        provider_id="mimo",
+        operation="asr",
+        text="original transcript",
+        metadata={"source_text": "abc"},
+    )
+    original_sidecar = first.path.with_suffix(".json").read_text(encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        store.write_transcript(
+            operation_id="op_123",
+            provider_id="mimo",
+            operation="asr",
+            text="replacement transcript",
+            metadata={"source_text": "abcdef"},
+        )
+
+    assert first.path.read_text(encoding="utf-8") == "original transcript"
+    assert first.path.with_suffix(".json").read_text(encoding="utf-8") == original_sidecar
+
+
+def test_artifact_store_write_audio_duplicate_id_preserves_original(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    first = store.write_audio(
+        operation_id="op_123",
+        provider_id="mimo",
+        operation="tts",
+        audio=b"original audio",
+        metadata={"provider_id": "mimo"},
+    )
+    original_sidecar = first.path.with_suffix(".json").read_text(encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        store.write_audio(
+            operation_id="op_123",
+            provider_id="mimo",
+            operation="tts",
+            audio=b"replacement audio",
+            metadata={"provider_id": "mimo"},
+        )
+
+    assert first.path.read_bytes() == b"original audio"
+    assert first.path.with_suffix(".json").read_text(encoding="utf-8") == original_sidecar
+
+
 def test_artifact_store_rejects_unsafe_operation_id_without_escape_file(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
 
