@@ -224,3 +224,4 @@ data/voice_toolbox.sqlite
 data/voice_toolbox.sqlite-*
 data/artifacts/*
 !data/artifacts/.gitkeep
+.superpowers/
