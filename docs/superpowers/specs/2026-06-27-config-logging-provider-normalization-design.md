@@ -49,6 +49,7 @@ Text and audio chunking are analyzed and reserved as a future hybrid pipeline. T
 - MiMo's built-in models and voices move to `defaults.py` and are used only as fallback defaults.
 - API/CLI key checks become provider-generic. They must use each provider's `api_key_env`; no code path should special-case only `MIMO_API_KEY` except the built-in fallback provider.
 - `create_app()` keeps test seams: callers may still pass `registry`, `artifact_root`, and `config`.
+- The 2026-06-26 rule "do not expose API key values in UI responses" is narrowed: the full value is still forbidden, but a short masked preview is allowed for the trusted localhost UI because the user explicitly wants key previews. Non-local bindings must not reveal key-derived characters.
 
 ## Dependencies
 
@@ -171,7 +172,9 @@ Boundary rules:
 - If a discovered `voice_toolbox.toml` exists but has TOML syntax errors, startup fails. It must not silently fall back.
 - If `voice_toolbox.toml` exists but omits `providers`, the loader uses the built-in default provider and logs a warning.
 - If `providers = []` is explicitly empty, the loader uses the built-in default provider and logs a warning.
-- If `MIMO_BASE_URL`, `VOICE_TOOLBOX_API_HOST`, or `VOICE_TOOLBOX_API_PORT` are set while `voice_toolbox.toml` is active, TOML wins and startup logs a warning naming the ignored env var. Values are not secret, so the active base URL may be logged.
+- If no TOML config is active, `MIMO_BASE_URL` may override the built-in fallback MiMo provider base URL.
+- If no TOML config is active, `VOICE_TOOLBOX_API_HOST` and `VOICE_TOOLBOX_API_PORT` configure the local API server. Legacy aliases `API_HOST` and `API_PORT` remain supported with lower precedence than `VOICE_TOOLBOX_API_HOST` and `VOICE_TOOLBOX_API_PORT`.
+- If `MIMO_BASE_URL`, `VOICE_TOOLBOX_API_HOST`, `VOICE_TOOLBOX_API_PORT`, `API_HOST`, or `API_PORT` are set while `voice_toolbox.toml` is active, TOML wins and startup logs a warning naming the ignored env var. Values are not secret, so the active base URL may be logged.
 - Relative file logging paths are resolved relative to the config file directory when a config file is active, otherwise relative to `Path.cwd()`.
 - `voice_toolbox.toml` is secret-adjacent because it controls where API keys are sent. Documentation must tell users not to place it in untrusted shared directories.
 
@@ -241,7 +244,7 @@ Validation rules:
 - If `models` are explicitly provided, do not add built-in models that are absent from config.
 - If `voices` are omitted, built-in MiMo voices are used.
 - Missing individual `default_models` fields are filled from built-in MiMo defaults only when that default model exists in the provider's model list.
-- Each configured default model must exist in the provider's `models`.
+- Each non-`None` configured default model must exist in the provider's `models`; `None` default-model fields are skipped and mean the provider has no default for that slot.
 - Default model capability must match its slot:
   - `tts_builtin` → `tts.builtin`
   - `tts_design` → `tts.design`
@@ -254,6 +257,8 @@ Validation rules:
 - Capability lists returned to API consumers are sorted for stable output.
 - Model fallback order is deterministic: configured default for capability, then first model with the matching capability in config order.
 - If no model has a capability, that provider does not support that capability.
+
+`ProviderConfig` should remain during this migration as a compatibility type for existing imports such as `settings.py`. It may internally delegate to `AppConfig`/fallback defaults, but removing it is deferred until all current call sites are migrated.
 
 `settings.py` may remain as a compatibility wrapper, but new code should load `AppConfig`.
 
@@ -278,8 +283,9 @@ New constructor shape:
 ```text
 MimoProvider(
     *,
-    config: ConfiguredProvider,
+    config: ConfiguredProvider | None = None,
     api_key: str | None = None,
+    base_url: str | None = None,
     artifact_store: ArtifactStore | None = None,
     artifact_root: Path | str | None = None,
     client: Any | None = None,
@@ -291,8 +297,23 @@ MimoProvider(
 Compatibility:
 
 - Tests may still inject `client`, `client_factory`, `artifact_store`, and `sleep_func`.
-- Direct `base_url` constructor arguments are removed from production paths; tests should use `ConfiguredProvider`.
+- Production registry construction must pass `config`.
+- If `config` is omitted, the constructor uses `make_default_mimo_provider_config()` so existing tests and simple CLI smoke paths keep working.
+- `base_url` remains as a test/backward-compatibility seam. It overlays the default or supplied config's base URL and must not be used by production registry construction.
 - If `api_key` is passed explicitly, it wins over environment lookup.
+- Add a test fixture helper:
+
+```text
+make_test_provider_config(
+    *,
+    provider_id: str = "mimo",
+    base_url: str = "https://api.xiaomimimo.com/v1",
+    models: list[ModelInfo] | None = None,
+    voices: list[VoiceInfo] | None = None,
+    default_models: ProviderDefaultModels | None = None,
+    default_voice: str | None = "mimo_default",
+) -> ConfiguredProvider
+```
 
 `MimoProvider` behavior changes:
 
@@ -300,11 +321,14 @@ Compatibility:
 - `capabilities()` derives from configured model capabilities.
 - `list_models()` returns configured models.
 - `list_voices()` returns configured voices.
+- `_build_tts_body()` becomes an instance method because it needs configured model resolution.
+- `_build_asr_body()` becomes an instance method because omitted ASR models resolve from configured defaults.
 - `_resolve_tts_model()` becomes an instance method and uses request model if present; otherwise uses configured defaults by TTS mode.
 - ASR request model defaults to provider config when the API/CLI did not specify one.
 - Unsupported model errors are checked against the configured model list.
 - `_validate_model_id()` becomes an instance method using that provider's configured model IDs.
-- Module-level `_TTS_MODEL_BY_MODE`, `_MODEL_IDS`, `MIMO_MODELS`, and `MIMO_VOICES` move to `defaults.py` or are removed.
+- Module-level `_TTS_MODEL_BY_MODE` and `_MODEL_IDS` move to instance state.
+- Built-in `MIMO_MODELS` and `MIMO_VOICES` move to `defaults.py`. `voice_toolbox.providers.mimo` may temporarily re-export them for test compatibility, but new code and tests should import from `voice_toolbox.defaults`.
 
 Built-in MiMo defaults stay in one explicit location, for fallback only:
 
@@ -338,17 +362,21 @@ Masking rules:
 - API key preview:
   - If no key: `null`
   - If key length <= 8: `"configured"`
-  - Else if key contains `-`: `key.split("-", 1)[0] + "-..." + key[-4:]`
+  - Else if key contains `-`, let `prefix = key.split("-", 1)[0] + "-"`.
+  - If a dashed key length is `<= len(prefix) + 8`, return `"configured"` so short keys such as `tp-1234` or `tp-123456` are not effectively revealed.
+  - Else if key contains `-`: `prefix + "..." + key[-4:]`
   - Else: `"..." + key[-4:]`
   - Example: `tp-1234567890abcd` becomes `tp-...abcd`
 - Config path preview:
   - Show only parent directory basename and config filename, for example `voice-toolbox/voice_toolbox.toml`.
   - Do not include usernames, home directories, drive roots, or full absolute paths.
+  - If `config_path is None` because the built-in default config is active, return `"built-in default"`.
 
 Security boundary:
 
 - `api_key_preview` is allowed because this app defaults to `127.0.0.1` and is intended as a local trusted UI.
-- If the API host is configured to anything other than `127.0.0.1` or `localhost`, provider summaries must return `api_key_preview: "configured"` instead of key-derived preview characters.
+- Host trust uses `AppConfig.api.host`, not the request `Host` header, so a forged HTTP host cannot unlock key-derived previews.
+- If `AppConfig.api.host` is configured to anything other than `127.0.0.1` or `localhost` and a key exists, provider summaries must return `api_key_preview: "configured"` instead of key-derived preview characters.
 - Logs and sidecars never include `api_key_preview`.
 
 ## Logging
@@ -380,6 +408,7 @@ Implementation details:
 - Use a custom `InterceptHandler(logging.Handler)` to forward standard `logging` records into Loguru.
 - Root `logging` receives exactly one `InterceptHandler` after configuration.
 - Uvicorn loggers have empty `handlers` lists and `propagate = True`.
+- The supported server entry point must call `configure_logging()` before starting Uvicorn and pass `log_config=None` when invoking Uvicorn programmatically. If a dev command uses the Uvicorn CLI, it must still run through a module that configures logging before app import or document that duplicate Uvicorn handlers are not supported.
 - The file log parent directory is created automatically with `mkdir(parents=True, exist_ok=True)`.
 - Tests must cover repeated `configure_logging()` calls and assert no duplicate Uvicorn access lines.
 
@@ -422,21 +451,31 @@ Logging safety:
 - Log lengths, MIME types, model IDs, provider IDs, operation IDs, artifact IDs, and duration.
 - Provider errors include sanitized provider ID, operation, and status code when available.
 - Add `sanitize_log_metadata(metadata: Mapping[str, object]) -> dict[str, object]`.
-- Application logging calls that include request data must log only sanitized metadata from allowlisted keys:
+- Application logging calls that include request data must log only sanitized metadata from allowlisted keys. Do not use f-strings or `%` interpolation with raw request fields in logging calls.
+- The logging allowlist is the artifact redaction allowlist plus operational timing/status keys. Initial keys:
   - `operation`
   - `operation_id`
   - `provider_id`
   - `model`
+  - `mode`
   - `capability`
   - `status_code`
   - `mime_type`
+  - `output_format`
+  - `voice_id`
+  - `language`
+  - `consent_confirmed`
+  - `uploaded_file_name`
   - `raw_byte_size`
   - `base64_size`
   - `input_length`
   - `output_length`
+  - `source_text_length`
+  - `style_instruction_length`
+  - `voice_description_length`
   - `duration_ms`
   - `artifact_id`
-- Tests must capture console/file logs for a request containing a fake API key, raw text, style prompt, voice description, data URL, and base64 payload, then assert none of those raw values appear.
+- Tests must capture console/file logs for each operation path, using requests that contain fake API keys, raw text, style prompts, voice descriptions, transcript text, data URLs, and base64 payloads, then assert none of those raw values appear. Cover at least TTS built-in, TTS design, TTS clone, and ASR.
 
 ## API Changes
 
@@ -447,16 +486,31 @@ API startup:
 - Build provider registry from config.
 - Keep `create_app` keyword injection seams for tests: `registry`, `artifact_root`, and `config`.
 
+Updated factory signature:
+
+```python
+def create_app(
+    *,
+    registry: ProviderRegistry | None = None,
+    artifact_root: Path | str | None = None,
+    config: AppConfig | None = None,
+    env_path: Path | str | None = None,
+) -> FastAPI:
+    # load config, configure logging, and build or use provider registry
+```
+
+If `config` is omitted, `create_app()` loads config using normal discovery. If `registry` is supplied, it wins over building providers from config so existing API tests can inject fake providers.
+
 Endpoints:
 
 - `/v1/providers` returns provider summaries with masked config.
 - `/v1/providers/{provider_id}/models` returns configured models.
 - `/v1/providers/{provider_id}/voices` returns configured voices.
 - TTS endpoints accept:
-  - `model`
-  - `text_format`
+  - `model: str | None = Form(None)`
+  - `text_format: Literal["plain", "markdown", "auto"] = Form("plain")`
 - ASR endpoint accepts:
-  - `model`
+  - `model: str | None = Form(None)`
 - Provider readiness checks use each provider's configured `api_key_env`. Missing keys disable operations for that provider only; provider listing still succeeds with `has_api_key = false`.
 - New endpoint:
 
@@ -467,11 +521,17 @@ POST /v1/normalize/text
 Limits and errors:
 
 - Maximum `content` length is 200,000 characters.
+- The endpoint must check request content length itself and return HTTP 413; do not rely on FastAPI to enforce this automatically.
+- No application-level rate limiter is added in v1 because the default server is local-only. If `AppConfig.api.host` is configured for non-local access, documentation must require an external auth/rate-limit boundary such as a reverse proxy or VPN.
 - Empty or whitespace-only content returns HTTP 422 with `detail = "content is required"`.
 - Normalized empty output returns HTTP 422 with `detail = "normalized text is empty"`.
 - Unknown `normalizer_id` returns HTTP 422 with `detail = "unknown normalizer: <id>"`.
 - Unsupported `input_format` returns normal Pydantic 422.
 - Over-limit content returns HTTP 413 with `detail = "content exceeds 200000 characters"`.
+- If `normalizer_id` is `null`, select by `input_format`:
+  - `plain` → `plain_passthrough`
+  - `markdown` → `markdown_basic`
+  - `auto` → `auto_text`
 
 Request:
 
@@ -506,15 +566,63 @@ TTS request handling:
 2. A shared request-preparation function normalizes raw text before constructing `TTSRequest`.
 3. The preparation function constructs `TTSRequest` using `normalized.text` for the request `text` field.
 4. Provider adapters receive only provider-ready plain text and do not call normalizers.
-5. Store only normalization metadata on artifact sidecar.
+5. The preparation function also emits sidecar-safe normalization metadata.
+6. API/CLI pass that metadata to `provider.synthesize(request, artifact_metadata=prepared.artifact_metadata)`.
+7. Provider adapters merge `artifact_metadata` into their normal operation metadata before redaction and sidecar write.
+8. Store only normalization metadata on artifact sidecar, never raw pre-normalized or post-normalized text.
 
-Shared function:
+Shared module and models:
 
-```text
-prepare_tts_request(raw_text: str | None, text_format: str, fields: dict[str, object]) -> tuple[TTSRequest, NormalizedContent | None]
+```python
+# packages/voice_toolbox/src/voice_toolbox/pipeline.py
+
+class PreparedTTSRequest(BaseModel):
+    request: TTSRequest
+    normalized: NormalizedContent | None = None
+    artifact_metadata: dict[str, object] = Field(default_factory=dict)
+
+def prepare_tts_request(
+    raw_text: str | None,
+    text_format: Literal["plain", "markdown", "auto"],
+    fields: dict[str, object],
+    *,
+    normalizers: NormalizerRegistry | None = None,
+) -> PreparedTTSRequest:
+    # normalize raw_text when present, build TTSRequest, and return sidecar metadata
 ```
 
 `text_format` is an API/CLI/input-pipeline field, not a provider field. It must not be added to provider request bodies.
+
+If `raw_text is None`, preparation skips normalization, leaves `text=None`, and returns empty `artifact_metadata`. This is required for voice design with `optimize_text_preview=true`, where MiMo may generate preview text without an assistant message.
+
+Provider protocol update:
+
+```python
+def synthesize(
+    self,
+    request: TTSRequest,
+    *,
+    artifact_metadata: Mapping[str, object] | None = None,
+) -> AudioArtifact:
+    # build provider body from request and merge artifact_metadata only into sidecar metadata
+```
+
+`artifact_metadata` is for sidecar/log-safe operational metadata only. It must not influence provider request-body construction.
+
+ASR request model update:
+
+```python
+class ASRRequest(BaseModel):
+    provider_id: str = "mimo"
+    model: str | None = None
+    audio_path: Path
+    mime_type: Literal["audio/wav", "audio/mpeg", "audio/mp3"]
+    raw_byte_size: int = Field(ge=0)
+    base64_size: int = Field(ge=0)
+    language: Literal["auto", "zh", "en"] = "auto"
+```
+
+API and CLI must pass `model=None` when the user omits `--model`/form `model`; provider adapters resolve the configured ASR default before building the request body.
 
 ## CLI Changes
 
@@ -580,6 +688,31 @@ Component split:
 - Move fullscreen editor into a focused component:
   - `FullscreenTextEditor`
 - Move Advanced settings into reusable form components where practical.
+- Update `apps/web/src/api.ts` types and request builders for provider summaries, model lists, `text_format`, `/v1/normalize/text`, and `api_key_preview`.
+
+Suggested frontend helper signatures:
+
+```ts
+type Capability = "tts.builtin" | "tts.design" | "tts.clone" | "asr.transcribe";
+
+function useProviderCatalog(): {
+  providers: ProviderSummary[];
+  selectedProvider: ProviderSummary | null;
+  setSelectedProviderId(providerId: string): void;
+  refresh(): Promise<void>;
+};
+
+function selectModelForCapability(
+  provider: ProviderSummary | null,
+  capability: Capability,
+  currentModelId?: string | null,
+): string | null;
+
+function selectDefaultVoice(
+  provider: ProviderSummary | null,
+  currentVoiceId?: string | null,
+): string | null;
+```
 
 Full-screen text editor:
 
@@ -602,7 +735,7 @@ Text format UI:
 - TTS text inputs expose `Format: Plain | Markdown | Auto`.
 - `Preview cleaned text` calls `/v1/normalize/text`.
 - Preview is read-only and never exposes hidden metadata by default.
-- Submit still sends content and `text_format` to the backend; backend normalizes again.
+- Preview normalization never triggers provider calls. Submit sends original content plus `text_format` to the backend; the backend independently normalizes once for the provider call. The frontend preview result is not cached into submit payloads.
 - Default format is `Plain`. Users must explicitly choose `Markdown` or `Auto`.
 
 ## Content Normalization
@@ -662,8 +795,9 @@ Default behavior:
 
 - All TTS entry points default to `input_format = "plain"`.
 - `auto` is available only when the user explicitly selects it.
+- If `NormalizationRequest.normalizer_id is None`, the registry selects by `input_format`: `plain_passthrough`, `markdown_basic`, or `auto_text`.
 - `auto_text` must be conservative:
-  - It delegates to Markdown only if at least two different Markdown signals are present.
+  - It delegates to Markdown only if at least two different structural Markdown signals are present.
   - Recognized signals are:
     - heading marker at line start: `^#{1,6}\s+\S`
     - fenced code block line: starts with three backticks
@@ -672,8 +806,8 @@ Default behavior:
     - unordered list marker at line start: `^\s*[-*+]\s+\S`
     - ordered list marker at line start: `^\s*\d+\.\s+\S`
     - table separator line: `^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$`
-    - paired emphasis around non-space text: `(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)|(__[^_\n]+__)|(_[^_\n]+_)`
-  - Literal math or script text such as `5 * 4 = 20`, `会议 #1 重点`, and `a < b 且 c > d` must remain unchanged in `auto` mode.
+  - Emphasis markers are intentionally not auto-detection signals because math and script text commonly use `*` and `_`.
+  - Literal math or script text such as `5 * 4 = 20`, `5 * 4 * 3 = 60 * 2`, `会议 #1 重点`, and `a < b 且 c > d` must remain unchanged in `auto` mode.
 
 Normalizer options:
 
@@ -683,6 +817,8 @@ Normalizer options:
   - `preserve_code_blocks: bool = true`
   - `preserve_inline_code: bool = true`
 - Any other option keys are ignored in v1 and are returned in metadata as `ignored_options`.
+- `preserve_code_blocks=true` removes fence markers but keeps fenced code content. `false` removes the entire fenced code block.
+- `preserve_inline_code=true` removes backtick markers but keeps inline code content. `false` removes the inline code span.
 
 Markdown cleanup is intentionally conservative:
 
@@ -694,8 +830,8 @@ Markdown cleanup is intentionally conservative:
 - Blockquote markers are removed.
 - Code fence markers are removed while preserving code content by default.
 - Inline code backticks are removed while preserving code content by default.
-- Simple table separators are removed.
-- HTML stripping only removes paired tag syntax such as `<em>text</em>` or standalone simple tags such as `<br>`. Comparisons like `a < b 且 c > d` are not tags and remain unchanged.
+- Simple table separators are removed. The table-separator detection regex requires at least two columns.
+- HTML stripping uses this tag pattern: `</?[A-Za-z][A-Za-z0-9:-]*(?:\s+[^<>]*)?\s*/?>`. It strips tags with or without attributes, including `<br>` and `<img src="x">`, while preserving inner text around paired tags. Comparisons like `a < b 且 c > d` are not tags and remain unchanged because `<` is not followed by a tag name.
 - MiMo audio tags such as `(唱歌)`, `(叹气)`, `[breath]`, and `[laughter]` are preserved exactly.
 - Chinese punctuation and sentence content are not rewritten.
 
@@ -732,6 +868,7 @@ Artifact metadata stores these fields with a `normalization_` prefix except `nor
 Artifact redaction:
 
 - Extend `redact_metadata` allowlist to include normalization metadata keys:
+  - existing safe operation keys such as `operation`, `provider_id`, `model`, `mode`, `output_format`, `voice_id`, `language`, `raw_byte_size`, `base64_size`, uploaded filename/MIME fields, and length-only text fields
   - `normalizer_id`
   - `normalization_input_format`
   - `normalization_output_format`
@@ -755,6 +892,8 @@ The selected future architecture is hybrid:
   - Frontend chunks audio and uploads chunk files with overlap metadata.
 
 Reserved future models:
+
+These models document the future boundary only. Do not add them to runtime imports, API schemas, migrations, or frontend types in this implementation.
 
 ```python
 class ChunkingPlan(BaseModel):
@@ -803,29 +942,39 @@ Backend tests:
 - `default_voice` not present in voices fails validation.
 - `MIMO_BASE_URL` with active TOML logs an ignored-env warning.
 - Provider registry builder constructs providers with configured IDs, names, base URLs, models, and voices.
+- Existing provider tests can still construct `MimoProvider(base_url="https://example.test/v1", client=fake_client)` through the documented compatibility seam.
 - `MimoProvider.list_models()` and `list_voices()` reflect config.
+- `voice_toolbox.providers.mimo.MIMO_MODELS` and `MIMO_VOICES` either re-export from `voice_toolbox.defaults` or all tests import the new defaults module.
 - Omitted TTS model resolves to configured default by mode.
 - Omitted ASR model resolves to configured default.
 - Unsupported explicit model is rejected against configured model IDs.
 - Masked key preview follows the exact algorithm and never returns full key.
+- Short dashed keys such as `tp-1234` and `tp-123456` return `"configured"`, not key-derived previews.
 - Non-local API binding returns `"configured"` instead of key-derived preview.
 - Masked config path includes only parent basename and filename, not the full absolute path.
+- Built-in default config returns `config_path_preview = "built-in default"`.
 - Loguru config adds console sink and optional file sink.
 - Standard logging and Uvicorn logger records are intercepted once.
 - Logging tests assert no duplicate handlers on `uvicorn.error` and `uvicorn.access`.
 - Repeated `configure_logging()` calls do not duplicate handlers or output.
 - File logging creates parent directories and resolves relative paths against config directory.
-- Log redaction regression captures log output and asserts it does not contain API key values, raw text, style prompt, voice description, transcript text, base64 payload, or data URLs.
+- Log redaction regression captures log output for TTS built-in, TTS design, TTS clone, and ASR, then asserts it does not contain API key values, raw text, style prompt, voice description, transcript text, base64 payload, or data URLs.
 - `/v1/providers` includes masked provider config.
+- `create_app(config=test_config)` uses the supplied config, and `create_app(registry=fake_registry)` still uses the supplied registry.
 - `/v1/normalize/text` returns expected Markdown cleanup.
+- `/v1/normalize/text` with `normalizer_id = null` selects normalizer by `input_format`.
 - `/v1/normalize/text` rejects missing, empty, whitespace-only, and over-limit content with the documented statuses.
 - `plain` normalization keeps `5 * 4 = 20`, `会议 #1 重点`, and `a < b 且 c > d` unchanged.
-- Explicit `auto` keeps ambiguous literal script text unchanged unless at least two Markdown signals are present.
+- Explicit `auto` keeps ambiguous literal script text unchanged unless at least two structural Markdown signals are present.
+- `auto` keeps `5 * 4 * 3 = 60 * 2` unchanged.
 - Markdown normalization preserves MiMo audio tags.
+- Markdown normalization strips `<em>text</em>`, `<br>`, and `<img src="x">` as documented while preserving `a < b 且 c > d`.
 - Normalized empty output raises `normalized text is empty`.
 - TTS endpoints normalize Markdown before provider calls.
+- `prepare_tts_request` returns sidecar-safe `artifact_metadata`, and TTS sidecars contain `normalization_*` fields after provider write.
 - Artifact metadata includes normalization lengths, not raw content.
 - Artifact redaction allowlist preserves normalization metadata keys and still strips raw content.
+- No-TOML fallback honors `MIMO_BASE_URL`, `VOICE_TOOLBOX_API_HOST`, `VOICE_TOOLBOX_API_PORT`, and legacy `API_HOST`/`API_PORT` precedence.
 
 Frontend tests:
 
@@ -855,15 +1004,21 @@ Existing `.env` remains valid:
 
 ```dotenv
 MIMO_API_KEY=...
+MIMO_SGP_API_KEY=...
 MIMO_BASE_URL=...
 VOICE_TOOLBOX_API_HOST=127.0.0.1
 VOICE_TOOLBOX_API_PORT=8000
+# Legacy aliases remain accepted when no TOML config is active:
+API_HOST=127.0.0.1
+API_PORT=8000
 ```
 
 Compatibility behavior:
 
 - If `voice_toolbox.toml` is absent, built-in MiMo defaults are used.
 - `MIMO_BASE_URL` may override the built-in default base URL only for the fallback MiMo provider.
+- `VOICE_TOOLBOX_API_HOST` and `VOICE_TOOLBOX_API_PORT` override fallback API host/port when no TOML config is active.
+- Legacy `API_HOST` and `API_PORT` are accepted only as fallback aliases when the `VOICE_TOOLBOX_*` names are absent.
 - Once `voice_toolbox.toml` exists, provider base URLs come from TOML.
 - API keys always come from `api_key_env`.
 - Precedence is observable:
@@ -875,10 +1030,25 @@ Compatibility behavior:
 
 Repository hygiene:
 
-- `.superpowers/` is ignored because the visual brainstorming companion stores transient local mockups there.
-- Add `voice_toolbox.toml.example` to the repository.
+- `.superpowers/` is ignored because the Superpowers skill runtime stores transient local state there.
+- Add `voice_toolbox.toml.example` to the repository. It should mirror the example in this spec, include only public endpoints/model IDs, and use env var names such as `MIMO_API_KEY` and `MIMO_SGP_API_KEY` rather than secret values.
 - Do not commit a real `voice_toolbox.toml` if it contains local paths or private endpoint details.
-- Keep `.env.example` focused on secret env var names and simple local server overrides.
+- Keep `.env.example` focused on secret env var names and simple local server overrides. Include comments for optional secondary provider keys such as `MIMO_SGP_API_KEY`.
+
+Minimum `.env.example` content after migration:
+
+```dotenv
+MIMO_API_KEY=
+# Optional second provider example:
+MIMO_SGP_API_KEY=
+
+# Used only when voice_toolbox.toml is absent:
+MIMO_BASE_URL=https://api.xiaomimimo.com/v1
+VOICE_TOOLBOX_API_HOST=127.0.0.1
+VOICE_TOOLBOX_API_PORT=8000
+```
+
+Minimum `voice_toolbox.toml.example` content is the single-provider TOML from the Config File section plus comments showing how to add a second `[[providers]]` block.
 
 ## Deferred Work
 
