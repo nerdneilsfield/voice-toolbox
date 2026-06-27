@@ -40,7 +40,9 @@ function App() {
   const [asrLanguage, setAsrLanguage] = useState("auto");
   const [ttsState, setTtsState] = useState<RequestState>("idle");
   const [asrState, setAsrState] = useState<RequestState>("idle");
-  const [error, setError] = useState("");
+  const [globalError, setGlobalError] = useState("");
+  const [ttsError, setTtsError] = useState("");
+  const [asrError, setAsrError] = useState("");
   const [ttsArtifact, setTtsArtifact] = useState<Artifact | null>(null);
   const [asrArtifact, setAsrArtifact] = useState<Artifact | null>(null);
   const [transcript, setTranscript] = useState("");
@@ -60,7 +62,7 @@ function App() {
       })
       .catch((err: Error) => {
         if (!ignore) {
-          setError(err.message);
+          setGlobalError(err.message);
           setProvidersState("error");
         }
       });
@@ -88,7 +90,7 @@ function App() {
         if (!ignore) {
           setVoices([]);
           setVoiceId("");
-          setError(err.message);
+          setGlobalError(err.message);
           setVoicesState("error");
         }
       });
@@ -123,7 +125,7 @@ function App() {
 
   async function submitTts(event: FormEvent) {
     event.preventDefault();
-    setError("");
+    setTtsError("");
     setTtsState("loading");
     try {
       const result =
@@ -145,7 +147,7 @@ function App() {
       setTtsArtifact(result.artifact);
       setTtsState("success");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "TTS request failed");
+      setTtsError(err instanceof Error ? err.message : "TTS request failed");
       setTtsState("error");
     }
   }
@@ -171,11 +173,11 @@ function App() {
   async function submitAsr(event: FormEvent) {
     event.preventDefault();
     if (!asrFile) {
-      setError("ASR audio file is required");
+      setAsrError("ASR audio file is required");
       setAsrState("error");
       return;
     }
-    setError("");
+    setAsrError("");
     setAsrState("loading");
     setTranscript("");
     try {
@@ -189,7 +191,7 @@ function App() {
       setTranscript(await transcriptResponse.text());
       setAsrState("success");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "ASR request failed");
+      setAsrError(err instanceof Error ? err.message : "ASR request failed");
       setAsrState("error");
     }
   }
@@ -226,7 +228,7 @@ function App() {
         </button>
       </nav>
 
-      {error ? <div className="notice error">{error}</div> : null}
+      {globalError ? <div className="notice error">{globalError}</div> : null}
 
       {tab === "tts" ? (
         <section className="tool-grid" aria-label="Text to speech toolbox">
@@ -285,12 +287,19 @@ function App() {
             ) : null}
 
             <div className="meta-row">
-              <span>Output format</span>
-              <strong>wav</strong>
+              <ModelSummary models={activeModels} mode={ttsMode} />
+              <span className="format-pill">WAV</span>
             </div>
-            <ModelSummary models={activeModels} mode={ttsMode} />
+            {ttsError ? <div className="notice error compact">{ttsError}</div> : null}
             <button className="primary-action" type="submit" disabled={ttsState === "loading" || cloneOverLimit}>
-              {ttsState === "loading" ? "Synthesizing..." : "Synthesize"}
+              {ttsState === "loading" ? (
+                <>
+                  <span className="spinner" aria-hidden="true" />
+                  Generating...
+                </>
+              ) : (
+                "Generate voice"
+              )}
             </button>
           </form>
 
@@ -315,9 +324,20 @@ function App() {
                 <option value="en">en</option>
               </select>
             </label>
-            <ModelSummary models={activeModels} mode="asr" />
+            <div className="meta-row">
+              <ModelSummary models={activeModels} mode="asr" />
+              <span className="format-pill">{asrLanguage.toUpperCase()}</span>
+            </div>
+            {asrError ? <div className="notice error compact">{asrError}</div> : null}
             <button className="primary-action" type="submit" disabled={asrState === "loading"}>
-              {asrState === "loading" ? "Transcribing..." : "Transcribe"}
+              {asrState === "loading" ? (
+                <>
+                  <span className="spinner" aria-hidden="true" />
+                  Transcribing...
+                </>
+              ) : (
+                "Transcribe"
+              )}
             </button>
           </form>
 
@@ -361,39 +381,73 @@ function BuiltinControls({
   insertTag: (tag: string) => void;
   textAreaRef: React.MutableRefObject<HTMLTextAreaElement | null>;
 }) {
+  const [customTag, setCustomTag] = useState("");
+  const selectedVoice = voices.find((voice) => voice.id === voiceId);
+  function submitCustomTag() {
+    const trimmed = customTag.trim();
+    if (!trimmed) {
+      return;
+    }
+    const normalized = /^[([]/.test(trimmed) ? trimmed : `(${trimmed})`;
+    insertTag(normalized);
+    setCustomTag("");
+  }
+
   return (
     <div className="field-stack">
-      <label>
-        Voice
-        <select value={voiceId} onChange={(event) => setVoiceId(event.target.value)} disabled={voicesState === "loading"}>
-          {voices.map((voice) => (
-            <option key={voice.id} value={voice.id}>
-              {voice.name || voice.id}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div>
-        <div className="label-line">
-          <span>Text</span>
-          <div className="tag-row" aria-label="Insert audio tags">
+      <div className="field-grid">
+        <label className="field">
+          <span className="field-title">Voice</span>
+          <select value={voiceId} onChange={(event) => setVoiceId(event.target.value)} disabled={voicesState === "loading"}>
+            {voices.map((voice) => (
+              <option key={voice.id} value={voice.id}>
+                {voice.name || voice.id}
+              </option>
+            ))}
+          </select>
+          {selectedVoice?.note ? <span className="field-hint">{selectedVoice.note}</span> : null}
+        </label>
+        <label className="field">
+          <span className="field-title">Style prompt</span>
+          <input
+            value={style}
+            onChange={(event) => setStyle(event.target.value)}
+            placeholder="Delivery, emotion, pacing, persona"
+          />
+        </label>
+      </div>
+      <section className="field">
+        <div className="section-heading">
+          <span>Script</span>
+          <span>{text.length} chars</span>
+        </div>
+        <div className="tag-panel" aria-label="Insert audio tags">
+          <div className="tag-row">
             {INLINE_TAGS.map((tag) => (
               <button key={tag} type="button" onClick={() => insertTag(tag)}>
                 {tag}
               </button>
             ))}
           </div>
+          <div className="custom-tag">
+            <input
+              value={customTag}
+              onChange={(event) => setCustomTag(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitCustomTag();
+                }
+              }}
+              placeholder="Custom tag"
+            />
+            <button type="button" onClick={submitCustomTag}>
+              Insert
+            </button>
+          </div>
         </div>
-        <textarea ref={textAreaRef} value={text} rows={9} onChange={(event) => setText(event.target.value)} required />
-      </div>
-      <label>
-        Style instruction
-        <input
-          value={style}
-          onChange={(event) => setStyle(event.target.value)}
-          placeholder="Natural-language delivery, emotion, pacing, or persona"
-        />
-      </label>
+        <textarea className="script-input" ref={textAreaRef} value={text} rows={6} onChange={(event) => setText(event.target.value)} required />
+      </section>
     </div>
   );
 }
@@ -415,9 +469,16 @@ function DesignControls({
 }) {
   return (
     <div className="field-stack">
-      <label>
-        Voice design instruction
+      <label className="field">
+        <div className="section-heading">
+          <span>Voice persona</span>
+          <span className="switch-line">
+            <input type="checkbox" checked={optimizePreview} onChange={(event) => setOptimizePreview(event.target.checked)} />
+            <span>Auto-optimize</span>
+          </span>
+        </div>
         <textarea
+          className="script-input"
           value={description}
           rows={6}
           onChange={(event) => setDescription(event.target.value)}
@@ -425,13 +486,13 @@ function DesignControls({
           required
         />
       </label>
-      <label className="checkbox-line">
-        <input type="checkbox" checked={optimizePreview} onChange={(event) => setOptimizePreview(event.target.checked)} />
-        Optimize preview text
-      </label>
-      <label>
-        Target text {optimizePreview ? <span className="muted">(optional)</span> : null}
+      <label className="field">
+        <div className="section-heading">
+          <span>Script</span>
+          {optimizePreview ? <span>Optional</span> : <span>{text.length} chars</span>}
+        </div>
         <textarea
+          className="script-input"
           value={text}
           rows={5}
           onChange={(event) => setText(event.target.value)}
@@ -468,8 +529,8 @@ function CloneControls({
 }) {
   return (
     <div className="field-stack">
-      <label>
-        Clone sample
+      <label className="field">
+        <span className="field-title">Clone sample</span>
         <input
           type="file"
           accept=".wav,.mp3,audio/wav,audio/mpeg,audio/mp3"
@@ -480,12 +541,15 @@ function CloneControls({
       <p className={overLimit ? "notice error compact" : "notice compact"}>
         Base64 payload limit is 10 MiB. {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose wav or mp3."}
       </p>
-      <label>
-        Text
-        <textarea value={text} rows={6} onChange={(event) => setText(event.target.value)} required />
+      <label className="field">
+        <div className="section-heading">
+          <span>Script</span>
+          <span>{text.length} chars</span>
+        </div>
+        <textarea className="script-input" value={text} rows={6} onChange={(event) => setText(event.target.value)} required />
       </label>
-      <label>
-        Style instruction
+      <label className="field">
+        <span className="field-title">Style prompt</span>
         <input
           value={style}
           onChange={(event) => setStyle(event.target.value)}
@@ -507,35 +571,33 @@ function ModelSummary({ models, mode }: { models: Provider["models"]; mode: TtsM
     return null;
   }
   return (
-    <div className="meta-row">
+    <span className="model-chip">
       <span>Model</span>
       <strong>{matching[0].name || matching[0].id}</strong>
-    </div>
+    </span>
   );
 }
 
 function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: RequestState }) {
   return (
     <aside className="result-panel">
-      <h2>TTS artifact</h2>
-      {state === "idle" ? <p className="muted">No audio generated yet.</p> : null}
-      {state === "loading" ? <p className="muted">Waiting for provider...</p> : null}
+      <div className="result-heading">
+        <h2>Output</h2>
+        {artifact ? <span className="format-pill">Audio</span> : null}
+      </div>
+      {state === "idle" ? <EmptyState title="Ready for audio" /> : null}
+      {state === "loading" ? <LoadingState lines={3} /> : null}
       {artifact ? (
         <div className="artifact-block">
-          <audio controls src={artifact.download_url} />
-          <a className="download-link" href={artifact.download_url}>
-            Download wav
-          </a>
-          <dl>
-            <div>
-              <dt>Artifact ID</dt>
-              <dd>{artifact.id}</dd>
-            </div>
-            <div>
-              <dt>MIME</dt>
-              <dd>{artifact.mime_type}</dd>
-            </div>
-          </dl>
+          <audio className="audio-player" controls src={artifact.download_url} />
+          <div className="result-actions">
+            <a className="download-link" href={artifact.download_url}>
+              Download WAV
+            </a>
+          </div>
+          <p className="artifact-meta">
+            {shortId(artifact.id)} <span>•</span> {artifact.mime_type}
+          </p>
         </div>
       ) : null}
     </aside>
@@ -551,13 +613,36 @@ function TranscriptPanel({
   transcript: string;
   state: RequestState;
 }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  async function copyTranscript() {
+    if (!transcript.trim()) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(transcript);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1400);
+    } catch {
+      setCopyState("failed");
+      window.setTimeout(() => setCopyState("idle"), 1400);
+    }
+  }
+
   return (
     <aside className="result-panel">
-      <h2>Transcript</h2>
-      {state === "idle" ? <p className="muted">No transcript generated yet.</p> : null}
-      {state === "loading" ? <p className="muted">Waiting for provider...</p> : null}
+      <div className="result-heading">
+        <h2>Transcript</h2>
+        {artifact ? <span className="format-pill">{transcript.length} chars</span> : null}
+      </div>
+      {state === "idle" ? <EmptyState title="Ready for transcript" /> : null}
+      {state === "loading" ? <LoadingState lines={4} /> : null}
       {artifact ? (
         <div className="artifact-block">
+          <div className="transcript-toolbar">
+            <button type="button" onClick={copyTranscript} disabled={!transcript.trim()}>
+              {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
+            </button>
+          </div>
           <pre className="transcript-viewer">{transcript || "Transcript artifact returned."}</pre>
           <a className="download-link" href={artifact.download_url}>
             Download transcript
@@ -566,6 +651,38 @@ function TranscriptPanel({
       ) : null}
     </aside>
   );
+}
+
+function EmptyState({ title }: { title: string }) {
+  return (
+    <div className="empty-state">
+      <div className="waveform" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+        <span />
+        <span />
+      </div>
+      <p>{title}</p>
+    </div>
+  );
+}
+
+function LoadingState({ lines }: { lines: number }) {
+  return (
+    <div className="loading-state" aria-label="Loading">
+      {Array.from({ length: lines }).map((_, index) => (
+        <span key={index} />
+      ))}
+    </div>
+  );
+}
+
+function shortId(id: string) {
+  if (id.length <= 18) {
+    return id;
+  }
+  return `${id.slice(0, 10)}...${id.slice(-6)}`;
 }
 
 function formatBytes(bytes: number) {
