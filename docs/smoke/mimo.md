@@ -55,7 +55,7 @@ rtk uv run --env-file .env voice-toolbox tts synthesize \
 Pass:
 
 - Command exits 0.
-- Output prints `path: ...data/artifacts/...wav`.
+- Output prints `id:` and `mime: audio/wav`; matching audio artifact exists under `data/artifacts`.
 - File plays as `冰糖`.
 
 ### Built-In TTS With `(唱歌)` Chinese Lyrics

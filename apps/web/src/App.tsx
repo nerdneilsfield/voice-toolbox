@@ -100,28 +100,44 @@ function App() {
   }, [selectedProviderId]);
 
   useEffect(() => {
-    setBuiltinModel((current) => selectModelForCapability(selectedProvider, "tts.builtin", current));
-    setDesignModel((current) => selectModelForCapability(selectedProvider, "tts.design", current));
-    setCloneModel((current) => selectModelForCapability(selectedProvider, "tts.clone", current));
-    setAsrModel((current) => selectModelForCapability(selectedProvider, "asr.transcribe", current));
-  }, [selectedProvider]);
+    setBuiltinModel(selectModelForCapability(selectedProvider, "tts.builtin"));
+    setDesignModel(selectModelForCapability(selectedProvider, "tts.design"));
+    setCloneModel(selectModelForCapability(selectedProvider, "tts.clone"));
+    setAsrModel(selectModelForCapability(selectedProvider, "asr.transcribe"));
+  }, [selectedProviderId, selectedProvider]);
 
   useEffect(() => {
-    setVoiceId((current) => selectDefaultVoice(selectedProvider, voices, current) ?? "");
-  }, [selectedProvider, voices]);
+    setVoiceId(selectDefaultVoice(selectedProvider, voices) ?? "");
+  }, [selectedProviderId, selectedProvider, voices]);
 
   useEffect(() => {
     setCleanedPreview("");
     setPreviewError("");
     setPreviewState("idle");
-  }, [selectedProviderId, textFormat, ttsMode]);
+  }, [selectedProviderId, textFormat, ttsMode, builtinText, designText, cloneText]);
 
   const cloneBase64Size = useMemo(() => (cloneFile ? Math.ceil(cloneFile.size / 3) * 4 : 0), [cloneFile]);
   const cloneOverLimit = cloneBase64Size > BASE64_LIMIT_BYTES;
   const providerModels = (capability: string) =>
     selectedProvider?.models.filter((model) => model.capability === capability) ?? [];
   const globalError = providerError || voicesError;
-  const providerReady = Boolean(selectedProviderId);
+  const providerReady = Boolean(selectedProvider);
+  const supportsCapability = (capability: string) => selectedProvider?.capabilities.includes(capability) ?? false;
+  const activeTtsCapability = ttsCapability(ttsMode);
+  const activeTtsSupported = supportsCapability(activeTtsCapability);
+  const asrSupported = supportsCapability("asr.transcribe");
+
+  useEffect(() => {
+    if (!selectedProvider || activeTtsSupported) {
+      return;
+    }
+    const fallbackMode = (["builtin", "design", "clone"] as const).find((mode) =>
+      selectedProvider.capabilities.includes(ttsCapability(mode)),
+    );
+    if (fallbackMode) {
+      setTtsMode(fallbackMode);
+    }
+  }, [activeTtsSupported, selectedProvider, ttsMode]);
 
   function insertTag(tag: string) {
     const target = textAreaRef.current;
@@ -284,6 +300,7 @@ function App() {
               <button
                 className={ttsMode === "builtin" ? "active" : ""}
                 type="button"
+                disabled={!supportsCapability("tts.builtin")}
                 onClick={() => setTtsMode("builtin")}
               >
                 Built-in
@@ -291,14 +308,23 @@ function App() {
               <button
                 className={ttsMode === "design" ? "active" : ""}
                 type="button"
+                disabled={!supportsCapability("tts.design")}
                 onClick={() => setTtsMode("design")}
               >
                 Design
               </button>
-              <button className={ttsMode === "clone" ? "active" : ""} type="button" onClick={() => setTtsMode("clone")}>
+              <button
+                className={ttsMode === "clone" ? "active" : ""}
+                type="button"
+                disabled={!supportsCapability("tts.clone")}
+                onClick={() => setTtsMode("clone")}
+              >
                 Clone
               </button>
             </fieldset>
+            {!activeTtsSupported ? (
+              <div className="notice error compact">Selected provider does not support this TTS mode.</div>
+            ) : null}
 
             <TextTools
               textFormat={textFormat}
@@ -385,7 +411,7 @@ function App() {
             <button
               className="primary-action"
               type="submit"
-              disabled={ttsState === "loading" || cloneOverLimit || !providerReady}
+              disabled={ttsState === "loading" || cloneOverLimit || !providerReady || !activeTtsSupported}
             >
               {ttsState === "loading" ? (
                 <>
@@ -430,7 +456,12 @@ function App() {
               <span className="format-pill">{asrLanguage.toUpperCase()}</span>
             </div>
             {asrError ? <div className="notice error compact">{asrError}</div> : null}
-            <button className="primary-action" type="submit" disabled={asrState === "loading" || !providerReady}>
+            {!asrSupported ? <div className="notice error compact">Selected provider does not support ASR.</div> : null}
+            <button
+              className="primary-action"
+              type="submit"
+              disabled={asrState === "loading" || !providerReady || !asrSupported}
+            >
               {asrState === "loading" ? (
                 <>
                   <span className="spinner" aria-hidden="true" />
@@ -907,6 +938,16 @@ function activeTtsModel(
     return designModel;
   }
   return cloneModel;
+}
+
+function ttsCapability(mode: TtsMode) {
+  if (mode === "builtin") {
+    return "tts.builtin";
+  }
+  if (mode === "design") {
+    return "tts.design";
+  }
+  return "tts.clone";
 }
 
 function appendFormValue(body: FormData, key: string, value?: string | null) {

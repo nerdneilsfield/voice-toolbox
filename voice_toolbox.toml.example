@@ -51,10 +51,5 @@ id = "mimo-v2.5-asr"
 name = "MiMo ASR"
 capability = "asr.transcribe"
 
-[[providers.voices]]
-id = "mimo_default"
-name = "MiMo-默认"
-note = "cluster-dependent"
-
 # To add another provider, copy the [[providers]] block and use another api_key_env,
 # for example MIMO_SGP_API_KEY. Do not put API key values in this file.

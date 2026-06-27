@@ -82,7 +82,7 @@ rtk make backend-server
 rtk make frontend-server
 ```
 
-`make check` runs backend tests, `ruff`, `ty`, frontend type checks, and the web build.
+`make check` runs backend tests, `ruff`, `ty`, frontend lint/format/test checks, and the web build.
 
 ## CLI Examples
 
