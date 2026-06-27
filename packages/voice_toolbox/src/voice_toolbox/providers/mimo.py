@@ -4,6 +4,7 @@ import base64
 import binascii
 import os
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from collections.abc import Mapping
@@ -71,7 +72,6 @@ class MimoProvider:
         base_url: str | None = None,
         artifact_store: ArtifactStore | None = None,
         artifact_root: Path | str | None = None,
-        env_path: Path | str | None = None,
         client: Any | None = None,
         client_factory: Callable[..., Any] = OpenAI,
         sleep_func: Callable[[float], None] = time.sleep,
@@ -103,11 +103,10 @@ class MimoProvider:
             )
         self._operation_prefix = uuid4().hex
         self._operation_counter = 0
+        self._operation_counter_lock = threading.Lock()
         self._closed = False
         self._sleep_func = sleep_func
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
-        self._env_path = Path(env_path) if env_path is not None else None
-
         if artifact_store is not None:
             self._artifact_store = artifact_store
             self._artifact_root = artifact_store.root
@@ -240,8 +239,8 @@ class MimoProvider:
             operation="tts",
             audio=audio,
             metadata={
-                **_tts_metadata(request, body, provider_id=self.id),
                 **dict(artifact_metadata or {}),
+                **_tts_metadata(request, body, provider_id=self.id),
             },
         )
         self._artifact_store.record_operation(
@@ -383,8 +382,10 @@ class MimoProvider:
             raise ProviderError(f"unsupported MiMo model for {expected_capability}: {model}")
 
     def _next_operation_id(self, operation: str) -> str:
-        self._operation_counter += 1
-        return f"mimo-{self._operation_prefix}-{operation}-{self._operation_counter}"
+        with self._operation_counter_lock:
+            self._operation_counter += 1
+            counter = self._operation_counter
+        return f"mimo-{self._operation_prefix}-{operation}-{counter}"
 
     def _ensure_open(self) -> None:
         if self._closed:

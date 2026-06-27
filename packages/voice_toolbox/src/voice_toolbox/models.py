@@ -34,6 +34,8 @@ class ProviderConfig(BaseModel):
 
 
 class ModelInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     name: str
     capability: str | None = None
@@ -41,6 +43,8 @@ class ModelInfo(BaseModel):
 
 
 class VoiceInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     name: str
     language: str | None = None
@@ -120,6 +124,14 @@ class ASRRequest(BaseModel):
     raw_byte_size: int = Field(ge=0)
     base64_size: int = Field(ge=0)
     language: Literal["auto", "zh", "en"] = "auto"
+
+    @field_validator("provider_id", "model", mode="after")
+    @classmethod
+    def strip_text_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class Artifact(BaseModel):

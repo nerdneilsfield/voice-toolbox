@@ -36,15 +36,15 @@ def test_auto_uses_markdown_for_structural_signals() -> None:
     assert result.text == "Title\n\none\ntwo"
 
 
-def test_auto_uses_markdown_for_single_structural_signal() -> None:
+def test_auto_keeps_plain_for_single_structural_signal() -> None:
     result = NormalizerRegistry.default().normalize(
         "# Title",
         input_format="auto",
         normalizer_id=None,
     )
 
-    assert result.normalizer_id == "markdown_basic"
-    assert result.text == "Title"
+    assert result.normalizer_id == "plain_passthrough"
+    assert result.text == "# Title"
 
 
 def test_markdown_preserves_code_content_before_stripping_markup() -> None:
@@ -56,6 +56,27 @@ def test_markdown_preserves_code_content_before_stripping_markup() -> None:
 
     assert 'print("**x** <tag>")' in result.text
     assert "**literal** <tag>" in result.text
+
+
+def test_markdown_preserved_code_keeps_spacing_before_punctuation() -> None:
+    result = NormalizerRegistry.default().normalize(
+        "Use `a , b`.",
+        input_format="markdown",
+        normalizer_id=None,
+    )
+
+    assert result.text == "Use a , b."
+
+
+def test_markdown_can_strip_inline_code_markers_without_preserving_markup() -> None:
+    result = NormalizerRegistry.default().normalize(
+        "Use `**literal** <tag>`.",
+        input_format="markdown",
+        normalizer_id=None,
+        options={"preserve_inline_code": False},
+    )
+
+    assert result.text == "Use literal."
 
 
 def test_markdown_table_rows_become_plain_text() -> None:

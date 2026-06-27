@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class NormalizationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     input_format: Literal["plain", "markdown", "auto"] = "plain"
     normalizer_id: str | None = None
     content: str
@@ -13,6 +15,8 @@ class NormalizationRequest(BaseModel):
 
 
 class NormalizedContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     text: str
     input_format: str
     output_format: Literal["plain"] = "plain"

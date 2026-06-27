@@ -66,6 +66,8 @@ function App() {
   const [asrArtifact, setAsrArtifact] = useState<Artifact | null>(null);
   const [transcript, setTranscript] = useState("");
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const previousModelProviderIdRef = useRef("");
+  const previousVoiceProviderIdRef = useRef("");
 
   useEffect(() => {
     if (!selectedProviderId) {
@@ -100,14 +102,26 @@ function App() {
   }, [selectedProviderId]);
 
   useEffect(() => {
-    setBuiltinModel(selectModelForCapability(selectedProvider, "tts.builtin"));
-    setDesignModel(selectModelForCapability(selectedProvider, "tts.design"));
-    setCloneModel(selectModelForCapability(selectedProvider, "tts.clone"));
-    setAsrModel(selectModelForCapability(selectedProvider, "asr.transcribe"));
+    const providerChanged = previousModelProviderIdRef.current !== selectedProviderId;
+    previousModelProviderIdRef.current = selectedProviderId;
+    setBuiltinModel((current) =>
+      selectModelForCapability(selectedProvider, "tts.builtin", providerChanged ? null : current),
+    );
+    setDesignModel((current) =>
+      selectModelForCapability(selectedProvider, "tts.design", providerChanged ? null : current),
+    );
+    setCloneModel((current) =>
+      selectModelForCapability(selectedProvider, "tts.clone", providerChanged ? null : current),
+    );
+    setAsrModel((current) =>
+      selectModelForCapability(selectedProvider, "asr.transcribe", providerChanged ? null : current),
+    );
   }, [selectedProviderId, selectedProvider]);
 
   useEffect(() => {
-    setVoiceId(selectDefaultVoice(selectedProvider, voices) ?? "");
+    const providerChanged = previousVoiceProviderIdRef.current !== selectedProviderId;
+    previousVoiceProviderIdRef.current = selectedProviderId;
+    setVoiceId((current) => selectDefaultVoice(selectedProvider, voices, providerChanged ? null : current) ?? "");
   }, [selectedProviderId, selectedProvider, voices]);
 
   useEffect(() => {
@@ -249,6 +263,9 @@ function App() {
       const result = await transcribe(body);
       setAsrArtifact(result.artifact);
       const transcriptResponse = await fetch(result.artifact.download_url);
+      if (!transcriptResponse.ok) {
+        throw new Error(`Transcript download failed with status ${transcriptResponse.status}`);
+      }
       setTranscript(await transcriptResponse.text());
       setAsrState("success");
     } catch (err) {

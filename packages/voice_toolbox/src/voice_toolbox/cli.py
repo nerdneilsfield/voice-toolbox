@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Literal, NoReturn, cast
 
 import typer
 from pydantic import ValidationError
 
-from voice_toolbox.config import load_app_config, load_env_values
+from voice_toolbox.config import AppConfig, load_app_config, load_env_values, replay_config_warnings
+from voice_toolbox.logging_config import configure_logging
 from voice_toolbox.models import ASRRequest, AudioArtifact, TranscriptArtifact, TTSMode
 from voice_toolbox.pipeline import PreparedTTSRequest, prepare_tts_request
 from voice_toolbox.providers import ProviderError, ProviderRegistry
@@ -25,6 +27,8 @@ SUPPORTED_AUDIO_MIME_BY_SUFFIX = {
     ".mp3": "audio/mpeg",
 }
 AudioMime = Literal["audio/wav", "audio/mpeg", "audio/mp3"]
+_CLI_CONFIG: AppConfig | None = None
+_CLI_ENV_VALUES: dict[str, str] | None = None
 
 ProviderOption = Annotated[str | None, typer.Option("--provider", help="Provider id.")]
 TextOption = Annotated[str, typer.Option("--text", help="Text to synthesize.")]
@@ -42,8 +46,7 @@ StyleOption = Annotated[
 
 
 def build_provider_registry() -> ProviderRegistry:
-    env_values = load_env_values()
-    config = load_app_config(env_values=env_values)
+    config, env_values = _load_cli_context()
     return build_configured_provider_registry(
         config,
         artifact_root=Path.cwd(),
@@ -54,6 +57,7 @@ def build_provider_registry() -> ProviderRegistry:
 @app.callback()
 def main() -> None:
     """Run Voice Toolbox commands."""
+    _load_cli_context(refresh=True)
 
 
 @tts_app.command()
@@ -186,7 +190,7 @@ def transcribe(
             language=language,
         )
     except ValidationError as exc:
-        _fail(str(exc))
+        _fail(_safe_validation_message(exc))
 
     artifact = _transcribe(registry, provider_id, request)
     _print_transcript_artifact(artifact)
@@ -201,7 +205,7 @@ def _prepare_tts_or_fail(
     try:
         return prepare_tts_request(raw_text, text_format, fields)
     except ValidationError as exc:
-        _fail(str(exc))
+        _fail(_safe_validation_message(exc))
     except ValueError as exc:
         _fail(str(exc))
 
@@ -241,6 +245,8 @@ def _transcribe(
 
 def _resolve_provider_id(registry: ProviderRegistry, requested: str | None) -> str:
     if requested:
+        if not any(provider.id == requested for provider in registry.list_providers()):
+            _fail(f"unknown provider: {requested}")
         return requested
     providers = registry.list_providers()
     if any(provider.id == "mimo" for provider in providers):
@@ -288,6 +294,27 @@ def _normalize_output_format(output_format: str) -> Literal["wav"]:
 def _fail(message: str) -> NoReturn:
     typer.echo(f"Error: {message}", err=True)
     raise typer.Exit(code=1)
+
+
+def _load_cli_context(*, refresh: bool = False) -> tuple[AppConfig, Mapping[str, str]]:
+    global _CLI_CONFIG, _CLI_ENV_VALUES
+    if refresh or _CLI_CONFIG is None or _CLI_ENV_VALUES is None:
+        env_values = load_env_values()
+        config = load_app_config(env_values=env_values)
+        configure_logging(config.logging, config_path=config.config_path)
+        replay_config_warnings(config, dict(env_values))
+        _CLI_CONFIG = config
+        _CLI_ENV_VALUES = env_values
+    return _CLI_CONFIG, _CLI_ENV_VALUES
+
+
+def _safe_validation_message(exc: ValidationError) -> str:
+    parts = []
+    for error in exc.errors():
+        loc = ".".join(str(item) for item in error.get("loc", ())) or "request"
+        msg = str(error.get("msg", "invalid value"))
+        parts.append(f"{loc}: {msg}")
+    return "; ".join(parts) or "invalid request"
 
 
 def _print_audio_artifact(artifact: AudioArtifact) -> None:

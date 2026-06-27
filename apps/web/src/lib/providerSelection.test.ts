@@ -29,7 +29,20 @@ describe("provider selection", () => {
     expect(selectModelForCapability(provider, "tts.builtin", "missing")).toBe("tts-default");
   });
 
+  it("uses configured default model when provider changes and current is omitted", () => {
+    expect(selectModelForCapability(provider, "tts.builtin", null)).toBe("tts-default");
+  });
+
+  it("returns null without provider or matching models", () => {
+    expect(selectModelForCapability(null, "tts.builtin", "tts-first")).toBeNull();
+    expect(selectModelForCapability(provider, "tts.clone", null)).toBeNull();
+  });
+
   it("uses configured default voice", () => {
     expect(selectDefaultVoice(provider, voices, null)).toBe("Mia");
+  });
+
+  it("keeps current valid voice on same provider refresh", () => {
+    expect(selectDefaultVoice(provider, voices, "冰糖")).toBe("冰糖");
   });
 });

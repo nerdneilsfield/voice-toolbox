@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+from uuid import uuid4
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,7 +11,9 @@ from typing import Annotated, Any, Literal, cast
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
+from loguru import logger
 from pydantic import ValidationError
 
 from voice_toolbox.artifacts import SAFE_OPERATION_ID_PATTERN
@@ -40,9 +43,9 @@ from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE
 from voice_toolbox.providers.registry import ProviderRegistry
 
 CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
-DEFAULT_ARTIFACT_ROOT = Path.cwd()
 SUPPORTED_UPLOAD_MIME_TYPES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3"}
 MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
+MAX_TEXT_INPUT_LENGTH = 200_000
 MIME_BY_SUFFIX = {
     ".wav": "audio/wav",
     ".mp3": "audio/mpeg",
@@ -83,10 +86,26 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(RequestValidationError)
+    def request_validation_exception_handler(
+        _request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"detail": _safe_request_errors(exc)})
+
+    @app.exception_handler(Exception)
+    def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
+        request_id = uuid4().hex
+        logger.bind(request_id=request_id).error("unhandled API error: {}", type(exc).__name__)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "internal server error", "request_id": request_id},
+        )
 
     @app.get("/v1/health")
     def health() -> dict[str, str]:
@@ -299,6 +318,7 @@ def create_app(
             )
             provider_registry = _registry_from_request(http_request)
             provider = _ensure_asr_provider(provider_registry, provider_id, request)
+            _ensure_model_allowed(provider, request.model, expected_capability="asr.transcribe")
             started_at = datetime.now(UTC)
             try:
                 artifact = provider.transcribe(request)
@@ -329,7 +349,7 @@ def _infer_artifact_root(registry: ProviderRegistry | None) -> Path:
             artifact_root = getattr(provider, "artifact_root", None)
             if artifact_root is not None:
                 return Path(artifact_root)
-    return DEFAULT_ARTIFACT_ROOT
+    return Path.cwd()
 
 
 def _registry_from_request(request: Request) -> ProviderRegistry:
@@ -440,6 +460,8 @@ def _prepare_tts_or_422(
     text_format: Literal["plain", "markdown", "auto"],
     fields: dict[str, object],
 ) -> PreparedTTSRequest:
+    if raw_text is not None and len(raw_text) > MAX_TEXT_INPUT_LENGTH:
+        raise HTTPException(status_code=413, detail="text exceeds 200000 characters")
     try:
         return prepare_tts_request(raw_text, text_format, fields)
     except ValidationError as exc:
@@ -461,11 +483,18 @@ def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
     ]
 
 
+def _safe_request_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
+    return [
+        {key: error[key] for key in ("loc", "msg", "type") if key in error}
+        for error in exc.errors()
+    ]
+
+
 def _ensure_provider_configured_for_operation(request: Request, provider_id: str) -> None:
     config_provider = _configured_provider_for_id(request.app.state.config, provider_id)
     if config_provider is None:
         provider = _get_provider(request.app.state.provider_registry, provider_id)
-        if getattr(provider, "id", None) == "fake":
+        if getattr(provider, "_test_provider", False):
             return
         raise HTTPException(status_code=503, detail=f"provider {provider_id} is not configured")
     value = request.app.state.env_values.get(config_provider.api_key_env)
@@ -525,6 +554,9 @@ def _run_tts(
     prepared: PreparedTTSRequest,
 ) -> dict[str, Any]:
     provider = _ensure_tts_provider(provider_registry, provider_id, prepared.request)
+    _ensure_model_allowed(
+        provider, prepared.request.model, expected_capability=_tts_capability(prepared.request.mode)
+    )
     started_at = datetime.now(UTC)
     try:
         artifact = provider.synthesize(
@@ -555,6 +587,27 @@ def _operation_payload(
         "operation": operation.model_dump(mode="json"),
         "artifact": _safe_artifact_payload(artifact),
     }
+
+
+def _ensure_model_allowed(provider: Any, model_id: str | None, *, expected_capability: str) -> None:
+    if model_id is None:
+        return
+    matches = [model for model in provider.list_models() if model.id == model_id]
+    if not matches:
+        raise HTTPException(status_code=422, detail=f"model {model_id} is not configured")
+    if matches[0].capability != expected_capability:
+        raise HTTPException(
+            status_code=422,
+            detail=f"model {model_id} does not support {expected_capability}",
+        )
+
+
+def _tts_capability(mode: TTSMode) -> str:
+    if mode == TTSMode.BUILTIN:
+        return "tts.builtin"
+    if mode == TTSMode.DESIGN:
+        return "tts.design"
+    return "tts.clone"
 
 
 def _safe_artifact_payload(artifact: Artifact) -> dict[str, Any]:
@@ -637,7 +690,12 @@ def _read_artifact_sidecar(root: Path, artifact_id: str) -> Artifact:
         raise HTTPException(status_code=422, detail="artifact sidecar is invalid") from exc
     if artifact.id != artifact_id:
         raise HTTPException(status_code=422, detail="artifact sidecar id mismatch")
-    path = artifact.path.resolve(strict=False)
+    raw_path = artifact.path
+    path = (
+        (matches[-1].parent / raw_path).resolve(strict=False)
+        if not raw_path.is_absolute()
+        else raw_path.resolve(strict=False)
+    )
     if not path.is_relative_to(artifact_root):
         raise HTTPException(status_code=422, detail="artifact path is outside artifact root")
     return artifact.model_copy(update={"path": path})

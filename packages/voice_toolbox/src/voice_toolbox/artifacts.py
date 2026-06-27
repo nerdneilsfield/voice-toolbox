@@ -11,8 +11,11 @@ from voice_toolbox.storage import MetadataStore
 
 ALLOWED_METADATA_KEYS = {
     "base64_size",
+    "capability",
     "consent_confirmed",
+    "input_length",
     "language",
+    "mime_type",
     "model",
     "normalization_changed",
     "normalization_ignored_options",
@@ -22,6 +25,7 @@ ALLOWED_METADATA_KEYS = {
     "normalization_output_format",
     "normalization_output_length",
     "operation",
+    "output_length",
     "output_format",
     "provider_id",
     "raw_byte_size",
@@ -39,7 +43,7 @@ def redact_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
     for key, value in metadata.items():
         if key in LENGTH_METADATA_KEYS:
-            redacted[f"{key}_length"] = len(value) if value is not None else 0
+            redacted[f"{key}_length"] = len(str(value)) if value is not None else 0
             continue
         if key in ALLOWED_METADATA_KEYS:
             redacted[key] = value
@@ -68,6 +72,7 @@ class ArtifactStore:
         self._ensure_sidecar_available(path)
         with path.open("xb") as audio_file:
             audio_file.write(audio)
+        path.chmod(0o600)
         artifact = AudioArtifact(
             id=operation_id,
             provider_id=provider_id,
@@ -94,6 +99,7 @@ class ArtifactStore:
         self._ensure_sidecar_available(path)
         with path.open("x", encoding="utf-8") as transcript_file:
             transcript_file.write(text)
+        path.chmod(0o600)
         artifact = TranscriptArtifact(
             id=operation_id,
             provider_id=provider_id,
@@ -112,6 +118,7 @@ class ArtifactStore:
     def _artifact_dir(self) -> Path:
         path = self.root / "data" / "artifacts" / datetime.now(UTC).strftime("%Y%m%d")
         path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o700)
         return path
 
     def _validate_operation_id(self, operation_id: str) -> None:
@@ -132,3 +139,4 @@ class ArtifactStore:
         payload = artifact.model_dump(mode="json", exclude={"path"})
         with sidecar_path.open("x", encoding="utf-8") as sidecar_file:
             sidecar_file.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        sidecar_path.chmod(0o600)

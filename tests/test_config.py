@@ -122,7 +122,7 @@ def test_masked_key_preview_short_boundaries() -> None:
     assert mask_api_key_preview("tp-1234", trusted_local=True) == "configured"
     assert mask_api_key_preview("tp-123456", trusted_local=True) == "configured"
     assert mask_api_key_preview("tp-12345678", trusted_local=True) == "configured"
-    assert mask_api_key_preview("tp-1234567890abcd", trusted_local=True) == "tp-...abcd"
+    assert mask_api_key_preview("tp-1234567890abcd", trusted_local=True) == "...abcd"
     assert mask_api_key_preview("abcdef123456", trusted_local=True) == "...3456"
     assert mask_api_key_preview("tp-1234567890abcd", trusted_local=False) == "configured"
 
@@ -218,6 +218,92 @@ api_key_env = ""
     )
 
     with pytest.raises(ConfigError, match="at least 1 character"):
+        load_app_config(path)
+
+
+def test_config_rejects_extra_keys_and_insecure_base_url(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[api]
+host = "127.0.0.1"
+extra = "nope"
+
+[[providers]]
+id = "bad"
+type = "mimo"
+name = "Bad"
+base_url = "http://user:pass@example.test/v1"
+api_key_env = "BAD_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="Extra inputs|https"):
+        load_app_config(path)
+
+
+def test_config_error_does_not_echo_secret_base_url(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "bad"
+type = "mimo"
+name = "Bad"
+base_url = "https://user:secret@example.test/v1?token=secret"
+api_key_env = "BAD_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_app_config(path)
+
+    message = str(exc_info.value)
+    assert "secret" not in message
+    assert "input_value" not in message
+
+
+def test_config_rejects_model_and_voice_extra_keys(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "bad"
+type = "mimo"
+name = "Bad"
+base_url = "https://example.test/v1"
+api_key_env = "BAD_KEY"
+
+[[providers.models]]
+id = "m"
+name = "M"
+capability = "tts.builtin"
+extra = "nope"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="Extra inputs"):
+        load_app_config(path)
+
+
+def test_config_rejects_base_url_query_and_fragment(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "bad"
+type = "mimo"
+name = "Bad"
+base_url = "https://example.test/v1?token=x#frag"
+api_key_env = "BAD_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="query or fragment"):
         load_app_config(path)
 
 

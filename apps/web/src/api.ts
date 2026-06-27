@@ -112,13 +112,12 @@ export function normalizeText(request: NormalizeRequest): Promise<NormalizeRespo
 export function synthesizeBuiltin(form: BuiltinForm): Promise<OperationResponse> {
   const body = new FormData();
   body.set("provider_id", form.providerId);
-  body.set("mode", "builtin");
   body.set("text", form.text);
   body.set("text_format", form.textFormat);
   body.set("voice_id", form.voiceId);
   appendOptional(body, "style_instruction", form.styleInstruction);
   appendOptional(body, "model", form.model);
-  return requestForm("/v1/tts/synthesize", body);
+  return requestForm("/v1/tts/builtin", body);
 }
 
 export function designVoice(form: DesignForm): Promise<OperationResponse> {

@@ -3,7 +3,7 @@ import { getProviders, type Provider } from "../api";
 
 export function useProviderCatalog() {
   const [providers, setProviders] = useState<Provider[]>([]);
-  const [selectedProviderId, setSelectedProviderId] = useState("mimo");
+  const [selectedProviderId, setSelectedProviderId] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 

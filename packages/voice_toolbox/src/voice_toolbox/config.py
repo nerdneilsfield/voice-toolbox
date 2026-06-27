@@ -41,6 +41,7 @@ __all__ = [
     "load_env_values",
     "mask_api_key_preview",
     "preview_config_path",
+    "replay_config_warnings",
 ]
 
 IGNORED_WHEN_TOML_ACTIVE = (
@@ -76,7 +77,7 @@ def load_app_config(
         payload["providers"] = [_fill_mimo_defaults(provider) for provider in payload["providers"]]
         return AppConfig.model_validate(payload)
     except ValidationError as exc:
-        raise ConfigError(str(exc)) from exc
+        raise ConfigError(_safe_validation_message(exc)) from exc
 
 
 def load_env_values(env_path: Path | str | None = None) -> dict[str, str]:
@@ -101,7 +102,6 @@ def mask_api_key_preview(value: str | None, *, trusted_local: bool) -> str | Non
         prefix = value.split("-", 1)[0] + "-"
         if len(value) <= len(prefix) + 8:
             return "configured"
-        return f"{prefix}...{value[-4:]}"
     return f"...{value[-4:]}"
 
 
@@ -149,6 +149,8 @@ def _fallback_config(env: dict[str, str]) -> AppConfig:
         }
         return AppConfig.model_validate(payload)
     except (ValidationError, ValueError) as exc:
+        if isinstance(exc, ValidationError):
+            raise ConfigError(_safe_validation_message(exc)) from exc
         raise ConfigError(str(exc)) from exc
 
 
@@ -173,8 +175,22 @@ def _warn_ignored_env(env: dict[str, str]) -> None:
             logger.warning("ignored env var %s because voice_toolbox.toml is active", key)
 
 
+def replay_config_warnings(config: AppConfig, env: dict[str, str]) -> None:
+    if config.config_path is None:
+        return
+    try:
+        payload = _read_toml(config.config_path)
+    except ConfigError:
+        payload = {}
+    if not payload.get("providers"):
+        logger.warning("providers is empty; using built-in default provider")
+    _warn_ignored_env(env)
+
+
 def _fill_mimo_defaults(provider: dict[str, Any]) -> dict[str, Any]:
     result = dict(provider)
+    if result.get("type") != "mimo":
+        return result
     if "models" not in result:
         result["models"] = [model.model_dump() for model in MIMO_MODELS]
     if "voices" not in result:
@@ -193,3 +209,13 @@ def _fill_mimo_defaults(provider: dict[str, Any]) -> dict[str, Any]:
     )
     result["default_models"] = fallback.model_dump()
     return result
+
+
+def _safe_validation_message(exc: ValidationError) -> str:
+    parts = []
+    for error in exc.errors():
+        loc = ".".join(str(item) for item in error.get("loc", ())) or "config"
+        msg = str(error.get("msg", "invalid value"))
+        error_type = str(error.get("type", "validation_error"))
+        parts.append(f"{loc}: {msg} ({error_type})")
+    return "; ".join(parts) or "invalid config"

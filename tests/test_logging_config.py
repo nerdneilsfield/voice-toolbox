@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import stat
 from pathlib import Path
 
 from loguru import logger
@@ -38,7 +39,9 @@ def test_sanitize_log_metadata_allowlist() -> None:
             "model": "mimo-v2.5-tts",
             "source_text": "secret raw text",
             "api_key": "tp-secret",
+            "api_key_preview": "...cret",
             "data_url": "data:audio/wav;base64,abc",
+            "artifact_ids": ["safe", "tp-secretvalue"],
             "source_text_length": 15,
         }
     )
@@ -87,7 +90,6 @@ def test_log_file_never_contains_raw_request_values(tmp_path: Path) -> None:
     assert "base64" not in text
     assert "tp-secret" not in text
     assert "request completed" in text
-    assert "source_text_length" not in text
 
 
 def test_uvicorn_access_log_query_string_is_redacted(tmp_path: Path) -> None:
@@ -108,6 +110,62 @@ def test_uvicorn_access_log_query_string_is_redacted(tmp_path: Path) -> None:
     assert "raw-secret" not in text
     assert "tp-secret" not in text
     assert "/v1/tts/builtin?..." in text
+
+
+def test_log_interceptor_redacts_token_and_data_url_outside_query(tmp_path: Path) -> None:
+    path = tmp_path / "voice.log"
+    configure_logging(
+        LoggingConfig(
+            console=ConsoleLoggingConfig(enabled=False),
+            file=FileLoggingConfig(enabled=True, path=str(path), enqueue=False),
+        ),
+        config_path=None,
+    )
+
+    logging.getLogger("uvicorn.error").info(
+        "payload=data:audio/wav;base64,abcdef123456 key=tp-short"
+    )
+
+    text = path.read_text(encoding="utf-8")
+    assert "abcdef123456" not in text
+    assert "tp-short" not in text
+    assert "data:...;base64,..." in text
+
+
+def test_intercepted_exception_does_not_write_raw_traceback_or_args(tmp_path: Path) -> None:
+    path = tmp_path / "voice.log"
+    configure_logging(
+        LoggingConfig(
+            console=ConsoleLoggingConfig(enabled=False),
+            file=FileLoggingConfig(enabled=True, path=str(path), enqueue=False),
+        ),
+        config_path=None,
+    )
+
+    try:
+        raise RuntimeError("tp-short /Users/private/path")
+    except RuntimeError:
+        logging.getLogger("uvicorn.error").exception("failed")
+
+    text = path.read_text(encoding="utf-8")
+    assert "tp-short" not in text
+    assert "/Users/private/path" not in text
+    assert "Traceback" not in text
+    assert "RuntimeError" in text
+
+
+def test_log_file_permissions_are_private(tmp_path: Path) -> None:
+    path = tmp_path / "logs" / "voice.log"
+    configure_logging(
+        LoggingConfig(
+            console=ConsoleLoggingConfig(enabled=False),
+            file=FileLoggingConfig(enabled=True, path=str(path), enqueue=False),
+        ),
+        config_path=None,
+    )
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
 
 
 def test_relative_file_path_resolves_against_config_dir(tmp_path: Path) -> None:

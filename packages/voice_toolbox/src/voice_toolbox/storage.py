@@ -13,11 +13,13 @@ class MetadataStore:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.chmod(0o700)
         self.connection = sqlite3.connect(self.path, check_same_thread=False)
         self._lock = threading.Lock()
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA busy_timeout=5000")
         self._create_tables()
+        self.path.chmod(0o600)
 
     def _create_tables(self) -> None:
         self.connection.execute(

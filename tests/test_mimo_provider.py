@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,6 +54,17 @@ def test_provider_generation_timeout_defaults_to_300_seconds() -> None:
     assert GENERATION_TIMEOUT_SECONDS == 300.0
     assert TTS_TIMEOUT_SECONDS == GENERATION_TIMEOUT_SECONDS
     assert ASR_TIMEOUT_SECONDS == GENERATION_TIMEOUT_SECONDS
+
+
+def test_operation_ids_are_unique_under_threaded_access(tmp_path: Path) -> None:
+    provider = MimoProvider(
+        api_key="secret", artifact_root=tmp_path, client=FakeClient(_tts_completion())
+    )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        operation_ids = list(executor.map(provider._next_operation_id, ["tts"] * 100))
+
+    assert len(operation_ids) == len(set(operation_ids))
 
 
 def _tts_completion(payload: bytes = b"WAV") -> object:

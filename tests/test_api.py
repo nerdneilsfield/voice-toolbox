@@ -61,6 +61,16 @@ class RecordingMimoProvider(FakeProvider):
         return super().transcribe(request)
 
 
+class ExplodingProvider(RecordingMimoProvider):
+    def synthesize(
+        self,
+        request: TTSRequest,
+        *,
+        artifact_metadata: Mapping[str, object] | None = None,
+    ):
+        raise RuntimeError("raw traceback secret /Users/private/path")
+
+
 def _test_config(*, host: str = "127.0.0.1") -> AppConfig:
     return AppConfig(
         api=APIConfig(host=host, port=8000),
@@ -134,7 +144,7 @@ def test_create_app_accepts_config_and_provider_summary_masks_key(tmp_path: Path
 
     mimo = response.json()["providers"][0]
     assert mimo["api_key_env"] == "MIMO_API_KEY"
-    assert mimo["api_key_preview"] == "tp-...abcd"
+    assert mimo["api_key_preview"] == "...abcd"
     assert mimo["config_path_preview"] == "built-in default"
     assert mimo["base_url"] == "https://api.xiaomimimo.com/v1"
     assert mimo["default_voice"] == "mimo_default"
@@ -208,6 +218,41 @@ def test_missing_key_blocks_only_operation_not_listing(tmp_path: Path) -> None:
     assert listed.status_code == 200
     assert listed.json()["providers"][0]["has_api_key"] is False
     assert blocked.status_code == 503
+
+
+def test_request_validation_error_does_not_echo_raw_input(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/synthesize",
+        data={"mode": "not-a-real-mode", "provider_id": "mimo", "text": "secret text"},
+    )
+
+    assert response.status_code == 422
+    assert "not-a-real-mode" not in response.text
+    assert "secret text" not in response.text
+
+
+def test_unhandled_exception_returns_generic_error(tmp_path: Path) -> None:
+    provider = ExplodingProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={"provider_id": "mimo", "text": "hello", "voice_id": "Mia"},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "internal server error"
+    assert response.json()["request_id"]
+    assert "raw traceback secret" not in response.text
+    assert "/Users/private/path" not in response.text
 
 
 def test_provider_models_route_lists_models(tmp_path: Path) -> None:
@@ -306,6 +351,19 @@ def test_asr_model_omitted_passes_none_to_provider(tmp_path: Path) -> None:
     assert provider.asr_requests[-1].model is None
 
 
+def test_asr_empty_model_is_normalized_to_none(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        data={"language": "auto", "provider_id": "mimo", "model": "   "},
+        files={"file": ("speech.wav", WAV_BYTES, "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert provider.asr_requests[-1].model is None
+
+
 def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) -> None:
     client, provider = _client(tmp_path)
 
@@ -353,6 +411,32 @@ def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) 
     assert "data:" not in str(clone.json())
     assert "base64," not in str(clone.json())
     assert "path" not in clone.json()["artifact"]
+
+
+def test_tts_rejects_oversized_text_before_provider_call(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={"provider_id": "mimo", "text": "x" * 200001, "voice_id": "Mia"},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "text exceeds 200000 characters"
+    assert provider.tts_requests == []
+
+
+def test_tts_rejects_unknown_model_before_provider_call(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={"provider_id": "mimo", "text": "hello", "voice_id": "Mia", "model": "missing"},
+    )
+
+    assert response.status_code == 422
+    assert "model missing is not configured" in response.text
+    assert provider.tts_requests == []
 
 
 def test_tts_endpoint_normalizes_markdown_and_writes_metadata(tmp_path: Path) -> None:
@@ -573,8 +657,8 @@ def test_artifact_download_rejects_sidecar_path_outside_artifact_root(tmp_path: 
     metadata = client.get("/v1/artifacts/evil")
     download = client.get("/v1/artifacts/evil/download")
 
-    assert metadata.status_code in {404, 422}
-    assert download.status_code in {404, 422}
+    assert metadata.status_code == 422
+    assert download.status_code == 422
     assert download.content != b"do not serve"
 
 

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 import os
+import stat
 import sqlite3
 
 import pytest
@@ -147,6 +148,12 @@ def test_redact_metadata_maps_prompt_fields_to_lengths() -> None:
     assert metadata["voice_description_length"] == 18
 
 
+def test_redact_metadata_handles_non_string_text_fields() -> None:
+    metadata = redact_metadata({"source_text": 12345})
+
+    assert metadata == {"source_text_length": 5}
+
+
 def test_artifact_store_write_transcript_writes_text_and_json_sidecar(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
 
@@ -170,6 +177,9 @@ def test_artifact_store_write_transcript_writes_text_and_json_sidecar(tmp_path) 
     assert '"path"' not in sidecar_text
     assert '"api_key"' not in sidecar_text
     assert '"source_text_length": 3' in sidecar_text
+    assert stat.S_IMODE(artifact.path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+    assert stat.S_IMODE(sidecar.parent.stat().st_mode) == 0o700
 
 
 def test_artifact_store_write_transcript_duplicate_id_preserves_original(tmp_path) -> None:
@@ -248,6 +258,8 @@ def test_metadata_store_creates_artifacts_and_operations_tables(tmp_path) -> Non
 
     assert "started_at" in operation_columns
     assert "finished_at" in operation_columns
+    assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(db_path.parent.stat().st_mode) == 0o700
 
 
 def test_metadata_store_inserts_artifact_and_rejects_duplicate_id(tmp_path) -> None:

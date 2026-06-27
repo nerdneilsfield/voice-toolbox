@@ -2,18 +2,23 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from voice_toolbox.models import ModelInfo, VoiceInfo
 
 
 class APIConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(default=8000, ge=1, le=65535)
 
 
 class ConsoleLoggingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = True
     level: str = "INFO"
     format: Literal["human"] = "human"
@@ -21,6 +26,8 @@ class ConsoleLoggingConfig(BaseModel):
 
 
 class FileLoggingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = False
     path: str = "logs/voice-toolbox.log"
     level: str = "DEBUG"
@@ -31,11 +38,15 @@ class FileLoggingConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     console: ConsoleLoggingConfig = Field(default_factory=ConsoleLoggingConfig)
     file: FileLoggingConfig = Field(default_factory=FileLoggingConfig)
 
 
 class ProviderDefaultModels(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tts_builtin: str | None = None
     tts_design: str | None = None
     tts_clone: str | None = None
@@ -43,6 +54,8 @@ class ProviderDefaultModels(BaseModel):
 
 
 class ConfiguredProvider(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(min_length=1)
     type: Literal["mimo"]
     name: str = Field(min_length=1)
@@ -53,8 +66,22 @@ class ConfiguredProvider(BaseModel):
     models: list[ModelInfo] = Field(default_factory=list)
     voices: list[VoiceInfo] = Field(default_factory=list)
 
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("base_url must be an https URL")
+        if parsed.username or parsed.password:
+            raise ValueError("base_url must not include credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError("base_url must not include query or fragment")
+        return value
+
 
 class AppConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     config_path: Path | None = None
     api: APIConfig = Field(default_factory=APIConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

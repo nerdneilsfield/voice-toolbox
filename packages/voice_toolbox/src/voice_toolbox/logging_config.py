@@ -16,7 +16,6 @@ HUMAN_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}
 LOG_METADATA_KEYS = frozenset(
     {
         *ALLOWED_METADATA_KEYS,
-        "api_key_preview",
         "artifact_id",
         "artifact_ids",
         "config_path_name",
@@ -40,6 +39,9 @@ LOG_METADATA_KEYS = frozenset(
 
 INTERCEPT_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi", "starlette")
 QUERY_STRING_PATTERN = re.compile(r"(\s/[^\s?]*)(\?[^ \"]*)")
+SECRET_TOKEN_PATTERN = re.compile(r"\b(?:tp|sk)-[^\s\"']+\b")
+DATA_URL_PATTERN = re.compile(r"data:[^;\s]+;base64,[A-Za-z0-9+/=_-]+")
+BASE64_LABEL_PATTERN = re.compile(r"(base64[=:])([A-Za-z0-9+/=_-]{8,})", re.IGNORECASE)
 
 
 class InterceptHandler(logging.Handler):
@@ -49,9 +51,10 @@ class InterceptHandler(logging.Handler):
         except ValueError:
             level = record.levelno
 
-        logger.opt(depth=6, exception=record.exc_info).log(
-            level, _sanitize_log_message(record.getMessage())
-        )
+        message = _sanitize_log_message(record.getMessage())
+        if record.exc_info and record.exc_info[0] is not None:
+            message = f"{message} ({record.exc_info[0].__name__})"
+        logger.opt(depth=6).log(level, message)
 
 
 def sanitize_log_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
@@ -70,10 +73,15 @@ def configure_logging(config: LoggingConfig, *, config_path: Path | None) -> Non
             level=config.console.level,
             format=HUMAN_FORMAT,
             colorize=config.console.colorize,
+            backtrace=False,
+            diagnose=False,
         )
     if config.file.enabled:
         path = _resolve_log_path(config.file.path, config_path=config_path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
+        path.touch(mode=0o600, exist_ok=True)
+        path.chmod(0o600)
         logger.add(
             path,
             level=config.file.level,
@@ -82,6 +90,8 @@ def configure_logging(config: LoggingConfig, *, config_path: Path | None) -> Non
             retention=config.file.retention,
             compression=config.file.compression,
             enqueue=config.file.enqueue,
+            backtrace=False,
+            diagnose=False,
         )
 
     root_logger = logging.getLogger()
@@ -102,9 +112,26 @@ def _resolve_log_path(path: str, *, config_path: Path | None) -> Path:
 
 
 def _safe_log_metadata_value(value: object) -> bool:
-    return value is None or isinstance(value, str | int | float | bool | tuple | list)
+    if value is None or isinstance(value, int | float | bool):
+        return True
+    if isinstance(value, str):
+        return _is_safe_log_string(value)
+    if isinstance(value, tuple | list):
+        return all(_safe_log_metadata_value(item) for item in value)
+    return False
 
 
 def _sanitize_log_message(message: str) -> str:
     sanitized = QUERY_STRING_PATTERN.sub(r"\1?...", message)
+    sanitized = DATA_URL_PATTERN.sub("data:...;base64,...", sanitized)
+    sanitized = BASE64_LABEL_PATTERN.sub(r"\1...", sanitized)
+    sanitized = SECRET_TOKEN_PATTERN.sub("configured", sanitized)
     return sanitized
+
+
+def _is_safe_log_string(value: str) -> bool:
+    return not (
+        SECRET_TOKEN_PATTERN.search(value)
+        or DATA_URL_PATTERN.search(value)
+        or "base64," in value.lower()
+    )
