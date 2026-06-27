@@ -6,7 +6,15 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from voice_toolbox.models import ASRRequest, TTSRequest, VoiceInfo
+from voice_toolbox.config import (
+    APIConfig,
+    AppConfig,
+    ConfiguredProvider,
+    ConsoleLoggingConfig,
+    LoggingConfig,
+    ProviderDefaultModels,
+)
+from voice_toolbox.models import ASRRequest, ModelInfo, TTSRequest, VoiceInfo
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.fake import FakeProvider
 from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE, MIMO_VOICES
@@ -53,6 +61,29 @@ class RecordingMimoProvider(FakeProvider):
         return super().transcribe(request)
 
 
+def _test_config(*, host: str = "127.0.0.1") -> AppConfig:
+    return AppConfig(
+        api=APIConfig(host=host, port=8000),
+        logging=LoggingConfig(console=ConsoleLoggingConfig(enabled=False)),
+        providers=[
+            ConfiguredProvider(
+                id="mimo",
+                type="mimo",
+                name="MiMo",
+                base_url="https://api.xiaomimimo.com/v1",
+                api_key_env="MIMO_API_KEY",
+                default_voice="mimo_default",
+                default_models=ProviderDefaultModels(tts_builtin="fake-tts", asr="fake-asr"),
+                models=[
+                    ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
+                    ModelInfo(id="fake-asr", name="Fake ASR", capability="asr.transcribe"),
+                ],
+                voices=[VoiceInfo(id="mimo_default", name="MiMo-默认")],
+            )
+        ],
+    )
+
+
 def _client(
     tmp_path: Path, *, has_api_key: bool = True
 ) -> tuple[TestClient, RecordingMimoProvider]:
@@ -60,7 +91,8 @@ def _client(
     app = create_app(
         registry=ProviderRegistry([provider]),
         artifact_root=tmp_path,
-        has_mimo_api_key_func=lambda: has_api_key,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key" if has_api_key else ""},
     )
     return TestClient(app), provider
 
@@ -86,6 +118,81 @@ def test_providers_include_mimo_and_api_key_status(tmp_path: Path) -> None:
     assert mimo["has_api_key"] is True
     assert isinstance(mimo["has_api_key"], bool)
     assert "api_key" not in mimo
+
+
+def test_create_app_accepts_config_and_provider_summary_masks_key(tmp_path: Path) -> None:
+    provider = RecordingMimoProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "tp-1234567890abcd"},
+    )
+    client = TestClient(app)
+
+    response = client.get("/v1/providers")
+
+    mimo = response.json()["providers"][0]
+    assert mimo["api_key_env"] == "MIMO_API_KEY"
+    assert mimo["api_key_preview"] == "tp-...abcd"
+    assert mimo["config_path_preview"] == "built-in default"
+    assert mimo["base_url"] == "https://api.xiaomimimo.com/v1"
+    assert mimo["default_voice"] == "mimo_default"
+    assert mimo["default_models"]["tts_builtin"] == "fake-tts"
+    assert {voice["id"] for voice in mimo["voices"]} >= {"mimo_default", "Mia"}
+
+
+def test_provider_summary_non_local_host_hides_key_preview(tmp_path: Path) -> None:
+    provider = RecordingMimoProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(host="0.0.0.0"),
+        env_values={"MIMO_API_KEY": "tp-1234567890abcd"},
+    )
+    client = TestClient(app)
+
+    response = client.get("/v1/providers")
+
+    assert response.json()["providers"][0]["api_key_preview"] == "configured"
+
+
+def test_provider_summary_falls_back_for_unconfigured_injected_provider(tmp_path: Path) -> None:
+    provider = FakeProvider(artifact_root=tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={},
+    )
+    client = TestClient(app)
+
+    response = client.get("/v1/providers")
+
+    summary = response.json()["providers"][0]
+    assert summary["id"] == "fake"
+    assert summary["type"] == "test"
+    assert summary["base_url"] is None
+    assert summary["api_key_env"] is None
+    assert summary["has_api_key"] is True
+    assert summary["default_models"] == {}
+    assert summary["config_path_preview"] == "built-in default"
+    assert summary["capabilities"] == sorted(provider.capabilities())
+    assert {voice["id"] for voice in summary["voices"]} == {"Mia", "Chen"}
+
+
+def test_missing_key_blocks_only_operation_not_listing(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path, has_api_key=False)
+
+    listed = client.get("/v1/providers")
+    blocked = client.post(
+        "/v1/tts/builtin",
+        data={"provider_id": "mimo", "text": "hello", "voice_id": "Mia"},
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()["providers"][0]["has_api_key"] is False
+    assert blocked.status_code == 503
 
 
 def test_provider_models_route_lists_models(tmp_path: Path) -> None:

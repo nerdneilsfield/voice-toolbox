@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
-from collections.abc import Callable
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -14,6 +14,14 @@ from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
 from voice_toolbox.artifacts import SAFE_OPERATION_ID_PATTERN
+from voice_toolbox.config import (
+    AppConfig,
+    ConfiguredProvider,
+    load_app_config,
+    load_env_values,
+    mask_api_key_preview,
+    preview_config_path,
+)
 from voice_toolbox.models import (
     ASRRequest,
     Artifact,
@@ -23,9 +31,9 @@ from voice_toolbox.models import (
     TTSRequest,
 )
 from voice_toolbox.providers.base import ProviderError
-from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE, MimoProvider
+from voice_toolbox.providers.factory import build_provider_registry
+from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE
 from voice_toolbox.providers.registry import ProviderRegistry
-from voice_toolbox.settings import get_mimo_api_key, has_mimo_api_key
 
 CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
 DEFAULT_ARTIFACT_ROOT = Path.cwd()
@@ -42,10 +50,21 @@ def create_app(
     *,
     registry: ProviderRegistry | None = None,
     artifact_root: Path | str | None = None,
-    has_mimo_api_key_func: Callable[[], bool] = has_mimo_api_key,
+    config: AppConfig | None = None,
+    env_path: Path | str | None = None,
+    env_values: Mapping[str, str] | None = None,
 ) -> FastAPI:
+    resolved_env_values = (
+        dict(env_values) if env_values is not None else load_env_values(env_path)
+    )
+    if config is None:
+        config = load_app_config(env_path=env_path, env_values=resolved_env_values)
     root = Path(artifact_root) if artifact_root is not None else _infer_artifact_root(registry)
-    provider_registry = registry or _build_default_registry(root)
+    provider_registry = registry or build_provider_registry(
+        config,
+        artifact_root=root,
+        env_values=resolved_env_values,
+    )
 
     app = FastAPI(
         title="Voice Toolbox API",
@@ -55,7 +74,8 @@ def create_app(
     )
     app.state.provider_registry = provider_registry
     app.state.artifact_root = root
-    app.state.has_mimo_api_key_func = has_mimo_api_key_func
+    app.state.config = config
+    app.state.env_values = resolved_env_values
 
     app.add_middleware(
         CORSMiddleware,
@@ -72,9 +92,11 @@ def create_app(
     @app.get("/v1/providers")
     def providers(http_request: Request) -> dict[str, list[dict[str, Any]]]:
         provider_registry = _registry_from_request(http_request)
+        config = _config_from_request(http_request)
+        env_values = _env_values_from_request(http_request)
         return {
             "providers": [
-                _provider_summary(provider, http_request.app.state.has_mimo_api_key_func)
+                _provider_summary(provider, config=config, env_values=env_values)
                 for provider in provider_registry.list_providers()
             ]
         }
@@ -267,21 +289,66 @@ def _registry_from_request(request: Request) -> ProviderRegistry:
     return request.app.state.provider_registry
 
 
-def _build_default_registry(root: Path) -> ProviderRegistry:
-    api_key = get_mimo_api_key()
-    return ProviderRegistry([MimoProvider(api_key=api_key, artifact_root=root)])
+def _config_from_request(request: Request) -> AppConfig:
+    return request.app.state.config
 
 
-def _provider_summary(provider: Any, has_mimo_api_key_func: Callable[[], bool]) -> dict[str, Any]:
-    summary = {
+def _env_values_from_request(request: Request) -> dict[str, str]:
+    return request.app.state.env_values
+
+
+def _configured_provider_for_id(
+    config: AppConfig,
+    provider_id: str,
+) -> ConfiguredProvider | None:
+    return next((provider for provider in config.providers if provider.id == provider_id), None)
+
+
+def _provider_summary(
+    provider: Any,
+    *,
+    config: AppConfig,
+    env_values: Mapping[str, str],
+) -> dict[str, Any]:
+    provider_config = _configured_provider_for_id(config, provider.id)
+    if provider_config is None:
+        return {
+            "id": provider.id,
+            "name": provider.name,
+            "type": "test",
+            "base_url": None,
+            "api_key_env": None,
+            "has_api_key": True,
+            "api_key_preview": None,
+            "config_path_preview": preview_config_path(config.config_path),
+            "default_voice": None,
+            "default_models": {},
+            "capabilities": sorted(provider.capabilities()),
+            "models": [model.model_dump(mode="json") for model in provider.list_models()],
+            "voices": [voice.model_dump(mode="json") for voice in provider.list_voices()],
+        }
+
+    api_key = env_values.get(provider_config.api_key_env)
+    trusted_local = config.api.host in {"127.0.0.1", "localhost"}
+    return {
         "id": provider.id,
         "name": provider.name,
+        "type": provider_config.type,
+        "base_url": provider_config.base_url,
+        "api_key_env": provider_config.api_key_env,
+        "has_api_key": bool(api_key),
+        "api_key_preview": mask_api_key_preview(api_key, trusted_local=trusted_local),
+        "config_path_preview": preview_config_path(config.config_path),
+        "default_voice": provider_config.default_voice,
+        "default_models": (
+            provider_config.default_models.model_dump(mode="json")
+            if provider_config.default_models is not None
+            else {}
+        ),
         "capabilities": sorted(provider.capabilities()),
         "models": [model.model_dump(mode="json") for model in provider.list_models()],
+        "voices": [voice.model_dump(mode="json") for voice in provider.list_voices()],
     }
-    if provider.id == "mimo":
-        summary["has_api_key"] = bool(has_mimo_api_key_func())
-    return summary
 
 
 def _get_provider(provider_registry: ProviderRegistry, provider_id: str) -> Any:
@@ -335,10 +402,14 @@ def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
 
 
 def _ensure_provider_configured_for_operation(request: Request, provider_id: str) -> None:
-    if provider_id == "mimo" and not request.app.state.has_mimo_api_key_func():
+    config_provider = _configured_provider_for_id(request.app.state.config, provider_id)
+    if config_provider is None:
+        return
+    value = request.app.state.env_values.get(config_provider.api_key_env)
+    if not value:
         raise HTTPException(
             status_code=503,
-            detail="MIMO_API_KEY is required for provider mimo",
+            detail=f"{config_provider.api_key_env} is required for provider {provider_id}",
         )
 
 
@@ -499,6 +570,3 @@ def _artifact_path_for_sidecar(sidecar_path: Path, payload: dict[str, Any]) -> P
     mime_type = payload.get("mime_type")
     suffix = ".txt" if mime_type == "text/plain; charset=utf-8" else ".wav"
     return sidecar_path.with_suffix(suffix)
-
-
-app = create_app()
