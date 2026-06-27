@@ -1,6 +1,7 @@
 PYTHON := rtk uv run
 WEB := rtk bun run --cwd apps/web
 BUN_INSTALL := rtk bun install --cwd apps/web
+-include .env
 ifneq (,$(wildcard .env))
 PYTHON_ENV := rtk uv run --env-file .env
 else
@@ -13,7 +14,7 @@ WEB_HOST ?= 127.0.0.1
 WEB_PORT ?= 5173
 
 .PHONY: help install test check \
-	backend-test backend-lint backend-format backend-type backend-check backend-server backend-test-server \
+	backend-test backend-lint backend-format backend-format-check backend-type backend-check backend-server backend-test-server \
 	frontend-install frontend-test frontend-build frontend-server frontend-test-server
 
 help:
@@ -41,10 +42,13 @@ backend-lint:
 backend-format:
 	$(PYTHON) ruff format .
 
+backend-format-check:
+	$(PYTHON) ruff format --check .
+
 backend-type:
 	$(PYTHON) ty check packages/voice_toolbox/src apps/api/src
 
-backend-check: backend-lint backend-type backend-test
+backend-check: backend-lint backend-format-check backend-type backend-test
 
 backend-server:
 	$(PYTHON_ENV) uvicorn voice_toolbox_api.main:app --host $(API_HOST) --port $(API_PORT)

@@ -82,7 +82,7 @@ def test_tts_synthesize_prints_audio_artifact(monkeypatch, tmp_path: Path) -> No
 
     assert result.exit_code == 0, result.output
     assert "audio-1" in result.output
-    assert "audio-1.wav" in result.output
+    assert "path:" not in result.output
     assert "audio/wav" in result.output
     assert provider.tts_requests[0].text == "hello"
     assert provider.tts_requests[0].voice_id == "Mia"
@@ -117,7 +117,8 @@ def test_tts_synthesize_rejects_unsupported_format(monkeypatch, tmp_path: Path) 
     assert provider.tts_requests == []
 
 
-def test_default_mimo_provider_fails_fast_without_api_key(monkeypatch) -> None:
+def test_default_mimo_provider_fails_fast_without_api_key(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("MIMO_API_KEY", raising=False)
 
     def fail_if_constructed(**_: object) -> object:

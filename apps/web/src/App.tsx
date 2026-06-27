@@ -87,6 +87,7 @@ function App() {
       .catch((err: Error) => {
         if (!ignore) {
           setVoices([]);
+          setVoiceId("");
           setError(err.message);
           setVoicesState("error");
         }

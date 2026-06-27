@@ -150,7 +150,10 @@ def test_fake_provider_repeated_artifacts_do_not_collide(tmp_path: Path) -> None
     assert second_audio.id.endswith("-tts-2")
     assert first_transcript.id.endswith("-asr-3")
     assert second_transcript.id.endswith("-asr-4")
-    assert len({first_audio.path, second_audio.path, first_transcript.path, second_transcript.path}) == 4
+    assert (
+        len({first_audio.path, second_audio.path, first_transcript.path, second_transcript.path})
+        == 4
+    )
 
 
 def test_fake_provider_instances_do_not_collide_on_same_artifact_root(tmp_path: Path) -> None:

@@ -230,13 +230,11 @@ def _fail(message: str) -> NoReturn:
 
 def _print_audio_artifact(artifact: AudioArtifact) -> None:
     typer.echo(f"id: {artifact.id}")
-    typer.echo(f"path: {artifact.path}")
     typer.echo(f"mime: {artifact.mime_type}")
 
 
 def _print_transcript_artifact(artifact: TranscriptArtifact) -> None:
     typer.echo(f"id: {artifact.id}")
-    typer.echo(f"path: {artifact.path}")
     typer.echo(f"mime: {artifact.mime_type}")
     try:
         text = artifact.path.read_text(encoding="utf-8").strip()

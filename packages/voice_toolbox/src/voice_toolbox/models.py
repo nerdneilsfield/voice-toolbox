@@ -5,7 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TTSMode(StrEnum):
@@ -29,6 +29,8 @@ class ProviderConfig(BaseModel):
     base_url: str = "https://api.xiaomimimo.com/v1"
     api_key_env: str = "MIMO_API_KEY"
     default_output_format: Literal["wav"] = "wav"
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
 
 
 class ModelInfo(BaseModel):
@@ -63,6 +65,23 @@ class TTSRequest(BaseModel):
     clone_raw_byte_size: int | None = Field(default=None, ge=0)
     clone_base64_size: int | None = Field(default=None, ge=0)
     consent_confirmed: bool = False
+
+    @field_validator(
+        "provider_id",
+        "model",
+        "text",
+        "style_instruction",
+        "voice_id",
+        "voice_description",
+        "clone_mime_type",
+        mode="after",
+    )
+    @classmethod
+    def strip_text_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
     @model_validator(mode="after")
     def validate_mode_requirements(self) -> TTSRequest:

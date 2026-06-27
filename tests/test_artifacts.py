@@ -139,6 +139,7 @@ def test_artifact_store_write_transcript_writes_text_and_json_sidecar(tmp_path) 
     sidecar_text = sidecar.read_text(encoding="utf-8")
     assert '"id": "op_123"' in sidecar_text
     assert '"kind": "transcript"' in sidecar_text
+    assert '"path"' not in sidecar_text
     assert '"api_key"' not in sidecar_text
     assert '"source_text_length": 3' in sidecar_text
 
@@ -235,19 +236,44 @@ def test_metadata_store_inserts_artifact_and_rejects_duplicate_id(tmp_path) -> N
     store.insert_artifact(artifact)
 
     row = store.connection.execute(
-        "SELECT id, kind, provider_id, operation, path, mime_type, metadata FROM artifacts"
+        "SELECT id, kind, provider_id, operation, mime_type, metadata FROM artifacts"
     ).fetchone()
     assert row == (
         "op_123",
         "audio",
         "mimo",
         "tts",
-        str(tmp_path / "op_123.wav"),
         "audio/wav",
         '{"provider_id": "mimo"}',
     )
     with pytest.raises(sqlite3.IntegrityError):
         store.insert_artifact(artifact)
+
+
+def test_artifact_store_persists_artifact_metadata_to_sqlite(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+
+    artifact = store.write_audio(
+        operation_id="op_123",
+        provider_id="mimo",
+        operation="tts",
+        audio=b"audio",
+        metadata={"source_text": "hello"},
+    )
+
+    with sqlite3.connect(tmp_path / "data" / "voice_toolbox.sqlite") as connection:
+        row = connection.execute(
+            "SELECT id, kind, provider_id, operation, mime_type, metadata FROM artifacts"
+        ).fetchone()
+
+    assert row == (
+        artifact.id,
+        "audio",
+        "mimo",
+        "tts",
+        "audio/wav",
+        '{"source_text_length": 5}',
+    )
 
 
 def test_metadata_store_inserts_operation_and_rejects_duplicate_id(tmp_path) -> None:
@@ -292,7 +318,30 @@ def test_load_settings_reads_mimo_base_url_from_env_file(tmp_path, monkeypatch) 
     assert settings.base_url == "https://example.test/v1"
     assert settings.api_key_env == "MIMO_API_KEY"
     assert settings.default_output_format == "wav"
+    assert settings.api_host == "127.0.0.1"
+    assert settings.api_port == 8000
     assert "MIMO_BASE_URL" not in os.environ
+
+
+def test_load_settings_reads_default_cwd_env_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MIMO_BASE_URL", raising=False)
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "MIMO_BASE_URL=https://cwd-env.test/v1\n"
+        "MIMO_API_KEY=secret\n"
+        "API_HOST=127.0.0.2\n"
+        "API_PORT=9000\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.base_url == "https://cwd-env.test/v1"
+    assert settings.api_host == "127.0.0.2"
+    assert settings.api_port == 9000
+    assert has_mimo_api_key() is True
+    assert "MIMO_API_KEY" not in os.environ
 
 
 def test_has_mimo_api_key_detects_env_file_key(tmp_path, monkeypatch) -> None:

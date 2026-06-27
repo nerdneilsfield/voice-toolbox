@@ -218,6 +218,8 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Voice Toolbox local data
+apps/web/dist/
+apps/web/node_modules/
 data/voice_toolbox.sqlite
 data/voice_toolbox.sqlite-*
 data/artifacts/*

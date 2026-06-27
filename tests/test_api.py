@@ -12,6 +12,9 @@ from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE, MIMO_VOICES
 from voice_toolbox.providers.registry import ProviderRegistry
 from voice_toolbox_api.main import create_app
 
+WAV_BYTES = b"RIFF\x00\x00\x00\x00WAVEfmt "
+MP3_BYTES = b"ID3\x04\x00\x00\x00\x00\x00\x00"
+
 
 class RecordingMimoProvider(FakeProvider):
     id = "mimo"
@@ -44,7 +47,9 @@ class RecordingMimoProvider(FakeProvider):
         return super().transcribe(request)
 
 
-def _client(tmp_path: Path, *, has_api_key: bool = True) -> tuple[TestClient, RecordingMimoProvider]:
+def _client(
+    tmp_path: Path, *, has_api_key: bool = True
+) -> tuple[TestClient, RecordingMimoProvider]:
     provider = RecordingMimoProvider(tmp_path)
     app = create_app(
         registry=ProviderRegistry([provider]),
@@ -104,7 +109,7 @@ def test_asr_transcribe_accepts_multipart_and_returns_operation_result(tmp_path:
     response = client.post(
         "/v1/asr/transcribe",
         data={"language": "zh", "provider_id": "mimo"},
-        files={"file": ("speech.wav", b"abcde", "audio/wav")},
+        files={"file": ("speech.wav", WAV_BYTES, "audio/wav")},
     )
 
     assert response.status_code == 200
@@ -112,6 +117,7 @@ def test_asr_transcribe_accepts_multipart_and_returns_operation_result(tmp_path:
     assert payload["operation"]["operation"] == "asr"
     assert payload["operation"]["status"] == "completed"
     assert payload["operation"]["artifact_ids"] == [payload["artifact"]["id"]]
+    assert payload["operation"]["started_at"] < payload["operation"]["finished_at"]
     assert payload["artifact"]["kind"] == "transcript"
     assert payload["artifact"]["metadata"]["uploaded_file_mime_type"] == "audio/wav"
     assert "path" not in payload["artifact"]
@@ -123,9 +129,9 @@ def test_asr_transcribe_accepts_multipart_and_returns_operation_result(tmp_path:
     assert request.provider_id == "mimo"
     assert request.language == "zh"
     assert request.mime_type == "audio/wav"
-    assert request.raw_byte_size == 5
-    assert request.base64_size == 8
-    assert provider.asr_uploaded_bytes == [b"abcde"]
+    assert request.raw_byte_size == len(WAV_BYTES)
+    assert request.base64_size == 24
+    assert provider.asr_uploaded_bytes == [WAV_BYTES]
 
 
 def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) -> None:
@@ -151,7 +157,7 @@ def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) 
     clone = client.post(
         "/v1/tts/clone",
         data={"provider_id": "mimo", "text": "clone hello", "consent_confirmed": "true"},
-        files={"sample": ("sample.wav", b"voice", "audio/wav")},
+        files={"sample": ("sample.wav", WAV_BYTES, "audio/wav")},
     )
 
     assert builtin.status_code == 200
@@ -167,8 +173,8 @@ def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) 
     assert provider.tts_requests[1].voice_description == "bright narrator"
     assert provider.tts_requests[1].optimize_text_preview is True
     assert provider.tts_requests[2].clone_mime_type == "audio/wav"
-    assert provider.tts_requests[2].clone_raw_byte_size == 5
-    assert provider.tts_requests[2].clone_base64_size == 8
+    assert provider.tts_requests[2].clone_raw_byte_size == len(WAV_BYTES)
+    assert provider.tts_requests[2].clone_base64_size == 24
     assert provider.tts_requests[2].consent_confirmed is True
     assert provider.clone_sample_exists_during_call == [True]
     assert not provider.clone_sample_paths[0].exists()
@@ -197,6 +203,25 @@ def test_tts_synthesize_route_dispatches_builtin(tmp_path: Path) -> None:
     assert "path" not in response.json()["artifact"]
 
 
+def test_tts_synthesize_rejects_sample_for_non_clone_mode(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/synthesize",
+        data={
+            "mode": "builtin",
+            "provider_id": "mimo",
+            "text": "hello",
+            "voice_id": "Mia",
+        },
+        files={"sample": ("sample.wav", WAV_BYTES, "audio/wav")},
+    )
+
+    assert response.status_code == 422
+    assert "sample" in response.json()["detail"]
+    assert provider.tts_requests == []
+
+
 def test_upload_routes_reject_base64_payloads_over_10_mib_before_provider(
     tmp_path: Path,
 ) -> None:
@@ -219,13 +244,27 @@ def test_upload_routes_reject_base64_payloads_over_10_mib_before_provider(
     assert provider.tts_requests == []
 
 
+def test_upload_routes_reject_base64_padding_overflow_before_provider(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+    raw_size = (MAX_BASE64_AUDIO_SIZE // 4) * 3 + 1
+    oversized = b"x" * raw_size
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.wav", oversized, "audio/wav")},
+    )
+
+    assert response.status_code == 413
+    assert provider.asr_requests == []
+
+
 def test_asr_provider_error_returns_502_without_traceback(tmp_path: Path) -> None:
     client, provider = _client(tmp_path)
     provider.asr_error = ProviderError("backend unavailable")
 
     response = client.post(
         "/v1/asr/transcribe",
-        files={"file": ("speech.wav", b"abcde", "audio/wav")},
+        files={"file": ("speech.wav", WAV_BYTES, "audio/wav")},
     )
 
     assert response.status_code == 502
@@ -243,7 +282,7 @@ def test_missing_mimo_api_key_fails_operations_but_not_provider_listing(tmp_path
     )
     asr = client.post(
         "/v1/asr/transcribe",
-        files={"file": ("speech.wav", b"abcde", "audio/wav")},
+        files={"file": ("speech.wav", WAV_BYTES, "audio/wav")},
     )
 
     mimo = next(provider for provider in providers.json()["providers"] if provider["id"] == "mimo")
@@ -260,7 +299,7 @@ def test_artifact_metadata_and_download_read_sidecar(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
     created = client.post(
         "/v1/asr/transcribe",
-        files={"file": ("speech.mp3", b"abcde", "audio/mpeg")},
+        files={"file": ("speech.mp3", MP3_BYTES, "audio/mpeg")},
     ).json()
     artifact_id = created["artifact"]["id"]
 
@@ -312,18 +351,55 @@ def test_upload_routes_reject_unsupported_suffix_even_when_mime_allowed(tmp_path
 
     asr = client.post(
         "/v1/asr/transcribe",
-        files={"file": ("speech.flac", b"abcde", "audio/wav")},
+        files={"file": ("speech.flac", WAV_BYTES, "audio/wav")},
     )
     clone = client.post(
         "/v1/tts/clone",
         data={"text": "hello", "consent_confirmed": "true"},
-        files={"sample": ("sample.flac", b"voice", "audio/wav")},
+        files={"sample": ("sample.flac", WAV_BYTES, "audio/wav")},
     )
 
     assert asr.status_code == 422
     assert clone.status_code == 422
     assert provider.asr_requests == []
     assert provider.tts_requests == []
+
+
+def test_upload_routes_reject_mime_suffix_mismatch(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.wav", b"RIFFxxxxWAVE", "audio/mpeg")},
+    )
+
+    assert response.status_code == 422
+    assert provider.asr_requests == []
+
+
+def test_upload_routes_accept_wav_mime_alias_with_parameters(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.wav", WAV_BYTES, "audio/x-wav; charset=binary")},
+    )
+
+    assert response.status_code == 200
+    assert provider.asr_requests[0].mime_type == "audio/wav"
+
+
+def test_validation_errors_do_not_echo_raw_input(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={"provider_id": "mimo", "text": "secret text", "voice_id": "   "},
+    )
+
+    assert response.status_code == 422
+    assert "input" not in response.text
+    assert "secret text" not in response.text
 
 
 def test_cors_allows_vite_origin(tmp_path: Path) -> None:

@@ -83,6 +83,34 @@ def test_tts_request_rejects_unexpected_fields() -> None:
         )
 
 
+def test_tts_request_rejects_whitespace_only_required_text_fields() -> None:
+    with pytest.raises(ValidationError):
+        TTSRequest(mode=TTSMode.BUILTIN, text="   ", voice_id="voice-1")
+    with pytest.raises(ValidationError):
+        TTSRequest(mode=TTSMode.DESIGN, voice_description="   ", optimize_text_preview=True)
+    with pytest.raises(ValidationError):
+        TTSRequest(
+            mode=TTSMode.CLONE,
+            text="\t\n",
+            clone_sample_path=Path("sample.wav"),
+            clone_mime_type="audio/wav",
+            consent_confirmed=True,
+        )
+
+
+def test_tts_request_strips_prompt_fields() -> None:
+    request = TTSRequest(
+        mode=TTSMode.BUILTIN,
+        text="  hello  ",
+        voice_id="  Mia  ",
+        style_instruction="  warm  ",
+    )
+
+    assert request.text == "hello"
+    assert request.voice_id == "Mia"
+    assert request.style_instruction == "warm"
+
+
 def test_asr_request_rejects_unexpected_fields() -> None:
     with pytest.raises(ValidationError):
         ASRRequest(

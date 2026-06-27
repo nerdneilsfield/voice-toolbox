@@ -5,6 +5,7 @@ import binascii
 import os
 import tempfile
 import time
+from datetime import UTC, datetime
 from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
@@ -18,6 +19,8 @@ from voice_toolbox.models import (
     ASRRequest,
     AudioArtifact,
     ModelInfo,
+    OperationResult,
+    OperationStatus,
     TranscriptArtifact,
     TTSMode,
     TTSRequest,
@@ -68,6 +71,7 @@ _MODEL_NAMES = {
     "mimo-v2.5-tts-voiceclone": "MiMo Voice Clone",
     "mimo-v2.5-asr": "MiMo ASR",
 }
+_MODEL_IDS = {model["id"] for model in MIMO_MODELS}
 
 
 def _build_tts_body(request: TTSRequest) -> dict[str, Any]:
@@ -114,6 +118,7 @@ def _build_tts_body(request: TTSRequest) -> dict[str, Any]:
 
 
 def _build_asr_body(request: ASRRequest, audio_data_url: str) -> dict[str, Any]:
+    _validate_model_id(request.model)
     _validate_base64_size(request.base64_size)
     return {
         "model": request.model,
@@ -228,6 +233,8 @@ class MimoProvider:
     def synthesize(self, request: TTSRequest) -> AudioArtifact:
         self._ensure_open()
         self._ensure_tts_capability(request)
+        operation_id = self._next_operation_id("tts")
+        started_at = datetime.now(UTC)
         body = _build_tts_body(request)
         completion = self._create_completion(body, timeout=TTS_TIMEOUT_SECONDS)
         audio_payload = _message_audio_data(completion)
@@ -237,17 +244,30 @@ class MimoProvider:
         except (binascii.Error, ValueError) as exc:
             raise ProviderError("mimo response audio data is not valid base64") from exc
 
-        return self._artifact_store.write_audio(
-            operation_id=self._next_operation_id("tts"),
+        artifact = self._artifact_store.write_audio(
+            operation_id=operation_id,
             provider_id=self.id,
             operation="tts",
             audio=audio,
             metadata=_tts_metadata(request, body),
         )
+        self._artifact_store.record_operation(
+            OperationResult(
+                operation_id=operation_id,
+                operation="tts",
+                status=OperationStatus.COMPLETED,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                artifact_ids=[artifact.id],
+            )
+        )
+        return artifact
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
         self._ensure_open()
         _validate_base64_size(request.base64_size)
+        operation_id = self._next_operation_id("asr")
+        started_at = datetime.now(UTC)
         audio_data_url, raw_size, base64_size = _audio_file_to_data_url(
             request.audio_path,
             request.mime_type,
@@ -260,8 +280,8 @@ class MimoProvider:
         )
         transcript = _message_content(completion)
 
-        return self._artifact_store.write_transcript(
-            operation_id=self._next_operation_id("asr"),
+        artifact = self._artifact_store.write_transcript(
+            operation_id=operation_id,
             provider_id=self.id,
             operation="asr",
             text=transcript,
@@ -276,6 +296,17 @@ class MimoProvider:
                 "uploaded_file_name": request.audio_path.name,
             },
         )
+        self._artifact_store.record_operation(
+            OperationResult(
+                operation_id=operation_id,
+                operation="asr",
+                status=OperationStatus.COMPLETED,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                artifact_ids=[artifact.id],
+            )
+        )
+        return artifact
 
     def _create_completion(
         self,
@@ -328,7 +359,9 @@ def _validate_clone_audio_input(request: TTSRequest) -> None:
         raise ProviderError("clone mode requires clone sample path and MIME type")
     allowed_suffixes = CLONE_MIME_SUFFIXES.get(request.clone_mime_type)
     if allowed_suffixes is None:
-        raise ProviderError("mimo clone sample MIME type must be audio/wav, audio/mpeg, or audio/mp3")
+        raise ProviderError(
+            "mimo clone sample MIME type must be audio/wav, audio/mpeg, or audio/mp3"
+        )
     suffix = request.clone_sample_path.suffix.lower()
     if suffix not in allowed_suffixes:
         expected = ", ".join(sorted(allowed_suffixes))
@@ -352,7 +385,14 @@ def _api_status_error_message(exc: APIStatusError) -> str:
 
 
 def _resolve_tts_model(request: TTSRequest) -> str:
-    return request.model or _TTS_MODEL_BY_MODE[request.mode]
+    model = request.model or _TTS_MODEL_BY_MODE[request.mode]
+    _validate_model_id(model)
+    return model
+
+
+def _validate_model_id(model: str) -> None:
+    if model not in _MODEL_IDS:
+        raise ProviderError(f"unsupported MiMo model: {model}")
 
 
 def _message_audio_data(completion: Any) -> str:

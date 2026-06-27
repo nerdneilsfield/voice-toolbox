@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,8 @@ class MetadataStore:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.path)
+        self.connection = sqlite3.connect(self.path, check_same_thread=False)
+        self._lock = threading.Lock()
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA busy_timeout=5000")
         self._create_tables()
@@ -25,7 +27,6 @@ class MetadataStore:
                 kind TEXT NOT NULL,
                 provider_id TEXT NOT NULL,
                 operation TEXT NOT NULL,
-                path TEXT NOT NULL,
                 mime_type TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 metadata TEXT NOT NULL DEFAULT '{}'
@@ -55,28 +56,28 @@ class MetadataStore:
 
     def insert_artifact(self, artifact: Artifact | None = None, **fields: Any) -> None:
         if artifact is not None:
-            payload = artifact.model_dump(mode="json")
+            payload = artifact.model_dump(mode="json", exclude={"path"})
         else:
             payload = fields
 
-        self.connection.execute(
-            """
+        with self._lock:
+            self.connection.execute(
+                """
             INSERT INTO artifacts (
-                id, kind, provider_id, operation, path, mime_type, created_at, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                id, kind, provider_id, operation, mime_type, created_at, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                payload["id"],
-                payload["kind"],
-                payload["provider_id"],
-                payload["operation"],
-                str(payload["path"]),
-                payload["mime_type"],
-                payload["created_at"],
-                json.dumps(payload.get("metadata", {}), ensure_ascii=False, sort_keys=True),
-            ),
-        )
-        self.connection.commit()
+                (
+                    payload["id"],
+                    payload["kind"],
+                    payload["provider_id"],
+                    payload["operation"],
+                    payload["mime_type"],
+                    payload["created_at"],
+                    json.dumps(payload.get("metadata", {}), ensure_ascii=False, sort_keys=True),
+                ),
+            )
+            self.connection.commit()
 
     def insert_operation(self, operation: OperationResult | None = None, **fields: Any) -> None:
         if operation is not None:
@@ -84,23 +85,24 @@ class MetadataStore:
         else:
             payload = fields
 
-        self.connection.execute(
-            """
+        with self._lock:
+            self.connection.execute(
+                """
             INSERT INTO operations (
                 operation_id, operation, status, started_at, finished_at, artifact_ids, error_summary
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                payload["operation_id"],
-                payload["operation"],
-                payload["status"],
-                payload["started_at"],
-                payload["finished_at"],
-                json.dumps(payload.get("artifact_ids", []), ensure_ascii=False, sort_keys=True),
-                payload.get("error_summary"),
-            ),
-        )
-        self.connection.commit()
+                (
+                    payload["operation_id"],
+                    payload["operation"],
+                    payload["status"],
+                    payload["started_at"],
+                    payload["finished_at"],
+                    json.dumps(payload.get("artifact_ids", []), ensure_ascii=False, sort_keys=True),
+                    payload.get("error_summary"),
+                ),
+            )
+            self.connection.commit()
 
     def close(self) -> None:
         self.connection.close()

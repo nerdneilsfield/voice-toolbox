@@ -144,8 +144,8 @@ Create `.env.example`:
 ```dotenv
 MIMO_API_KEY=
 MIMO_BASE_URL=https://api.xiaomimimo.com/v1
-VOICE_TOOLBOX_API_HOST=127.0.0.1
-VOICE_TOOLBOX_API_PORT=8000
+API_HOST=127.0.0.1
+API_PORT=8000
 ```
 
 Append these lines to `.gitignore`:
@@ -630,9 +630,10 @@ Implement `MimoProvider.synthesize()` and `MimoProvider.transcribe()` with the O
 
 - TTS timeout: 60 seconds.
 - ASR timeout: 90 seconds.
-- Retry 429 and connection failures before request body is sent.
-- Do not retry HTTP 500 for generation calls. If retry support for 502/503/504 is added later, it must remain bounded and covered by tests.
-- Do not retry connection-level read timeout for TTS/ASR generation calls because the provider may have accepted the request and a retry can double bill.
+- Retry 429 once with bounded backoff.
+- Do not retry `APIConnectionError`, `APITimeoutError`, HTTP 500/502/503/504, validation
+  errors, or non-429 4xx errors for generation calls because the provider may have
+  accepted the request body and a retry can double bill.
 
 - [ ] **Step 5: Run provider tests**
 
@@ -860,7 +861,8 @@ rtk git commit -m "docs: add smoke tests and setup guide"
 
 - Spec coverage: TTS built-in, design, clone, audio tags, ASR Chat Completions, `.env`, artifacts, CORS, WAL, timeout/retry, redaction, CLI, API, and UI each map to tasks above.
 - Non-blocking review points handled in plan:
-  - Generation retry semantics: Task 4 says not to retry read timeouts for TTS/ASR.
+  - Generation retry semantics: Task 4 says to retry only 429 once and not retry
+    connection/timeouts/5xx for TTS/ASR.
   - `optimize_text_preview`: Task 4 says omit assistant role when text is absent.
   - CLI consent: Task 5 says non-TTY without `--consent` fails.
   - CORS origin: Task 6 and Task 7 use `http://127.0.0.1:5173`.

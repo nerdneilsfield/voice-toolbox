@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from voice_toolbox.models import AudioArtifact, TranscriptArtifact
+from voice_toolbox.models import AudioArtifact, OperationResult, TranscriptArtifact
+from voice_toolbox.storage import MetadataStore
 
 ALLOWED_METADATA_KEYS = {
     "base64_size",
@@ -40,8 +41,11 @@ def redact_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 class ArtifactStore:
-    def __init__(self, root: Path | str) -> None:
+    def __init__(self, root: Path | str, metadata_store: MetadataStore | None = None) -> None:
         self.root = Path(root)
+        self._metadata_store = metadata_store or MetadataStore(
+            self.root / "data" / "voice_toolbox.sqlite"
+        )
 
     def write_audio(
         self,
@@ -66,6 +70,7 @@ class ArtifactStore:
             metadata=redact_metadata(metadata or {}),
         )
         self._write_sidecar(artifact)
+        self._metadata_store.insert_artifact(artifact)
         return artifact
 
     def write_transcript(
@@ -91,7 +96,11 @@ class ArtifactStore:
             metadata=redact_metadata(metadata or {}),
         )
         self._write_sidecar(artifact)
+        self._metadata_store.insert_artifact(artifact)
         return artifact
+
+    def record_operation(self, operation: OperationResult) -> None:
+        self._metadata_store.insert_operation(operation)
 
     def _artifact_dir(self) -> Path:
         path = self.root / "data" / "artifacts" / datetime.now(UTC).strftime("%Y%m%d")
@@ -100,7 +109,9 @@ class ArtifactStore:
 
     def _validate_operation_id(self, operation_id: str) -> None:
         if not SAFE_OPERATION_ID_PATTERN.fullmatch(operation_id):
-            raise ValueError("operation_id must contain only letters, numbers, underscores, or hyphens")
+            raise ValueError(
+                "operation_id must contain only letters, numbers, underscores, or hyphens"
+            )
 
     def _ensure_sidecar_available(self, artifact_path: Path) -> None:
         sidecar_path = artifact_path.with_suffix(".json")
@@ -111,6 +122,6 @@ class ArtifactStore:
         sidecar_path = artifact.path.with_suffix(".json")
         if sidecar_path.exists():
             raise FileExistsError(f"artifact sidecar already exists: {sidecar_path}")
-        payload = artifact.model_dump(mode="json")
+        payload = artifact.model_dump(mode="json", exclude={"path"})
         with sidecar_path.open("x", encoding="utf-8") as sidecar_file:
             sidecar_file.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))

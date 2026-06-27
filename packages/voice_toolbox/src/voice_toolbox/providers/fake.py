@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from uuid import uuid4
@@ -10,6 +11,8 @@ from voice_toolbox.models import (
     ASRRequest,
     AudioArtifact,
     ModelInfo,
+    OperationResult,
+    OperationStatus,
     TranscriptArtifact,
     TTSMode,
     TTSRequest,
@@ -96,8 +99,10 @@ class FakeProvider:
         if capability not in self._capabilities:
             raise UnsupportedCapability(f"fake provider does not support capability: {capability}")
 
-        return self._artifact_store.write_audio(
-            operation_id=self._next_operation_id("tts"),
+        operation_id = self._next_operation_id("tts")
+        started_at = datetime.now(UTC)
+        artifact = self._artifact_store.write_audio(
+            operation_id=operation_id,
             provider_id=self.id,
             operation="tts",
             audio=self._audio_bytes(request),
@@ -111,6 +116,17 @@ class FakeProvider:
                 "voice_id": request.voice_id,
             },
         )
+        self._artifact_store.record_operation(
+            OperationResult(
+                operation_id=operation_id,
+                operation="tts",
+                status=OperationStatus.COMPLETED,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                artifact_ids=[artifact.id],
+            )
+        )
+        return artifact
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
         self._ensure_open()
@@ -119,8 +135,10 @@ class FakeProvider:
                 f"fake provider does not support capability: {ASR_CAPABILITY}"
             )
 
-        return self._artifact_store.write_transcript(
-            operation_id=self._next_operation_id("asr"),
+        operation_id = self._next_operation_id("asr")
+        started_at = datetime.now(UTC)
+        artifact = self._artifact_store.write_transcript(
+            operation_id=operation_id,
             provider_id=self.id,
             operation="asr",
             text="fake transcript",
@@ -135,6 +153,17 @@ class FakeProvider:
                 "uploaded_file_name": request.audio_path.name,
             },
         )
+        self._artifact_store.record_operation(
+            OperationResult(
+                operation_id=operation_id,
+                operation="asr",
+                status=OperationStatus.COMPLETED,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                artifact_ids=[artifact.id],
+            )
+        )
+        return artifact
 
     def _audio_bytes(self, request: TTSRequest) -> bytes:
         if request.mode == TTSMode.BUILTIN:

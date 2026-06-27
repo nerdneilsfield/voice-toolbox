@@ -25,6 +25,9 @@ class ProviderRegistry:
         except KeyError as exc:
             raise ProviderError(f"unknown provider: {provider_id}") from exc
 
+    def list_providers(self) -> list[VoiceProvider]:
+        return list(self._providers.values())
+
     def ensure_tts_capability(self, provider_id: str, request: TTSRequest) -> VoiceProvider:
         if request.provider_id != provider_id:
             raise ProviderError(

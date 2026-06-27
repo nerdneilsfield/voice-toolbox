@@ -99,9 +99,7 @@ def test_design_optimized_preview_omits_assistant_message_when_text_missing() ->
     body = _build_tts_body(request)
 
     assert body["model"] == "mimo-v2.5-tts-voicedesign"
-    assert body["messages"] == [
-        {"role": "user", "content": "Warm alto voice with gentle pacing."}
-    ]
+    assert body["messages"] == [{"role": "user", "content": "Warm alto voice with gentle pacing."}]
     assert body["audio"] == {"format": "wav", "optimize_text_preview": True}
     assert all(message["role"] != "assistant" for message in body["messages"])
 
@@ -143,7 +141,8 @@ def test_clone_builds_data_url_and_never_metadata_payload(tmp_path: Path) -> Non
     assert "clone audio" not in sidecar
     assert expected_payload not in sidecar
     assert "data:audio/wav;base64" not in sidecar
-    assert "audio" not in artifact.metadata or "voice" not in artifact.metadata
+    assert "audio" not in artifact.metadata
+    assert "voice" not in artifact.metadata
 
 
 def test_clone_rejects_unsupported_mime_before_data_url(tmp_path: Path) -> None:
@@ -373,7 +372,7 @@ def test_non_string_audio_payload_raises_provider_error(tmp_path: Path) -> None:
 def test_model_resolution_explicit_request_model_wins(tmp_path: Path) -> None:
     explicit = TTSRequest(
         mode=TTSMode.BUILTIN,
-        model="custom-tts",
+        model="mimo-v2.5-tts",
         text="hello",
         voice_id="Mia",
     )
@@ -394,9 +393,21 @@ def test_model_resolution_explicit_request_model_wins(tmp_path: Path) -> None:
         clone_base64_size=4,
     )
 
-    assert _build_tts_body(explicit)["model"] == "custom-tts"
+    assert _build_tts_body(explicit)["model"] == "mimo-v2.5-tts"
     assert _build_tts_body(design)["model"] == "mimo-v2.5-tts-voicedesign"
     assert _build_tts_body(clone)["model"] == "mimo-v2.5-tts-voiceclone"
+
+
+def test_unsupported_explicit_model_is_rejected() -> None:
+    request = TTSRequest(
+        mode=TTSMode.BUILTIN,
+        model="gpt-4",
+        text="hello",
+        voice_id="Mia",
+    )
+
+    with pytest.raises(ProviderError, match="unsupported MiMo model"):
+        _build_tts_body(request)
 
 
 def test_clone_and_asr_base64_size_max_10_mib(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -28,8 +29,13 @@ from voice_toolbox.settings import get_mimo_api_key, has_mimo_api_key
 
 CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
 DEFAULT_ARTIFACT_ROOT = Path.cwd()
-SUPPORTED_UPLOAD_MIME_TYPES = {"audio/wav", "audio/mpeg", "audio/mp3"}
+SUPPORTED_UPLOAD_MIME_TYPES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3"}
 MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
+MIME_BY_SUFFIX = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+}
+SAFE_UPLOAD_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 def create_app(
@@ -69,7 +75,7 @@ def create_app(
         return {
             "providers": [
                 _provider_summary(provider, http_request.app.state.has_mimo_api_key_func)
-                for provider in provider_registry._providers.values()
+                for provider in provider_registry.list_providers()
             ]
         }
 
@@ -100,6 +106,10 @@ def create_app(
         model: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
+        if sample is not None and mode != TTSMode.CLONE:
+            raise HTTPException(
+                status_code=422, detail="sample upload is only valid for clone mode"
+            )
         if mode == TTSMode.BUILTIN:
             request = _build_tts_request(
                 provider_id=provider_id,
@@ -205,10 +215,10 @@ def create_app(
         contents = _read_upload(file)
         mime_type = _normalize_mime_type(file.content_type)
         suffix = _suffix_for_upload(file.filename)
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
-            temp_file.write(contents)
-            temp_path = Path(temp_file.name)
-        try:
+        _validate_upload_signature(contents, mime_type, suffix)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir) / _safe_upload_filename(file.filename, suffix)
+            temp_path.write_bytes(contents)
             request = _build_asr_request(
                 provider_id=provider_id,
                 model=model,
@@ -220,13 +230,13 @@ def create_app(
             )
             provider_registry = _registry_from_request(http_request)
             provider = _ensure_asr_provider(provider_registry, provider_id, request)
+            started_at = datetime.now(UTC)
             try:
                 artifact = provider.transcribe(request)
             except ProviderError as exc:
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
-            return _operation_payload(artifact)
-        finally:
-            temp_path.unlink(missing_ok=True)
+            finished_at = datetime.now(UTC)
+            return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
 
     @app.get("/v1/artifacts/{artifact_id}")
     def artifact_metadata(artifact_id: str) -> dict[str, Any]:
@@ -246,7 +256,7 @@ def create_app(
 
 def _infer_artifact_root(registry: ProviderRegistry | None) -> Path:
     if registry is not None:
-        for provider in registry._providers.values():
+        for provider in registry.list_providers():
             artifact_root = getattr(provider, "artifact_root", None)
             if artifact_root is not None:
                 return Path(artifact_root)
@@ -307,14 +317,21 @@ def _build_tts_request(**kwargs: Any) -> TTSRequest:
     try:
         return TTSRequest(**kwargs)
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        raise HTTPException(status_code=422, detail=_safe_validation_errors(exc)) from exc
 
 
 def _build_asr_request(**kwargs: Any) -> ASRRequest:
     try:
         return ASRRequest(**kwargs)
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        raise HTTPException(status_code=422, detail=_safe_validation_errors(exc)) from exc
+
+
+def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
+    return [
+        {key: error[key] for key in ("loc", "msg", "type") if key in error}
+        for error in exc.errors()
+    ]
 
 
 def _ensure_provider_configured_for_operation(request: Request, provider_id: str) -> None:
@@ -338,10 +355,10 @@ def _run_clone_upload(
     contents = _read_upload(sample)
     mime_type = _normalize_mime_type(sample.content_type)
     suffix = _suffix_for_upload(sample.filename)
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
-        temp_file.write(contents)
-        temp_path = Path(temp_file.name)
-    try:
+    _validate_upload_signature(contents, mime_type, suffix)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir) / _safe_upload_filename(sample.filename, suffix)
+        temp_path.write_bytes(contents)
         request = _build_tts_request(
             provider_id=provider_id,
             mode=TTSMode.CLONE,
@@ -355,8 +372,6 @@ def _run_clone_upload(
             consent_confirmed=consent_confirmed,
         )
         return _run_tts(_registry_from_request(http_request), provider_id, request)
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def _run_tts(
@@ -365,21 +380,27 @@ def _run_tts(
     request: TTSRequest,
 ) -> dict[str, Any]:
     provider = _ensure_tts_provider(provider_registry, provider_id, request)
+    started_at = datetime.now(UTC)
     try:
         artifact = provider.synthesize(request)
     except ProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return _operation_payload(artifact)
+    finished_at = datetime.now(UTC)
+    return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
 
 
-def _operation_payload(artifact: Artifact) -> dict[str, Any]:
-    now = datetime.now(UTC)
+def _operation_payload(
+    artifact: Artifact,
+    *,
+    started_at: datetime,
+    finished_at: datetime,
+) -> dict[str, Any]:
     operation = OperationResult(
         operation_id=artifact.id,
         operation=artifact.operation,
         status=OperationStatus.COMPLETED,
-        started_at=now,
-        finished_at=now,
+        started_at=started_at,
+        finished_at=finished_at,
         artifact_ids=[artifact.id],
     )
     return {
@@ -398,13 +419,19 @@ def _read_upload(upload: UploadFile) -> bytes:
     contents = upload.file.read(MAX_UPLOAD_RAW_BYTES + 1)
     if not contents:
         raise HTTPException(status_code=422, detail="upload file is empty")
-    if len(contents) > MAX_UPLOAD_RAW_BYTES:
+    if len(contents) > MAX_UPLOAD_RAW_BYTES or _base64_size(contents) > MAX_BASE64_AUDIO_SIZE:
         raise HTTPException(status_code=413, detail="audio base64 payload exceeds 10 MiB")
     return contents
 
 
 def _normalize_mime_type(mime_type: str | None) -> Literal["audio/wav", "audio/mpeg", "audio/mp3"]:
-    normalized = "audio/mpeg" if mime_type == "audio/mp3" else mime_type
+    base_type = (mime_type or "").split(";", maxsplit=1)[0].strip().lower()
+    if base_type in {"audio/x-wav", "audio/wave"}:
+        normalized = "audio/wav"
+    elif base_type == "audio/mp3":
+        normalized = "audio/mpeg"
+    else:
+        normalized = base_type
     if normalized not in SUPPORTED_UPLOAD_MIME_TYPES:
         raise HTTPException(status_code=422, detail="audio MIME type must be wav or mp3")
     return cast(Literal["audio/wav", "audio/mpeg", "audio/mp3"], normalized)
@@ -415,6 +442,27 @@ def _suffix_for_upload(filename: str | None) -> str:
     if suffix not in {".wav", ".mp3"}:
         raise HTTPException(status_code=422, detail="audio file suffix must be .wav or .mp3")
     return suffix
+
+
+def _validate_upload_signature(contents: bytes, mime_type: str, suffix: str) -> None:
+    expected_mime = MIME_BY_SUFFIX[suffix]
+    if mime_type != expected_mime:
+        raise HTTPException(status_code=422, detail="audio MIME type does not match file suffix")
+    if suffix == ".wav" and not (contents.startswith(b"RIFF") and contents[8:12] == b"WAVE"):
+        raise HTTPException(status_code=422, detail="wav upload must start with RIFF/WAVE header")
+    if suffix == ".mp3" and not (
+        contents.startswith(b"ID3")
+        or (len(contents) >= 2 and contents[0] == 0xFF and contents[1] & 0xE0 == 0xE0)
+    ):
+        raise HTTPException(status_code=422, detail="mp3 upload must start with ID3 or frame sync")
+
+
+def _safe_upload_filename(filename: str | None, suffix: str) -> str:
+    raw_name = Path(filename or f"upload{suffix}").name
+    sanitized = SAFE_UPLOAD_NAME_PATTERN.sub("_", raw_name).strip("._")
+    if not sanitized.lower().endswith(suffix):
+        sanitized = f"{sanitized or 'upload'}{suffix}"
+    return sanitized
 
 
 def _base64_size(contents: bytes) -> int:
@@ -433,6 +481,8 @@ def _read_artifact_sidecar(root: Path, artifact_id: str) -> Artifact:
             payload = json.load(sidecar_file)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail="artifact sidecar is invalid") from exc
+    if "path" not in payload:
+        payload["path"] = str(_artifact_path_for_sidecar(matches[-1], payload))
     try:
         artifact = Artifact.model_validate(payload)
     except ValidationError as exc:
@@ -443,6 +493,12 @@ def _read_artifact_sidecar(root: Path, artifact_id: str) -> Artifact:
     if not path.is_relative_to(artifact_root):
         raise HTTPException(status_code=422, detail="artifact path is outside artifact root")
     return artifact.model_copy(update={"path": path})
+
+
+def _artifact_path_for_sidecar(sidecar_path: Path, payload: dict[str, Any]) -> Path:
+    mime_type = payload.get("mime_type")
+    suffix = ".txt" if mime_type == "text/plain; charset=utf-8" else ".wav"
+    return sidecar_path.with_suffix(suffix)
 
 
 app = create_app()
