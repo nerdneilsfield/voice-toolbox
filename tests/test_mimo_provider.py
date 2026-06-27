@@ -12,8 +12,11 @@ from pydantic import ValidationError
 from voice_toolbox.models import ASRRequest, TTSMode, TTSRequest
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.mimo import (
+    ASR_TIMEOUT_SECONDS,
+    GENERATION_TIMEOUT_SECONDS,
     MAX_BASE64_AUDIO_SIZE,
     RATE_LIMIT_BACKOFF_SECONDS,
+    TTS_TIMEOUT_SECONDS,
     MimoProvider,
     _audio_file_to_data_url,
     _build_asr_body,
@@ -37,6 +40,12 @@ class FakeChatCompletions:
 class FakeClient:
     def __init__(self, completion: object | list[object]) -> None:
         self.chat = SimpleNamespace(completions=FakeChatCompletions(completion))
+
+
+def test_provider_generation_timeout_defaults_to_300_seconds() -> None:
+    assert GENERATION_TIMEOUT_SECONDS == 300.0
+    assert TTS_TIMEOUT_SECONDS == GENERATION_TIMEOUT_SECONDS
+    assert ASR_TIMEOUT_SECONDS == GENERATION_TIMEOUT_SECONDS
 
 
 def _tts_completion(payload: bytes = b"WAV") -> object:
@@ -134,7 +143,7 @@ def test_clone_builds_data_url_and_never_metadata_payload(tmp_path: Path) -> Non
     artifact = provider.synthesize(request)
     sidecar = artifact.path.with_suffix(".json").read_text(encoding="utf-8")
 
-    assert client.chat.completions.calls[0]["timeout"] == 300.0
+    assert client.chat.completions.calls[0]["timeout"] == GENERATION_TIMEOUT_SECONDS
     assert artifact.metadata["uploaded_file_name"] == "sample.wav"
     assert artifact.metadata["uploaded_file_mime_type"] == "audio/wav"
     assert artifact.metadata["base64_size"] == len(expected_payload)
@@ -212,7 +221,7 @@ def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) ->
             "model": "mimo-v2.5-asr",
             "messages": body["messages"],
             "extra_body": {"asr_options": {"language": "zh"}},
-            "timeout": 300.0,
+            "timeout": GENERATION_TIMEOUT_SECONDS,
         }
     ]
     assert artifact.path.read_text(encoding="utf-8") == "你好"
