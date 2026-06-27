@@ -659,6 +659,30 @@ def load_settings(env_path: Path | str | None = None) -> ProviderConfig:
 
 `get_mimo_api_key(env_path)` must call `load_env_values(env_path)` and read the resolved `api_key_env`.
 
+Keep `get_mimo_api_key(env_path)` and `has_mimo_api_key(env_path)` as deprecated compatibility wrappers because `tests/test_artifacts.py` still imports them. They should both delegate to the new config/env path and must not use cached env state:
+
+```python
+def get_mimo_api_key(env_path: Path | str | None = None) -> str | None:
+    app_config = load_app_config(env_path=env_path)
+    env = load_env_values(env_path)
+    provider = next((item for item in app_config.providers if item.id == "mimo"), app_config.providers[0])
+    value = env.get(provider.api_key_env)
+    return value or None
+
+
+def has_mimo_api_key(env_path: Path | str | None = None) -> bool:
+    return get_mimo_api_key(env_path) is not None
+```
+
+Delete the old `@lru_cache`-backed `_load_env_values` path from `settings.py`; otherwise monkeypatched env values and `config.py::load_env_values()` can disagree inside one test process.
+
+Migration map for existing imports:
+
+- `packages/voice_toolbox/src/voice_toolbox/providers/mimo.py`: remove `from voice_toolbox.settings import get_mimo_api_key, load_settings`; provider construction uses `self._config` and the `api_key` passed by `providers/factory.py`.
+- `apps/api/src/voice_toolbox_api/main.py`: remove `get_mimo_api_key` and `has_mimo_api_key` imports; use `build_provider_registry(config, env_values=...)` and `_ensure_provider_configured_for_operation()`.
+- `packages/voice_toolbox/src/voice_toolbox/cli.py`: remove `has_mimo_api_key` import and `_ensure_default_provider_configured()`; provider readiness comes from config/factory and provider errors.
+- `tests/test_artifacts.py`: keep existing `has_mimo_api_key` tests, but expect the compatibility wrapper to use uncached `load_env_values()`.
+
 - [ ] **Step 6: Add Loguru dependency**
 
 Modify `pyproject.toml` dependencies:
@@ -878,6 +902,7 @@ def synthesize(
 Modify `providers/mimo.py`:
 
 - Import defaults from `voice_toolbox.defaults`.
+- Remove imports from `voice_toolbox.settings`; MiMo provider must not call `load_settings()` or `get_mimo_api_key()`.
 - Re-export `MIMO_MODELS` and `MIMO_VOICES` from `voice_toolbox.defaults` for compatibility. They are now `list[ModelInfo]` and `list[VoiceInfo]`.
 - Constructor accepts `config: ConfiguredProvider | None = None` and `base_url: str | None = None`.
 - If `config is None`, call `make_default_mimo_provider_config(base_url=base_url or DEFAULT_MIMO_BASE_URL)`.
@@ -1255,6 +1280,10 @@ Provider readiness checks must use `app.state.config.providers[*].api_key_env`, 
 Use this replacement implementation:
 
 ```python
+def _configured_provider_for_id(config: AppConfig, provider_id: str) -> ConfiguredProvider | None:
+    return next((provider for provider in config.providers if provider.id == provider_id), None)
+
+
 def _ensure_provider_configured_for_operation(request: Request, provider_id: str) -> None:
     config_provider = _configured_provider_for_id(request.app.state.config, provider_id)
     if config_provider is None:
