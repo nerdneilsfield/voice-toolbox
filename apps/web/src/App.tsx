@@ -1,12 +1,18 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { AdvancedSettings } from "./components/AdvancedSettings";
+import { FullscreenTextEditor } from "./components/FullscreenTextEditor";
+import { useProviderCatalog } from "./hooks/useProviderCatalog";
+import { selectDefaultVoice, selectModelForCapability } from "./lib/providerSelection";
 import {
   Artifact,
   Provider,
+  ProviderModel,
+  TextFormat,
   Voice,
   cloneVoice,
   designVoice,
-  getProviders,
   getVoices,
+  normalizeText,
   synthesizeBuiltin,
   transcribe,
 } from "./api";
@@ -21,12 +27,26 @@ const BASE64_LIMIT_BYTES = 10 * 1024 * 1024;
 function App() {
   const [tab, setTab] = useState<MainTab>("tts");
   const [ttsMode, setTtsMode] = useState<TtsMode>("builtin");
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const [providersState, setProvidersState] = useState<RequestState>("loading");
-  const [providerId, setProviderId] = useState("mimo");
+  const {
+    providers,
+    selectedProvider,
+    selectedProviderId,
+    setSelectedProviderId,
+    error: providerError,
+    loading: providersLoading,
+  } = useProviderCatalog();
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voicesState, setVoicesState] = useState<RequestState>("idle");
+  const [voicesError, setVoicesError] = useState("");
   const [voiceId, setVoiceId] = useState("");
+  const [builtinModel, setBuiltinModel] = useState<string | null>(null);
+  const [designModel, setDesignModel] = useState<string | null>(null);
+  const [cloneModel, setCloneModel] = useState<string | null>(null);
+  const [asrModel, setAsrModel] = useState<string | null>(null);
+  const [textFormat, setTextFormat] = useState<TextFormat>("plain");
+  const [cleanedPreview, setCleanedPreview] = useState("");
+  const [previewState, setPreviewState] = useState<RequestState>("idle");
+  const [previewError, setPreviewError] = useState("");
   const [builtinText, setBuiltinText] = useState("你好，欢迎使用 Voice Toolbox。");
   const [builtinStyle, setBuiltinStyle] = useState("");
   const [designDescription, setDesignDescription] = useState("");
@@ -40,7 +60,6 @@ function App() {
   const [asrLanguage, setAsrLanguage] = useState("auto");
   const [ttsState, setTtsState] = useState<RequestState>("idle");
   const [asrState, setAsrState] = useState<RequestState>("idle");
-  const [globalError, setGlobalError] = useState("");
   const [ttsError, setTtsError] = useState("");
   const [asrError, setAsrError] = useState("");
   const [ttsArtifact, setTtsArtifact] = useState<Artifact | null>(null);
@@ -49,63 +68,60 @@ function App() {
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    let ignore = false;
-    setProvidersState("loading");
-    getProviders()
-      .then((items) => {
-        if (ignore) {
-          return;
-        }
-        setProviders(items);
-        setProviderId((current) => items.find((provider) => provider.id === current)?.id ?? items[0]?.id ?? "mimo");
-        setProvidersState("success");
-      })
-      .catch((err: Error) => {
-        if (!ignore) {
-          setGlobalError(err.message);
-          setProvidersState("error");
-        }
-      });
-    return () => {
-      ignore = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!providerId) {
+    if (!selectedProviderId) {
+      setVoices([]);
+      setVoiceId("");
       return;
     }
     let ignore = false;
+    setVoices([]);
+    setVoiceId("");
+    setVoicesError("");
     setVoicesState("loading");
-    getVoices(providerId)
+    getVoices(selectedProviderId)
       .then((items) => {
         if (ignore) {
           return;
         }
         setVoices(items);
-        setVoiceId((current) => items.find((voice) => voice.id === current)?.id ?? items[0]?.id ?? "");
         setVoicesState("success");
       })
       .catch((err: Error) => {
         if (!ignore) {
           setVoices([]);
           setVoiceId("");
-          setGlobalError(err.message);
+          setVoicesError(err.message);
           setVoicesState("error");
         }
       });
     return () => {
       ignore = true;
     };
-  }, [providerId]);
+  }, [selectedProviderId]);
 
-  const selectedProvider = useMemo(
-    () => providers.find((provider) => provider.id === providerId) ?? providers[0],
-    [providers, providerId],
-  );
-  const activeModels = useMemo(() => selectedProvider?.models ?? [], [selectedProvider]);
+  useEffect(() => {
+    setBuiltinModel((current) => selectModelForCapability(selectedProvider, "tts.builtin", current));
+    setDesignModel((current) => selectModelForCapability(selectedProvider, "tts.design", current));
+    setCloneModel((current) => selectModelForCapability(selectedProvider, "tts.clone", current));
+    setAsrModel((current) => selectModelForCapability(selectedProvider, "asr.transcribe", current));
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    setVoiceId((current) => selectDefaultVoice(selectedProvider, voices, current) ?? "");
+  }, [selectedProvider, voices]);
+
+  useEffect(() => {
+    setCleanedPreview("");
+    setPreviewError("");
+    setPreviewState("idle");
+  }, [selectedProviderId, textFormat, ttsMode]);
+
   const cloneBase64Size = useMemo(() => (cloneFile ? Math.ceil(cloneFile.size / 3) * 4 : 0), [cloneFile]);
   const cloneOverLimit = cloneBase64Size > BASE64_LIMIT_BYTES;
+  const providerModels = (capability: string) =>
+    selectedProvider?.models.filter((model) => model.capability === capability) ?? [];
+  const globalError = providerError || voicesError;
+  const providerReady = Boolean(selectedProviderId);
 
   function insertTag(tag: string) {
     const target = textAreaRef.current;
@@ -123,6 +139,30 @@ function App() {
     });
   }
 
+  function activeScriptText() {
+    if (ttsMode === "builtin") {
+      return builtinText;
+    }
+    if (ttsMode === "design") {
+      return designText;
+    }
+    return cloneText;
+  }
+
+  async function previewCleanedText() {
+    setPreviewError("");
+    setPreviewState("loading");
+    setCleanedPreview("");
+    try {
+      const result = await normalizeText({ content: activeScriptText(), input_format: textFormat });
+      setCleanedPreview(result.text);
+      setPreviewState("success");
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : "Text preview failed");
+      setPreviewState("error");
+    }
+  }
+
   async function submitTts(event: FormEvent) {
     event.preventDefault();
     setTtsError("");
@@ -131,17 +171,21 @@ function App() {
       const result =
         ttsMode === "builtin"
           ? await synthesizeBuiltin({
-              providerId,
+              providerId: selectedProviderId,
               text: builtinText,
+              textFormat,
               voiceId,
               styleInstruction: builtinStyle,
+              model: builtinModel ?? undefined,
             })
           : ttsMode === "design"
             ? await designVoice({
-                providerId,
+                providerId: selectedProviderId,
                 voiceDescription: designDescription,
                 text: designText,
+                textFormat,
                 optimizeTextPreview: optimizePreview,
+                model: designModel ?? undefined,
               })
             : await submitClone();
       setTtsArtifact(result.artifact);
@@ -160,13 +204,13 @@ function App() {
       throw new Error("Consent confirmation is required for voice clone");
     }
     const body = new FormData();
-    body.set("provider_id", providerId);
+    body.set("provider_id", selectedProviderId);
     body.set("text", cloneText);
+    body.set("text_format", textFormat);
     body.set("consent_confirmed", String(cloneConsent));
     body.set("sample", cloneFile);
-    if (cloneStyle.trim()) {
-      body.set("style_instruction", cloneStyle.trim());
-    }
+    appendFormValue(body, "style_instruction", cloneStyle);
+    appendFormValue(body, "model", cloneModel);
     return cloneVoice(body);
   }
 
@@ -182,9 +226,10 @@ function App() {
     setTranscript("");
     try {
       const body = new FormData();
-      body.set("provider_id", providerId);
+      body.set("provider_id", selectedProviderId);
       body.set("language", asrLanguage);
       body.set("file", asrFile);
+      appendFormValue(body, "model", asrModel);
       const result = await transcribe(body);
       setAsrArtifact(result.artifact);
       const transcriptResponse = await fetch(result.artifact.download_url);
@@ -206,8 +251,8 @@ function App() {
         <div className="provider-strip" aria-live="polite">
           <label>
             Provider
-            <select value={providerId} onChange={(event) => setProviderId(event.target.value)}>
-              {providers.length === 0 ? <option value="mimo">mimo</option> : null}
+            <select value={selectedProviderId} onChange={(event) => setSelectedProviderId(event.target.value)}>
+              {providers.length === 0 ? <option value="">No providers</option> : null}
               {providers.map((provider) => (
                 <option key={provider.id} value={provider.id}>
                   {provider.name}
@@ -215,9 +260,11 @@ function App() {
               ))}
             </select>
           </label>
-          <KeyStatus provider={selectedProvider} state={providersState} />
+          <KeyStatus provider={selectedProvider} loading={providersLoading} />
         </div>
       </header>
+
+      <ProviderDetails provider={selectedProvider} />
 
       <nav className="tabs" aria-label="Toolbox sections">
         <button className={tab === "tts" ? "active" : ""} type="button" onClick={() => setTab("tts")}>
@@ -253,53 +300,93 @@ function App() {
               </button>
             </fieldset>
 
+            <TextTools
+              textFormat={textFormat}
+              setTextFormat={setTextFormat}
+              previewState={previewState}
+              previewError={previewError}
+              cleanedPreview={cleanedPreview}
+              onPreview={previewCleanedText}
+            />
+
             {ttsMode === "builtin" ? (
-              <BuiltinControls
-                voices={voices}
-                voicesState={voicesState}
-                voiceId={voiceId}
-                setVoiceId={setVoiceId}
-                text={builtinText}
-                setText={setBuiltinText}
-                style={builtinStyle}
-                setStyle={setBuiltinStyle}
-                insertTag={insertTag}
-                textAreaRef={textAreaRef}
-              />
+              <>
+                <BuiltinControls
+                  voices={voices}
+                  voicesState={voicesState}
+                  voiceId={voiceId}
+                  setVoiceId={setVoiceId}
+                  text={builtinText}
+                  setText={setBuiltinText}
+                  style={builtinStyle}
+                  setStyle={setBuiltinStyle}
+                  insertTag={insertTag}
+                  textAreaRef={textAreaRef}
+                />
+                <AdvancedSettings
+                  label="Advanced"
+                  models={providerModels("tts.builtin")}
+                  selectedModel={builtinModel}
+                  onModelChange={setBuiltinModel}
+                />
+              </>
             ) : null}
 
             {ttsMode === "design" ? (
-              <DesignControls
-                description={designDescription}
-                setDescription={setDesignDescription}
-                text={designText}
-                setText={setDesignText}
-                optimizePreview={optimizePreview}
-                setOptimizePreview={setOptimizePreview}
-              />
+              <>
+                <DesignControls
+                  description={designDescription}
+                  setDescription={setDesignDescription}
+                  text={designText}
+                  setText={setDesignText}
+                  optimizePreview={optimizePreview}
+                  setOptimizePreview={setOptimizePreview}
+                />
+                <AdvancedSettings
+                  label="Advanced"
+                  models={providerModels("tts.design")}
+                  selectedModel={designModel}
+                  onModelChange={setDesignModel}
+                />
+              </>
             ) : null}
 
             {ttsMode === "clone" ? (
-              <CloneControls
-                text={cloneText}
-                setText={setCloneText}
-                style={cloneStyle}
-                setStyle={setCloneStyle}
-                file={cloneFile}
-                setFile={setCloneFile}
-                consent={cloneConsent}
-                setConsent={setCloneConsent}
-                base64Size={cloneBase64Size}
-                overLimit={cloneOverLimit}
-              />
+              <>
+                <CloneControls
+                  text={cloneText}
+                  setText={setCloneText}
+                  style={cloneStyle}
+                  setStyle={setCloneStyle}
+                  file={cloneFile}
+                  setFile={setCloneFile}
+                  consent={cloneConsent}
+                  setConsent={setCloneConsent}
+                  base64Size={cloneBase64Size}
+                  overLimit={cloneOverLimit}
+                />
+                <AdvancedSettings
+                  label="Advanced"
+                  models={providerModels("tts.clone")}
+                  selectedModel={cloneModel}
+                  onModelChange={setCloneModel}
+                />
+              </>
             ) : null}
 
             <div className="meta-row">
-              <ModelSummary models={activeModels} mode={ttsMode} />
+              <ModelSummary
+                models={selectedProvider?.models ?? []}
+                selectedModel={activeTtsModel(ttsMode, builtinModel, designModel, cloneModel)}
+              />
               <span className="format-pill">WAV</span>
             </div>
             {ttsError ? <div className="notice error compact">{ttsError}</div> : null}
-            <button className="primary-action" type="submit" disabled={ttsState === "loading" || cloneOverLimit}>
+            <button
+              className="primary-action"
+              type="submit"
+              disabled={ttsState === "loading" || cloneOverLimit || !providerReady}
+            >
               {ttsState === "loading" ? (
                 <>
                   <span className="spinner" aria-hidden="true" />
@@ -332,12 +419,18 @@ function App() {
                 <option value="en">en</option>
               </select>
             </label>
+            <AdvancedSettings
+              label="Advanced"
+              models={providerModels("asr.transcribe")}
+              selectedModel={asrModel}
+              onModelChange={setAsrModel}
+            />
             <div className="meta-row">
-              <ModelSummary models={activeModels} mode="asr" />
+              <ModelSummary models={selectedProvider?.models ?? []} selectedModel={asrModel} />
               <span className="format-pill">{asrLanguage.toUpperCase()}</span>
             </div>
             {asrError ? <div className="notice error compact">{asrError}</div> : null}
-            <button className="primary-action" type="submit" disabled={asrState === "loading"}>
+            <button className="primary-action" type="submit" disabled={asrState === "loading" || !providerReady}>
               {asrState === "loading" ? (
                 <>
                   <span className="spinner" aria-hidden="true" />
@@ -356,8 +449,8 @@ function App() {
   );
 }
 
-function KeyStatus({ provider, state }: { provider?: Provider; state: RequestState }) {
-  if (state === "loading") {
+function KeyStatus({ provider, loading }: { provider: Provider | null; loading: boolean }) {
+  if (loading) {
     return <span className="key-status muted">Key status loading</span>;
   }
   if (!provider || provider.has_api_key === undefined) {
@@ -367,6 +460,63 @@ function KeyStatus({ provider, state }: { provider?: Provider; state: RequestSta
     <span className={provider.has_api_key ? "key-status ok" : "key-status warn"}>
       {provider.has_api_key ? "API key configured" : "API key missing"}
     </span>
+  );
+}
+
+function ProviderDetails({ provider }: { provider: Provider | null }) {
+  if (!provider) {
+    return null;
+  }
+  return (
+    <section className="provider-details" aria-label="Provider status">
+      <StatusItem label="Env" value={provider.api_key_env ?? "n/a"} />
+      <StatusItem label="Key" value={provider.api_key_preview ?? (provider.has_api_key ? "configured" : "missing")} />
+      <StatusItem label="Base URL" value={provider.base_url ?? "n/a"} />
+      <StatusItem label="Config" value={provider.config_path_preview ?? "n/a"} />
+    </section>
+  );
+}
+
+function StatusItem({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="status-item">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </span>
+  );
+}
+
+function TextTools({
+  textFormat,
+  setTextFormat,
+  previewState,
+  previewError,
+  cleanedPreview,
+  onPreview,
+}: {
+  textFormat: TextFormat;
+  setTextFormat: (value: TextFormat) => void;
+  previewState: RequestState;
+  previewError: string;
+  cleanedPreview: string;
+  onPreview: () => void;
+}) {
+  return (
+    <section className="text-tools">
+      <label>
+        Text format
+        <select value={textFormat} onChange={(event) => setTextFormat(event.target.value as TextFormat)}>
+          <option value="plain">plain</option>
+          <option value="markdown">markdown</option>
+          <option value="auto">auto</option>
+        </select>
+      </label>
+      <button className="secondary-action" type="button" onClick={onPreview} disabled={previewState === "loading"}>
+        {previewState === "loading" ? "Previewing..." : "Preview cleaned text"}
+      </button>
+      {previewError ? <div className="notice error compact">{previewError}</div> : null}
+      {cleanedPreview ? <pre className="cleaned-preview">{cleanedPreview}</pre> : null}
+    </section>
   );
 }
 
@@ -391,7 +541,7 @@ function BuiltinControls({
   style: string;
   setStyle: (value: string) => void;
   insertTag: (tag: string) => void;
-  textAreaRef: React.MutableRefObject<HTMLTextAreaElement | null>;
+  textAreaRef: MutableRefObject<HTMLTextAreaElement | null>;
 }) {
   const [customTag, setCustomTag] = useState("");
   const selectedVoice = voices.find((voice) => voice.id === voiceId);
@@ -435,7 +585,7 @@ function BuiltinControls({
       <section className="field">
         <div className="section-heading">
           <span>Script</span>
-          <span>{text.length} chars</span>
+          <TextEditorActions title="Script" value={text} onApply={setText} count={text.length} />
         </div>
         <div className="tag-panel" aria-label="Insert audio tags">
           <div className="tag-row">
@@ -492,7 +642,7 @@ function DesignControls({
 }) {
   return (
     <div className="field-stack">
-      <label className="field">
+      <section className="field">
         <div className="section-heading">
           <span>Voice persona</span>
           <span className="switch-line">
@@ -512,11 +662,23 @@ function DesignControls({
           placeholder="Describe timbre, age, accent, energy, pace, and scene"
           required
         />
-      </label>
-      <label className="field">
+        <TextEditorActions
+          title="Voice persona"
+          value={description}
+          onApply={setDescription}
+          count={description.length}
+        />
+      </section>
+      <section className="field">
         <div className="section-heading">
           <span>Script</span>
-          {optimizePreview ? <span>Optional</span> : <span>{text.length} chars</span>}
+          <TextEditorActions
+            title="Script"
+            value={text}
+            onApply={setText}
+            count={text.length}
+            optional={optimizePreview}
+          />
         </div>
         <textarea
           className="script-input"
@@ -526,7 +688,7 @@ function DesignControls({
           placeholder="Preview text for generated voice"
           required={!optimizePreview}
         />
-      </label>
+      </section>
     </div>
   );
 }
@@ -569,10 +731,10 @@ function CloneControls({
         Base64 payload limit is 10 MiB.{" "}
         {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose wav or mp3."}
       </p>
-      <label className="field">
+      <section className="field">
         <div className="section-heading">
           <span>Script</span>
-          <span>{text.length} chars</span>
+          <TextEditorActions title="Script" value={text} onApply={setText} count={text.length} />
         </div>
         <textarea
           className="script-input"
@@ -581,7 +743,7 @@ function CloneControls({
           onChange={(event) => setText(event.target.value)}
           required
         />
-      </label>
+      </section>
       <label className="field">
         <span className="field-title">Style prompt</span>
         <input
@@ -598,16 +760,36 @@ function CloneControls({
   );
 }
 
-function ModelSummary({ models, mode }: { models: Provider["models"]; mode: TtsMode | "asr" }) {
-  const capability = mode === "asr" ? "asr.transcribe" : `tts.${mode}`;
-  const matching = models.filter((model) => model.capability === capability);
-  if (matching.length === 0) {
-    return null;
+function TextEditorActions({
+  title,
+  value,
+  onApply,
+  count,
+  optional,
+}: {
+  title: string;
+  value: string;
+  onApply: (value: string) => void;
+  count: number;
+  optional?: boolean;
+}) {
+  return (
+    <span className="editor-actions">
+      <span>{optional ? "Optional" : `${count} chars`}</span>
+      <FullscreenTextEditor title={title} value={value} onApply={onApply} />
+    </span>
+  );
+}
+
+function ModelSummary({ models, selectedModel }: { models: ProviderModel[]; selectedModel: string | null }) {
+  const model = models.find((item) => item.id === selectedModel);
+  if (!model) {
+    return <span className="model-chip muted">No model selected</span>;
   }
   return (
     <span className="model-chip">
       <span>Model</span>
-      <strong>{matching[0].name || matching[0].id}</strong>
+      <strong>{model.name || model.id}</strong>
     </span>
   );
 }
@@ -710,6 +892,28 @@ function LoadingState({ lines }: { lines: number }) {
       ))}
     </div>
   );
+}
+
+function activeTtsModel(
+  mode: TtsMode,
+  builtinModel: string | null,
+  designModel: string | null,
+  cloneModel: string | null,
+) {
+  if (mode === "builtin") {
+    return builtinModel;
+  }
+  if (mode === "design") {
+    return designModel;
+  }
+  return cloneModel;
+}
+
+function appendFormValue(body: FormData, key: string, value?: string | null) {
+  const trimmed = value?.trim();
+  if (trimmed) {
+    body.set(key, trimmed);
+  }
 }
 
 function shortId(id: string) {

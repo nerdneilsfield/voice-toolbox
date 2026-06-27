@@ -1,18 +1,12 @@
 export type Capability = "tts.builtin" | "tts.design" | "tts.clone" | "asr.transcribe" | string;
 
+export type TextFormat = "plain" | "markdown" | "auto";
+
 export type ProviderModel = {
   id: string;
   name: string;
   capability?: string | null;
   note?: string | null;
-};
-
-export type Provider = {
-  id: string;
-  name: string;
-  capabilities: Capability[];
-  models: ProviderModel[];
-  has_api_key?: boolean;
 };
 
 export type Voice = {
@@ -21,6 +15,24 @@ export type Voice = {
   language?: string | null;
   gender?: string | null;
   note?: string | null;
+};
+
+export type ProviderDefaultModels = Partial<Record<"tts_builtin" | "tts_design" | "tts_clone" | "asr", string | null>>;
+
+export type Provider = {
+  id: string;
+  name: string;
+  type?: string;
+  base_url?: string | null;
+  api_key_env?: string | null;
+  api_key_preview?: string | null;
+  config_path_preview?: string;
+  default_voice?: string | null;
+  default_models?: ProviderDefaultModels;
+  capabilities: Capability[];
+  models: ProviderModel[];
+  voices?: Voice[];
+  has_api_key?: boolean;
 };
 
 export type Artifact = {
@@ -52,6 +64,7 @@ export type OperationResponse = {
 export type BuiltinForm = {
   providerId: string;
   text: string;
+  textFormat: TextFormat;
   voiceId: string;
   styleInstruction?: string;
   model?: string;
@@ -60,9 +73,26 @@ export type BuiltinForm = {
 export type DesignForm = {
   providerId: string;
   voiceDescription: string;
+  textFormat: TextFormat;
   text?: string;
   optimizeTextPreview: boolean;
   model?: string;
+};
+
+export type NormalizeRequest = {
+  content: string;
+  input_format: TextFormat;
+  normalizer_id?: string | null;
+  options?: Record<string, unknown>;
+};
+
+export type NormalizeResponse = {
+  text: string;
+  input_format: TextFormat;
+  output_format: "plain";
+  normalizer_id: string;
+  changed: boolean;
+  metadata: Record<string, unknown>;
 };
 
 export async function getProviders(): Promise<Provider[]> {
@@ -75,11 +105,16 @@ export async function getVoices(providerId: string): Promise<Voice[]> {
   return payload.voices;
 }
 
+export function normalizeText(request: NormalizeRequest): Promise<NormalizeResponse> {
+  return requestJsonWithBody("/v1/normalize/text", request);
+}
+
 export function synthesizeBuiltin(form: BuiltinForm): Promise<OperationResponse> {
   const body = new FormData();
   body.set("provider_id", form.providerId);
   body.set("mode", "builtin");
   body.set("text", form.text);
+  body.set("text_format", form.textFormat);
   body.set("voice_id", form.voiceId);
   appendOptional(body, "style_instruction", form.styleInstruction);
   appendOptional(body, "model", form.model);
@@ -90,6 +125,7 @@ export function designVoice(form: DesignForm): Promise<OperationResponse> {
   const body = new FormData();
   body.set("provider_id", form.providerId);
   body.set("voice_description", form.voiceDescription);
+  body.set("text_format", form.textFormat);
   body.set("optimize_text_preview", String(form.optimizeTextPreview));
   appendOptional(body, "text", form.text);
   appendOptional(body, "model", form.model);
@@ -107,6 +143,18 @@ export function transcribe(formData: FormData): Promise<OperationResponse> {
 async function requestJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
   return parseResponse<T>(response);
+}
+
+async function requestJsonWithBody<TResponse, TBody extends Record<string, unknown>>(
+  url: string,
+  body: TBody,
+): Promise<TResponse> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseResponse<TResponse>(response);
 }
 
 async function requestForm<T>(url: string, body: FormData): Promise<T> {
