@@ -109,6 +109,20 @@ def test_tts_synthesize_accepts_format_wav(monkeypatch, tmp_path: Path) -> None:
     assert provider.tts_requests[0].output_format == "wav"
 
 
+def test_cli_tts_accepts_text_format_markdown(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        ["tts", "synthesize", "--text", "# Title", "--text-format", "markdown", "--voice", "Mia"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "audio" in result.output.lower()
+    assert provider.tts_requests[0].text == "Title"
+
+
 def test_tts_synthesize_rejects_unsupported_format(monkeypatch, tmp_path: Path) -> None:
     provider = _install_recording_provider(monkeypatch, tmp_path)
     runner = CliRunner()
@@ -265,3 +279,15 @@ def test_asr_transcribe_auto_language_succeeds(monkeypatch, tmp_path: Path) -> N
     assert request.base64_size == 8
     assert request.language == "auto"
     assert request.model is None
+
+
+def test_cli_asr_model_can_be_omitted(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    audio = tmp_path / "speech.wav"
+    audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ")
+    runner = CliRunner()
+
+    result = runner.invoke(cli.app, ["asr", "transcribe", "--file", str(audio)])
+
+    assert result.exit_code == 0, result.output
+    assert provider.asr_requests[0].model is None

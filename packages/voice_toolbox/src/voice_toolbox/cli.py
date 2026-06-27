@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Literal, NoReturn, cast
+from typing import Annotated, Literal, NoReturn, cast
 
 import typer
 from pydantic import ValidationError
 
 from voice_toolbox.config import load_app_config, load_env_values
-from voice_toolbox.models import ASRRequest, AudioArtifact, TranscriptArtifact, TTSMode, TTSRequest
+from voice_toolbox.models import ASRRequest, AudioArtifact, TranscriptArtifact, TTSMode
+from voice_toolbox.pipeline import PreparedTTSRequest, prepare_tts_request
 from voice_toolbox.providers import ProviderError, ProviderRegistry
 from voice_toolbox.providers.factory import (
     build_provider_registry as build_configured_provider_registry,
@@ -18,7 +19,6 @@ app = typer.Typer(help="Voice Toolbox")
 tts_app = typer.Typer(help="Text-to-speech commands")
 asr_app = typer.Typer(help="Speech-to-text commands")
 
-DEFAULT_PROVIDER = "mimo"
 DEFAULT_OUTPUT_FORMAT: Literal["wav"] = "wav"
 SUPPORTED_AUDIO_MIME_BY_SUFFIX = {
     ".wav": "audio/wav",
@@ -26,9 +26,13 @@ SUPPORTED_AUDIO_MIME_BY_SUFFIX = {
 }
 AudioMime = Literal["audio/wav", "audio/mpeg", "audio/mp3"]
 
-ProviderOption = Annotated[str, typer.Option("--provider", help="Provider id.")]
+ProviderOption = Annotated[str | None, typer.Option("--provider", help="Provider id.")]
 TextOption = Annotated[str, typer.Option("--text", help="Text to synthesize.")]
 OptionalTextOption = Annotated[str | None, typer.Option("--text", help="Text to synthesize.")]
+TextFormatOption = Annotated[
+    Literal["plain", "markdown", "auto"],
+    typer.Option("--text-format", help="Input text format."),
+]
 ModelOption = Annotated[str | None, typer.Option("--model", help="Provider model id.")]
 FormatOption = Annotated[str, typer.Option("--format", help="Output format; v1 supports wav.")]
 StyleOption = Annotated[
@@ -56,21 +60,27 @@ def main() -> None:
 def synthesize(
     text: TextOption,
     voice: Annotated[str, typer.Option("--voice", help="Voice id.")],
-    provider: ProviderOption = DEFAULT_PROVIDER,
+    provider: ProviderOption = None,
+    text_format: TextFormatOption = "plain",
     model: ModelOption = None,
     output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
     style: StyleOption = None,
 ) -> None:
-    request = _build_tts_request(
-        provider_id=provider,
-        mode=TTSMode.BUILTIN,
-        model=model,
-        text=text,
-        style_instruction=style,
-        voice_id=voice,
-        output_format=output_format,
+    registry = build_provider_registry()
+    provider_id = _resolve_provider_id(registry, provider)
+    prepared = _prepare_tts_or_fail(
+        raw_text=text,
+        text_format=text_format,
+        fields={
+            "provider_id": provider_id,
+            "mode": TTSMode.BUILTIN,
+            "model": model,
+            "style_instruction": style,
+            "voice_id": voice,
+            "output_format": _normalize_output_format(output_format),
+        },
     )
-    artifact = _synthesize(provider, request)
+    artifact = _synthesize(registry, provider_id, prepared)
     _print_audio_artifact(artifact)
 
 
@@ -82,20 +92,27 @@ def design(
         bool,
         typer.Option("--optimize-text-preview", help="Let provider optimize preview text."),
     ] = False,
-    provider: ProviderOption = DEFAULT_PROVIDER,
+    provider: ProviderOption = None,
+    text_format: TextFormatOption = "plain",
     model: ModelOption = None,
     output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
 ) -> None:
-    request = _build_tts_request(
-        provider_id=provider,
-        mode=TTSMode.DESIGN,
-        model=model,
-        text=text,
-        voice_description=description,
-        optimize_text_preview=optimize_text_preview,
-        output_format=output_format,
+    registry = build_provider_registry()
+    provider_id = _resolve_provider_id(registry, provider)
+    raw_text = (text or None) if optimize_text_preview else text
+    prepared = _prepare_tts_or_fail(
+        raw_text=raw_text,
+        text_format=text_format,
+        fields={
+            "provider_id": provider_id,
+            "mode": TTSMode.DESIGN,
+            "model": model,
+            "voice_description": description,
+            "optimize_text_preview": optimize_text_preview,
+            "output_format": _normalize_output_format(output_format),
+        },
     )
-    artifact = _synthesize(provider, request)
+    artifact = _synthesize(registry, provider_id, prepared)
     _print_audio_artifact(artifact)
 
 
@@ -107,7 +124,8 @@ def clone(
         bool,
         typer.Option("--consent", help="Confirm rights and consent for uploaded voice sample."),
     ] = False,
-    provider: ProviderOption = DEFAULT_PROVIDER,
+    provider: ProviderOption = None,
+    text_format: TextFormatOption = "plain",
     model: ModelOption = None,
     output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
     style: StyleOption = None,
@@ -119,20 +137,25 @@ def clone(
     sample = _normalize_existing_audio_path(sample)
     consent_confirmed = _confirm_clone_consent(consent)
     mime_type, raw_byte_size, base64_size = _audio_upload_metadata(sample)
-    request = _build_tts_request(
-        provider_id=provider,
-        mode=TTSMode.CLONE,
-        model=model,
-        text=text,
-        style_instruction=style,
-        clone_sample_path=sample,
-        clone_mime_type=mime_type,
-        clone_raw_byte_size=raw_byte_size,
-        clone_base64_size=base64_size,
-        consent_confirmed=consent_confirmed,
-        output_format=output_format,
+    registry = build_provider_registry()
+    provider_id = _resolve_provider_id(registry, provider)
+    prepared = _prepare_tts_or_fail(
+        raw_text=text,
+        text_format=text_format,
+        fields={
+            "provider_id": provider_id,
+            "mode": TTSMode.CLONE,
+            "model": model,
+            "style_instruction": style,
+            "clone_sample_path": sample,
+            "clone_mime_type": mime_type,
+            "clone_raw_byte_size": raw_byte_size,
+            "clone_base64_size": base64_size,
+            "consent_confirmed": consent_confirmed,
+            "output_format": _normalize_output_format(output_format),
+        },
     )
-    artifact = _synthesize(provider, request)
+    artifact = _synthesize(registry, provider_id, prepared)
     _print_audio_artifact(artifact)
 
 
@@ -143,16 +166,18 @@ def transcribe(
         Literal["auto", "zh", "en"],
         typer.Option("--language", help="Language hint."),
     ] = "auto",
-    provider: ProviderOption = DEFAULT_PROVIDER,
+    provider: ProviderOption = None,
     model: Annotated[str | None, typer.Option("--model", help="Provider ASR model id.")] = None,
 ) -> None:
     if file is None:
         _fail("--file is required")
     file = _normalize_existing_audio_path(file)
     mime_type, raw_byte_size, base64_size = _audio_upload_metadata(file)
+    registry = build_provider_registry()
+    provider_id = _resolve_provider_id(registry, provider)
     try:
         request = ASRRequest(
-            provider_id=provider,
+            provider_id=provider_id,
             model=model,
             audio_path=file,
             mime_type=mime_type,
@@ -163,31 +188,60 @@ def transcribe(
     except ValidationError as exc:
         _fail(str(exc))
 
-    artifact = _transcribe(provider, request)
+    artifact = _transcribe(registry, provider_id, request)
     _print_transcript_artifact(artifact)
 
 
-def _build_tts_request(*, output_format: str = DEFAULT_OUTPUT_FORMAT, **fields: Any) -> TTSRequest:
+def _prepare_tts_or_fail(
+    *,
+    raw_text: str | None,
+    text_format: Literal["plain", "markdown", "auto"],
+    fields: dict[str, object],
+) -> PreparedTTSRequest:
     try:
-        return TTSRequest(output_format=_normalize_output_format(output_format), **fields)
+        return prepare_tts_request(raw_text, text_format, fields)
     except ValidationError as exc:
+        _fail(str(exc))
+    except ValueError as exc:
         _fail(str(exc))
 
 
-def _synthesize(provider_id: str, request: TTSRequest) -> AudioArtifact:
+def _synthesize(
+    registry: ProviderRegistry,
+    provider_id: str,
+    prepared: PreparedTTSRequest,
+) -> AudioArtifact:
     try:
-        provider = build_provider_registry().ensure_tts_capability(provider_id, request)
-        return provider.synthesize(request)
+        provider = registry.ensure_tts_capability(provider_id, prepared.request)
+        return provider.synthesize(
+            prepared.request,
+            artifact_metadata=prepared.artifact_metadata,
+        )
     except ProviderError as exc:
         _fail(str(exc))
 
 
-def _transcribe(provider_id: str, request: ASRRequest) -> TranscriptArtifact:
+def _transcribe(
+    registry: ProviderRegistry,
+    provider_id: str,
+    request: ASRRequest,
+) -> TranscriptArtifact:
     try:
-        provider = build_provider_registry().ensure_asr_capability(provider_id, request)
+        provider = registry.ensure_asr_capability(provider_id, request)
         return provider.transcribe(request)
     except ProviderError as exc:
         _fail(str(exc))
+
+
+def _resolve_provider_id(registry: ProviderRegistry, requested: str | None) -> str:
+    if requested:
+        return requested
+    providers = registry.list_providers()
+    if any(provider.id == "mimo" for provider in providers):
+        return "mimo"
+    if providers:
+        return providers[0].id
+    _fail("no providers configured")
 
 
 def _confirm_clone_consent(consent: bool) -> bool:

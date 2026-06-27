@@ -30,6 +30,9 @@ from voice_toolbox.models import (
     TTSMode,
     TTSRequest,
 )
+from voice_toolbox.normalizers.base import NormalizationRequest
+from voice_toolbox.normalizers.registry import NormalizerRegistry
+from voice_toolbox.pipeline import PreparedTTSRequest, prepare_tts_request
 from voice_toolbox.logging_config import configure_logging
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.factory import build_provider_registry
@@ -118,6 +121,25 @@ def create_app(
         provider = _get_provider(provider_registry, provider_id)
         return {"models": [model.model_dump(mode="json") for model in provider.list_models()]}
 
+    @app.post("/v1/normalize/text")
+    def normalize_text(request: NormalizationRequest) -> dict[str, Any]:
+        if not request.content.strip():
+            raise HTTPException(status_code=422, detail="content is required")
+        if len(request.content) > 200_000:
+            raise HTTPException(status_code=413, detail="content exceeds 200000 characters")
+        try:
+            result = NormalizerRegistry.default().normalize(
+                request.content,
+                input_format=request.input_format,
+                normalizer_id=request.normalizer_id,
+                options=request.options,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not result.text.strip():
+            raise HTTPException(status_code=422, detail="normalized text is empty")
+        return result.model_dump(mode="json")
+
     @app.post("/v1/tts/synthesize")
     def synthesize(
         http_request: Request,
@@ -125,6 +147,7 @@ def create_app(
         provider_id: Annotated[str, Form()] = "mimo",
         mode: Annotated[TTSMode, Form()] = TTSMode.BUILTIN,
         text: Annotated[str | None, Form()] = None,
+        text_format: Annotated[Literal["plain", "markdown", "auto"], Form()] = "plain",
         voice_id: Annotated[str | None, Form()] = None,
         voice_description: Annotated[str | None, Form()] = None,
         optimize_text_preview: Annotated[bool, Form()] = False,
@@ -138,25 +161,32 @@ def create_app(
                 status_code=422, detail="sample upload is only valid for clone mode"
             )
         if mode == TTSMode.BUILTIN:
-            request = _build_tts_request(
-                provider_id=provider_id,
-                mode=TTSMode.BUILTIN,
-                model=model,
-                text=text,
-                voice_id=voice_id,
-                style_instruction=style_instruction,
+            prepared = _prepare_tts_or_422(
+                raw_text=text,
+                text_format=text_format,
+                fields={
+                    "provider_id": provider_id,
+                    "mode": TTSMode.BUILTIN,
+                    "model": model,
+                    "voice_id": voice_id,
+                    "style_instruction": style_instruction,
+                },
             )
-            return _run_tts(_registry_from_request(http_request), provider_id, request)
+            return _run_tts(_registry_from_request(http_request), provider_id, prepared)
         if mode == TTSMode.DESIGN:
-            request = _build_tts_request(
-                provider_id=provider_id,
-                mode=TTSMode.DESIGN,
-                model=model,
-                text=text,
-                voice_description=voice_description,
-                optimize_text_preview=optimize_text_preview,
+            raw_text = (text or None) if optimize_text_preview else text
+            prepared = _prepare_tts_or_422(
+                raw_text=raw_text,
+                text_format=text_format,
+                fields={
+                    "provider_id": provider_id,
+                    "mode": TTSMode.DESIGN,
+                    "model": model,
+                    "voice_description": voice_description,
+                    "optimize_text_preview": optimize_text_preview,
+                },
             )
-            return _run_tts(_registry_from_request(http_request), provider_id, request)
+            return _run_tts(_registry_from_request(http_request), provider_id, prepared)
         if sample is None:
             raise HTTPException(status_code=422, detail="clone mode requires sample upload")
         return _run_clone_upload(
@@ -164,6 +194,7 @@ def create_app(
             sample=sample,
             provider_id=provider_id,
             text=text or "",
+            text_format=text_format,
             consent_confirmed=consent_confirmed,
             style_instruction=style_instruction,
             model=model,
@@ -174,20 +205,24 @@ def create_app(
         http_request: Request,
         provider_id: Annotated[str, Form()] = "mimo",
         text: Annotated[str, Form()] = "",
+        text_format: Annotated[Literal["plain", "markdown", "auto"], Form()] = "plain",
         voice_id: Annotated[str, Form()] = "",
         style_instruction: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
-        request = _build_tts_request(
-            provider_id=provider_id,
-            mode=TTSMode.BUILTIN,
-            model=model,
-            text=text,
-            voice_id=voice_id,
-            style_instruction=style_instruction,
+        prepared = _prepare_tts_or_422(
+            raw_text=text,
+            text_format=text_format,
+            fields={
+                "provider_id": provider_id,
+                "mode": TTSMode.BUILTIN,
+                "model": model,
+                "voice_id": voice_id,
+                "style_instruction": style_instruction,
+            },
         )
-        return _run_tts(_registry_from_request(http_request), provider_id, request)
+        return _run_tts(_registry_from_request(http_request), provider_id, prepared)
 
     @app.post("/v1/tts/design")
     def synthesize_design(
@@ -195,19 +230,24 @@ def create_app(
         provider_id: Annotated[str, Form()] = "mimo",
         voice_description: Annotated[str, Form()] = "",
         text: Annotated[str | None, Form()] = None,
+        text_format: Annotated[Literal["plain", "markdown", "auto"], Form()] = "plain",
         optimize_text_preview: Annotated[bool, Form()] = False,
         model: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
-        request = _build_tts_request(
-            provider_id=provider_id,
-            mode=TTSMode.DESIGN,
-            model=model,
-            text=text,
-            voice_description=voice_description,
-            optimize_text_preview=optimize_text_preview,
+        raw_text = (text or None) if optimize_text_preview else text
+        prepared = _prepare_tts_or_422(
+            raw_text=raw_text,
+            text_format=text_format,
+            fields={
+                "provider_id": provider_id,
+                "mode": TTSMode.DESIGN,
+                "model": model,
+                "voice_description": voice_description,
+                "optimize_text_preview": optimize_text_preview,
+            },
         )
-        return _run_tts(_registry_from_request(http_request), provider_id, request)
+        return _run_tts(_registry_from_request(http_request), provider_id, prepared)
 
     @app.post("/v1/tts/clone")
     def synthesize_clone(
@@ -215,6 +255,7 @@ def create_app(
         sample: Annotated[UploadFile, File()],
         provider_id: Annotated[str, Form()] = "mimo",
         text: Annotated[str, Form()] = "",
+        text_format: Annotated[Literal["plain", "markdown", "auto"], Form()] = "plain",
         consent_confirmed: Annotated[bool, Form()] = False,
         style_instruction: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
@@ -225,6 +266,7 @@ def create_app(
             sample=sample,
             provider_id=provider_id,
             text=text,
+            text_format=text_format,
             consent_confirmed=consent_confirmed,
             style_instruction=style_instruction,
             model=model,
@@ -235,7 +277,7 @@ def create_app(
         http_request: Request,
         file: Annotated[UploadFile, File()],
         provider_id: Annotated[str, Form()] = "mimo",
-        model: Annotated[str, Form()] = "mimo-v2.5-asr",
+        model: Annotated[str | None, Form()] = None,
         language: Annotated[Literal["auto", "zh", "en"], Form()] = "auto",
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
@@ -385,18 +427,25 @@ def _ensure_asr_provider(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _build_tts_request(**kwargs: Any) -> TTSRequest:
-    try:
-        return TTSRequest(**kwargs)
-    except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=_safe_validation_errors(exc)) from exc
-
-
 def _build_asr_request(**kwargs: Any) -> ASRRequest:
     try:
         return ASRRequest(**kwargs)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_safe_validation_errors(exc)) from exc
+
+
+def _prepare_tts_or_422(
+    *,
+    raw_text: str | None,
+    text_format: Literal["plain", "markdown", "auto"],
+    fields: dict[str, object],
+) -> PreparedTTSRequest:
+    try:
+        return prepare_tts_request(raw_text, text_format, fields)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=_safe_validation_errors(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -434,6 +483,7 @@ def _run_clone_upload(
     sample: UploadFile,
     provider_id: str,
     text: str,
+    text_format: Literal["plain", "markdown", "auto"],
     consent_confirmed: bool,
     style_instruction: str | None,
     model: str | None,
@@ -445,30 +495,36 @@ def _run_clone_upload(
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / _safe_upload_filename(sample.filename, suffix)
         temp_path.write_bytes(contents)
-        request = _build_tts_request(
-            provider_id=provider_id,
-            mode=TTSMode.CLONE,
-            model=model,
-            text=text,
-            style_instruction=style_instruction,
-            clone_sample_path=temp_path,
-            clone_mime_type=mime_type,
-            clone_raw_byte_size=len(contents),
-            clone_base64_size=_base64_size(contents),
-            consent_confirmed=consent_confirmed,
+        prepared = _prepare_tts_or_422(
+            raw_text=text,
+            text_format=text_format,
+            fields={
+                "provider_id": provider_id,
+                "mode": TTSMode.CLONE,
+                "model": model,
+                "style_instruction": style_instruction,
+                "clone_sample_path": temp_path,
+                "clone_mime_type": mime_type,
+                "clone_raw_byte_size": len(contents),
+                "clone_base64_size": _base64_size(contents),
+                "consent_confirmed": consent_confirmed,
+            },
         )
-        return _run_tts(_registry_from_request(http_request), provider_id, request)
+        return _run_tts(_registry_from_request(http_request), provider_id, prepared)
 
 
 def _run_tts(
     provider_registry: ProviderRegistry,
     provider_id: str,
-    request: TTSRequest,
+    prepared: PreparedTTSRequest,
 ) -> dict[str, Any]:
-    provider = _ensure_tts_provider(provider_registry, provider_id, request)
+    provider = _ensure_tts_provider(provider_registry, provider_id, prepared.request)
     started_at = datetime.now(UTC)
     try:
-        artifact = provider.synthesize(request)
+        artifact = provider.synthesize(
+            prepared.request,
+            artifact_metadata=prepared.artifact_metadata,
+        )
     except ProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finished_at = datetime.now(UTC)

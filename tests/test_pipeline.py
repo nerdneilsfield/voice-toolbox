@@ -12,6 +12,8 @@ def test_prepare_tts_request_normalizes_text_and_metadata() -> None:
     )
 
     assert prepared.request.text == "Title\nHello world"
+    assert prepared.normalized is not None
+    assert prepared.normalized.normalizer_id == "markdown_basic"
     assert prepared.artifact_metadata == {
         "normalizer_id": "markdown_basic",
         "normalization_input_format": "markdown",

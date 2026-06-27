@@ -231,6 +231,37 @@ def test_mimo_voices_are_hard_coded(tmp_path: Path) -> None:
     assert voices[0]["id"] == "mimo_default"
 
 
+def test_normalize_text_endpoint(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+
+    response = client.post(
+        "/v1/normalize/text",
+        json={"content": "# Title\nHello **world**", "input_format": "markdown"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "Title\nHello world"
+    assert response.json()["normalizer_id"] == "markdown_basic"
+
+
+def test_normalize_text_endpoint_rejects_empty_and_too_large(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+
+    empty = client.post(
+        "/v1/normalize/text",
+        json={"content": " ", "input_format": "plain"},
+    )
+    large = client.post(
+        "/v1/normalize/text",
+        json={"content": "x" * 200001, "input_format": "plain"},
+    )
+
+    assert empty.status_code == 422
+    assert empty.json()["detail"] == "content is required"
+    assert large.status_code == 413
+    assert large.json()["detail"] == "content exceeds 200000 characters"
+
+
 def test_asr_transcribe_accepts_multipart_and_returns_operation_result(tmp_path: Path) -> None:
     client, provider = _client(tmp_path)
 
@@ -260,6 +291,19 @@ def test_asr_transcribe_accepts_multipart_and_returns_operation_result(tmp_path:
     assert request.raw_byte_size == len(WAV_BYTES)
     assert request.base64_size == 24
     assert provider.asr_uploaded_bytes == [WAV_BYTES]
+
+
+def test_asr_model_omitted_passes_none_to_provider(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        data={"language": "auto", "provider_id": "mimo"},
+        files={"file": ("speech.wav", WAV_BYTES, "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert provider.asr_requests[-1].model is None
 
 
 def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) -> None:
@@ -309,6 +353,62 @@ def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) 
     assert "data:" not in str(clone.json())
     assert "base64," not in str(clone.json())
     assert "path" not in clone.json()["artifact"]
+
+
+def test_tts_endpoint_normalizes_markdown_and_writes_metadata(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={
+            "provider_id": "mimo",
+            "text": "# Title\nHello **world**",
+            "text_format": "markdown",
+            "voice_id": "Mia",
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.tts_requests[-1].text == "Title\nHello world"
+    assert response.json()["artifact"]["metadata"]["normalizer_id"] == "markdown_basic"
+    assert "Hello **world**" not in str(response.json())
+
+
+def test_clone_endpoint_normalizes_markdown(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/clone",
+        data={
+            "provider_id": "mimo",
+            "text": "# Clone",
+            "text_format": "markdown",
+            "consent_confirmed": "true",
+        },
+        files={"sample": ("sample.wav", WAV_BYTES, "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert provider.tts_requests[-1].text == "Clone"
+    assert response.json()["artifact"]["metadata"]["normalizer_id"] == "markdown_basic"
+
+
+def test_design_optimize_preview_empty_text_skips_normalization(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/design",
+        data={
+            "provider_id": "mimo",
+            "voice_description": "warm narrator",
+            "text": "",
+            "text_format": "markdown",
+            "optimize_text_preview": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.tts_requests[-1].text is None
 
 
 def test_tts_synthesize_route_dispatches_builtin(tmp_path: Path) -> None:
