@@ -8,8 +8,6 @@ else
 PYTHON_ENV := rtk uv run
 endif
 
-API_HOST ?= 127.0.0.1
-API_PORT ?= 8000
 WEB_HOST ?= 127.0.0.1
 WEB_PORT ?= 5173
 
@@ -22,7 +20,7 @@ help:
 	@echo "  make install              Install Python dev deps and frontend bun deps"
 	@echo "  make test                 Run backend and frontend tests"
 	@echo "  make check                Run tests, lint, type checks, and web build"
-	@echo "  make backend-server       Start FastAPI from voice_toolbox.toml or fallback config"
+	@echo "  make backend-server       Start FastAPI using voice_toolbox.toml or built-in fallback config"
 	@echo "  make frontend-server      Start Vite on $(WEB_HOST):$(WEB_PORT)"
 
 install:

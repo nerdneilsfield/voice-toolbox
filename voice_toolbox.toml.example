@@ -1,0 +1,60 @@
+[api]
+host = "127.0.0.1"
+port = 8000
+
+[logging.console]
+enabled = true
+level = "INFO"
+format = "human"
+colorize = true
+
+[logging.file]
+enabled = false
+path = "logs/voice-toolbox.log"
+level = "DEBUG"
+rotation = "50 MB"
+retention = "14 days"
+compression = "gz"
+enqueue = true
+
+[[providers]]
+id = "mimo"
+type = "mimo"
+name = "MiMo"
+base_url = "https://api.xiaomimimo.com/v1"
+api_key_env = "MIMO_API_KEY"
+default_voice = "mimo_default"
+
+[providers.default_models]
+tts_builtin = "mimo-v2.5-tts"
+tts_design = "mimo-v2.5-tts-voicedesign"
+tts_clone = "mimo-v2.5-tts-voiceclone"
+asr = "mimo-v2.5-asr"
+
+[[providers.models]]
+id = "mimo-v2.5-tts"
+name = "MiMo TTS"
+capability = "tts.builtin"
+
+[[providers.models]]
+id = "mimo-v2.5-tts-voicedesign"
+name = "MiMo Voice Design"
+capability = "tts.design"
+
+[[providers.models]]
+id = "mimo-v2.5-tts-voiceclone"
+name = "MiMo Voice Clone"
+capability = "tts.clone"
+
+[[providers.models]]
+id = "mimo-v2.5-asr"
+name = "MiMo ASR"
+capability = "asr.transcribe"
+
+[[providers.voices]]
+id = "mimo_default"
+name = "MiMo-默认"
+note = "cluster-dependent"
+
+# To add another provider, copy the [[providers]] block and use another api_key_env,
+# for example MIMO_SGP_API_KEY. Do not put API key values in this file.
