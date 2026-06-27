@@ -62,7 +62,7 @@ Modify:
 - `apps/web/src/api.ts` - provider summary fields, normalize endpoint, text format, model fields.
 - `apps/web/src/App.tsx` - provider/model UI, fullscreen editor integration, text format preview.
 - `apps/web/src/styles.css` - fullscreen editor and advanced settings polish.
-- `apps/web/package.json` - add Vitest test runner while keeping TypeScript checks in `build`.
+- `apps/web/package.json` - change only the existing `test` script to Vitest and add Vitest as a dev dependency; do not rewrite unrelated scripts.
 - Existing tests in `tests/` - update imports and expectations.
 
 ---
@@ -207,6 +207,7 @@ def test_config_path_preview() -> None:
     assert preview_config_path(Path("/Users/example/voice-toolbox/voice_toolbox.toml")) == (
         "voice-toolbox/voice_toolbox.toml"
     )
+    assert preview_config_path(Path("voice_toolbox.toml")) == "voice_toolbox.toml"
 
 
 def test_validation_rejects_bad_defaults(tmp_path: Path) -> None:
@@ -540,7 +541,8 @@ def mask_api_key_preview(value: str | None, *, trusted_local: bool) -> str | Non
 def preview_config_path(path: Path | None) -> str:
     if path is None:
         return "built-in default"
-    return f"{path.parent.name}/{path.name}"
+    parent = path.parent.name
+    return f"{parent}/{path.name}" if parent else path.name
 ```
 
 Implement private helpers with these contracts:
@@ -621,7 +623,10 @@ def _fill_mimo_defaults(provider: dict[str, object]) -> dict[str, object]:
     if "voices" not in result:
         result["voices"] = [voice.model_dump() for voice in MIMO_VOICES]
     models = [ModelInfo.model_validate(model) for model in result.get("models", [])]
-    models_by_capability = {model.capability: model.id for model in models if model.capability}
+    models_by_capability: dict[str, str] = {}
+    for model in models:
+        if model.capability and model.capability not in models_by_capability:
+            models_by_capability[model.capability] = model.id
     current_defaults = ProviderDefaultModels.model_validate(result.get("default_models") or {})
     fallback = ProviderDefaultModels(
         tts_builtin=current_defaults.tts_builtin or models_by_capability.get("tts.builtin"),
@@ -850,6 +855,10 @@ class ASRRequest(BaseModel):
 
 Keep the existing `TTSRequest.strip_text_fields` validator unchanged. Do not add a strip validator to `ASRRequest`; ASR has no free-text prompt fields and its `model` must preserve explicit provider IDs.
 
+Also explicitly keep `TTSRequest.text: str | None = None`. Design mode with `optimize_text_preview=True` depends on `text=None` to omit the assistant message.
+
+Keep the compatibility `ProviderConfig` class in `models.py` independent from the new config modules. `models.py` must not import `voice_toolbox.config`, `voice_toolbox.config_models`, or `voice_toolbox.defaults`; otherwise `config_models.py -> models.py -> config.py` would recreate a circular import.
+
 Modify `VoiceProvider.synthesize()` in `providers/base.py`:
 
 ```python
@@ -884,6 +893,26 @@ Modify `providers/mimo.py`:
 The key method signatures:
 
 ```python
+def __init__(
+    self,
+    *,
+    config: ConfiguredProvider | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    artifact_store: ArtifactStore | None = None,
+    artifact_root: Path | str | None = None,
+    env_path: Path | str | None = None,
+    client: Any | None = None,
+    client_factory: Callable[..., Any] = OpenAI,
+    sleep_func: Callable[[float], None] = time.sleep,
+) -> None:
+    resolved_config = config or make_default_mimo_provider_config()
+    if base_url is not None:
+        resolved_config = resolved_config.model_copy(update={"base_url": base_url})
+    self._config = resolved_config
+    self.id = resolved_config.id
+    self.name = resolved_config.name
+
 def _build_tts_body(self, request: TTSRequest) -> dict[str, Any]:
     self._validate_tts_request(request)
     model = self._resolve_tts_model(request)
@@ -1068,7 +1097,7 @@ from voice_toolbox.config import (
     LoggingConfig,
     ProviderDefaultModels,
 )
-from voice_toolbox.models import ModelInfo
+from voice_toolbox.models import ModelInfo, VoiceInfo
 
 
 def _test_config(*, host: str = "127.0.0.1") -> AppConfig:
@@ -1088,6 +1117,7 @@ def _test_config(*, host: str = "127.0.0.1") -> AppConfig:
                     ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
                     ModelInfo(id="fake-asr", name="Fake ASR", capability="asr.transcribe"),
                 ],
+                voices=[VoiceInfo(id="mimo_default", name="MiMo-默认")],
             )
         ],
     )
@@ -1184,14 +1214,32 @@ def create_app(
 Implementation rules:
 
 - If `config is None`, call `load_app_config(env_path=env_path, env_values=dict(env_values) if env_values else None)`.
-- Store `config` and `env_values` in `app.state`.
+- If `env_values is None`, call `load_env_values(env_path)` even when `config` was supplied, so key status still works for tests and production.
+- Store `config` and the resolved env dict in `app.state`.
 - If `registry is None`, call `build_provider_registry(config, artifact_root=root)`.
 - `_provider_summary()` reads the matching `ConfiguredProvider` by ID.
 - `has_api_key` checks `provider_config.api_key_env` in merged env values.
 - `api_key_preview` uses `mask_api_key_preview(value, trusted_local=config.api.host in {"127.0.0.1", "localhost"})`.
 - `config_path_preview` uses `preview_config_path(config.config_path)`.
 - `base_url`, `api_key_env`, `type`, `default_voice`, and `default_models` come from `ConfiguredProvider`.
-- If a registry-injected test provider has no matching `ConfiguredProvider`, return safe fallback summary fields from the provider object and `has_api_key = True`; do not raise `KeyError`.
+- If a registry-injected test provider has no matching `ConfiguredProvider`, return this exact fallback summary and do not raise `KeyError`:
+
+```python
+{
+    "id": provider.id,
+    "name": provider.name,
+    "type": "test",
+    "base_url": None,
+    "api_key_env": None,
+    "has_api_key": True,
+    "api_key_preview": None,
+    "config_path_preview": preview_config_path(config.config_path),
+    "default_voice": None,
+    "default_models": {},
+    "capabilities": sorted(provider.capabilities()),
+    "models": [model.model_dump(mode="json") for model in provider.list_models()],
+}
+```
 - Remove module-level `app = create_app()` from `main.py`; server startup uses `voice_toolbox_api.server` and tests call `create_app()` explicitly. This avoids configuring logging at import time.
 
 - [ ] **Step 4: Remove old key-check seam**
@@ -1203,6 +1251,21 @@ env_values={"MIMO_API_KEY": "test-key" if has_api_key else ""}
 ```
 
 Provider readiness checks must use `app.state.config.providers[*].api_key_env`, never hard-code `MIMO_API_KEY` outside fallback config construction.
+
+Use this replacement implementation:
+
+```python
+def _ensure_provider_configured_for_operation(request: Request, provider_id: str) -> None:
+    config_provider = _configured_provider_for_id(request.app.state.config, provider_id)
+    if config_provider is None:
+        return
+    value = request.app.state.env_values.get(config_provider.api_key_env)
+    if not value:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{config_provider.api_key_env} is required for provider {provider_id}",
+        )
+```
 
 - [ ] **Step 5: Run API tests**
 
@@ -1427,22 +1490,19 @@ Create `apps/api/src/voice_toolbox_api/server.py`:
 ```python
 from __future__ import annotations
 
-import os
-
 import uvicorn
 
 from voice_toolbox.config import load_app_config
-from voice_toolbox.logging_config import configure_logging
+from voice_toolbox_api.main import create_app
 
 
 def main() -> None:
     config = load_app_config()
-    configure_logging(config.logging, config_path=config.config_path)
+    app = create_app(config=config)
     uvicorn.run(
-        "voice_toolbox_api.main:create_app",
-        factory=True,
-        host=os.environ.get("VOICE_TOOLBOX_API_HOST") or os.environ.get("API_HOST") or config.api.host,
-        port=int(os.environ.get("VOICE_TOOLBOX_API_PORT") or os.environ.get("API_PORT") or config.api.port),
+        app,
+        host=config.api.host,
+        port=config.api.port,
         log_config=None,
     )
 
@@ -1450,6 +1510,8 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+`server.py` must not read `VOICE_TOOLBOX_API_HOST`, `VOICE_TOOLBOX_API_PORT`, `API_HOST`, or `API_PORT` directly. `load_app_config()` has already applied the env/TOML precedence rules, and TOML must win when active. `server.py` must not call `configure_logging()` directly; `create_app(config=config)` is the single logging configuration point.
 
 Update Makefile:
 
@@ -1998,7 +2060,7 @@ def normalize_text(request: NormalizationRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not result.text.strip():
         raise HTTPException(status_code=422, detail="normalized text is empty")
-    return json.loads(result.model_dump_json())
+    return result.model_dump(mode="json")
 ```
 
 - [ ] **Step 5: Integrate TTS API with pipeline**
@@ -2052,6 +2114,45 @@ def _prepare_tts_or_422(
         return prepare_tts_request(raw_text, text_format, fields)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+```
+
+Update `_run_clone_upload()` to return `PreparedTTSRequest` through the same `_run_tts()` path:
+
+```python
+def _run_clone_upload(
+    *,
+    http_request: Request,
+    sample: UploadFile,
+    provider_id: str,
+    text: str,
+    text_format: Literal["plain", "markdown", "auto"],
+    consent_confirmed: bool,
+    style_instruction: str | None,
+    model: str | None,
+) -> dict[str, Any]:
+    contents = _read_upload(sample)
+    mime_type = _normalize_mime_type(sample.content_type)
+    suffix = _suffix_for_upload(sample.filename)
+    _validate_upload_signature(contents, mime_type, suffix)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir) / _safe_upload_filename(sample.filename, suffix)
+        temp_path.write_bytes(contents)
+        prepared = _prepare_tts_or_422(
+            raw_text=text,
+            text_format=text_format,
+            fields={
+                "provider_id": provider_id,
+                "mode": TTSMode.CLONE,
+                "model": model,
+                "style_instruction": style_instruction,
+                "clone_sample_path": temp_path,
+                "clone_mime_type": mime_type,
+                "clone_raw_byte_size": len(contents),
+                "clone_base64_size": _base64_size(contents),
+                "consent_confirmed": consent_confirmed,
+            },
+        )
+        return _run_tts(_registry_from_request(http_request), provider_id, prepared)
 ```
 
 ASR route signature changes to:
@@ -2136,27 +2237,26 @@ Stop and report review findings before Task 7.
 
 - [ ] **Step 1: Update frontend API types**
 
-Modify `apps/web/package.json`:
+Modify only these parts of `apps/web/package.json`; do not rewrite or reorder the full `scripts` object and do not change existing `build`, `lint`, `format`, `format:check`, `dev`, or `preview` scripts:
 
 ```json
 {
   "scripts": {
-    "dev": "vite",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "test": "vitest run"
   },
   "devDependencies": {
-    "vitest": "^4.0.0"
+    "vitest": "<resolved by bun add -d vitest>"
   }
 }
 ```
 
-Keep existing dev dependencies; add only `vitest`.
+Install with:
+
+```bash
+rtk bun add --cwd apps/web -d vitest
+```
+
+Commit the lock file that actually exists after install. This repository currently uses `apps/web/bun.lock`, not `apps/web/bun.lockb`.
 
 Modify `api.ts`:
 
@@ -2425,7 +2525,7 @@ Expected: all PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-rtk git add apps/web/package.json apps/web/bun.lockb apps/web/src
+rtk git add apps/web/package.json apps/web/bun.lock apps/web/src
 rtk git commit -m "feat: add provider-aware frontend controls"
 ```
 
@@ -2530,6 +2630,8 @@ Add sections:
 - How to preview Markdown cleanup.
 - Note that chunking is reserved and not implemented.
 
+Update Makefile help text so `backend-server` says it starts from `voice_toolbox.toml` / fallback config, not from `API_HOST` and `API_PORT`. Keep `API_HOST`/`API_PORT` documented only as legacy no-TOML aliases in `.env.example` and README.
+
 - [ ] **Step 3: Verify Makefile targets**
 
 Run:
@@ -2588,7 +2690,17 @@ Run:
 
 ```bash
 rtk uv run python -c "from voice_toolbox.config import load_app_config; c=load_app_config(); print(c.providers[0].id, c.providers[0].base_url)"
-rtk uv run python -c "from voice_toolbox_api.main import create_app; app=create_app(); print(app.title)"
+rtk uv run python - <<'PY'
+from voice_toolbox.config import ConsoleLoggingConfig, LoggingConfig, load_app_config
+from voice_toolbox_api.main import create_app
+
+config = load_app_config()
+config = config.model_copy(
+    update={"logging": LoggingConfig(console=ConsoleLoggingConfig(enabled=False))}
+)
+app = create_app(config=config)
+print(app.title)
+PY
 ```
 
 Expected:
@@ -2608,18 +2720,7 @@ rtk uv run voice-toolbox tts synthesize --text "你好，配置化 smoke test。
 
 Expected: audio artifact written under `data/artifacts/YYYYMMDD/`.
 
-If Bearer auth fails and MiMo requires `api-key`, add an OpenAI client header fallback in `MimoProvider` before proceeding:
-
-```python
-client_factory(
-    api_key=resolved_api_key,
-    base_url=resolved_base_url,
-    default_headers={"api-key": resolved_api_key},
-    max_retries=0,
-)
-```
-
-Then rerun the smoke command.
+If Bearer auth fails, do not guess. Record the exact error in `docs/smoke/mimo.md`, verify MiMo's documented `api-key` header path with a minimal request, then make a focused follow-up change only if verified.
 
 - [ ] **Step 5: Large adversarial review checkpoint**
 
