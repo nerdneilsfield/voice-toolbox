@@ -15,7 +15,7 @@ WEB_PORT ?= 5173
 
 .PHONY: help install test check \
 	backend-test backend-lint backend-format backend-format-check backend-type backend-check backend-server backend-test-server \
-	frontend-install frontend-test frontend-build frontend-server frontend-test-server
+	frontend-install frontend-test frontend-lint frontend-format frontend-format-check frontend-build frontend-check frontend-server frontend-test-server
 
 help:
 	@echo "Targets:"
@@ -31,7 +31,7 @@ install:
 
 test: backend-test frontend-test
 
-check: backend-check frontend-test frontend-build
+check: backend-check frontend-check
 
 backend-test:
 	$(PYTHON) pytest -v
@@ -61,8 +61,19 @@ frontend-install:
 frontend-test:
 	$(WEB) test
 
+frontend-lint:
+	$(WEB) lint
+
+frontend-format:
+	$(WEB) format
+
+frontend-format-check:
+	$(WEB) format:check
+
 frontend-build:
 	$(WEB) build
+
+frontend-check: frontend-lint frontend-format-check frontend-test frontend-build
 
 frontend-server:
 	$(WEB) dev -- --host $(WEB_HOST) --port $(WEB_PORT)

@@ -234,10 +234,18 @@ function App() {
         <section className="tool-grid" aria-label="Text to speech toolbox">
           <form className="tool-panel" onSubmit={submitTts}>
             <fieldset className="segmented" aria-label="TTS mode">
-              <button className={ttsMode === "builtin" ? "active" : ""} type="button" onClick={() => setTtsMode("builtin")}>
+              <button
+                className={ttsMode === "builtin" ? "active" : ""}
+                type="button"
+                onClick={() => setTtsMode("builtin")}
+              >
                 Built-in
               </button>
-              <button className={ttsMode === "design" ? "active" : ""} type="button" onClick={() => setTtsMode("design")}>
+              <button
+                className={ttsMode === "design" ? "active" : ""}
+                type="button"
+                onClick={() => setTtsMode("design")}
+              >
                 Design
               </button>
               <button className={ttsMode === "clone" ? "active" : ""} type="button" onClick={() => setTtsMode("clone")}>
@@ -355,7 +363,11 @@ function KeyStatus({ provider, state }: { provider?: Provider; state: RequestSta
   if (!provider || provider.has_api_key === undefined) {
     return <span className="key-status muted">Key status unavailable</span>;
   }
-  return <span className={provider.has_api_key ? "key-status ok" : "key-status warn"}>{provider.has_api_key ? "API key configured" : "API key missing"}</span>;
+  return (
+    <span className={provider.has_api_key ? "key-status ok" : "key-status warn"}>
+      {provider.has_api_key ? "API key configured" : "API key missing"}
+    </span>
+  );
 }
 
 function BuiltinControls({
@@ -398,7 +410,11 @@ function BuiltinControls({
       <div className="field-grid">
         <label className="field">
           <span className="field-title">Voice</span>
-          <select value={voiceId} onChange={(event) => setVoiceId(event.target.value)} disabled={voicesState === "loading"}>
+          <select
+            value={voiceId}
+            onChange={(event) => setVoiceId(event.target.value)}
+            disabled={voicesState === "loading"}
+          >
             {voices.map((voice) => (
               <option key={voice.id} value={voice.id}>
                 {voice.name || voice.id}
@@ -446,7 +462,14 @@ function BuiltinControls({
             </button>
           </div>
         </div>
-        <textarea className="script-input" ref={textAreaRef} value={text} rows={6} onChange={(event) => setText(event.target.value)} required />
+        <textarea
+          className="script-input"
+          ref={textAreaRef}
+          value={text}
+          rows={6}
+          onChange={(event) => setText(event.target.value)}
+          required
+        />
       </section>
     </div>
   );
@@ -473,7 +496,11 @@ function DesignControls({
         <div className="section-heading">
           <span>Voice persona</span>
           <span className="switch-line">
-            <input type="checkbox" checked={optimizePreview} onChange={(event) => setOptimizePreview(event.target.checked)} />
+            <input
+              type="checkbox"
+              checked={optimizePreview}
+              onChange={(event) => setOptimizePreview(event.target.checked)}
+            />
             <span>Auto-optimize</span>
           </span>
         </div>
@@ -539,14 +566,21 @@ function CloneControls({
         />
       </label>
       <p className={overLimit ? "notice error compact" : "notice compact"}>
-        Base64 payload limit is 10 MiB. {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose wav or mp3."}
+        Base64 payload limit is 10 MiB.{" "}
+        {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose wav or mp3."}
       </p>
       <label className="field">
         <div className="section-heading">
           <span>Script</span>
           <span>{text.length} chars</span>
         </div>
-        <textarea className="script-input" value={text} rows={6} onChange={(event) => setText(event.target.value)} required />
+        <textarea
+          className="script-input"
+          value={text}
+          rows={6}
+          onChange={(event) => setText(event.target.value)}
+          required
+        />
       </label>
       <label className="field">
         <span className="field-title">Style prompt</span>
@@ -557,8 +591,8 @@ function CloneControls({
         />
       </label>
       <label className="checkbox-line">
-        <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />
-        I have permission to use this voice sample for synthesis.
+        <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />I
+        have permission to use this voice sample for synthesis.
       </label>
     </div>
   );
