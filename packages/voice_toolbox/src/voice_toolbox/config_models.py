@@ -9,8 +9,8 @@ from voice_toolbox.models import ModelInfo, VoiceInfo
 
 
 class APIConfig(BaseModel):
-    host: str = "127.0.0.1"
-    port: int = 8000
+    host: str = Field(default="127.0.0.1", min_length=1)
+    port: int = Field(default=8000, ge=1, le=65535)
 
 
 class ConsoleLoggingConfig(BaseModel):
@@ -43,11 +43,11 @@ class ProviderDefaultModels(BaseModel):
 
 
 class ConfiguredProvider(BaseModel):
-    id: str
+    id: str = Field(min_length=1)
     type: Literal["mimo"]
-    name: str
-    base_url: str
-    api_key_env: str
+    name: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    api_key_env: str = Field(min_length=1)
     default_voice: str | None = None
     default_models: ProviderDefaultModels | None = None
     models: list[ModelInfo] = Field(default_factory=list)

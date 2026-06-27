@@ -97,7 +97,10 @@ class MimoProvider:
                 max_retries=0,
             )
         else:
-            self._client = _MissingCredentialsClient(resolved_config.api_key_env)
+            self._client = _MissingCredentialsClient(
+                resolved_config.api_key_env,
+                provider_id=resolved_config.id,
+            )
         self._operation_prefix = uuid4().hex
         self._operation_counter = 0
         self._closed = False
@@ -377,9 +380,7 @@ class MimoProvider:
         if model_info is None:
             raise ProviderError(f"unsupported MiMo model: {model}")
         if expected_capability is not None and model_info.capability != expected_capability:
-            raise ProviderError(
-                f"unsupported MiMo model for {expected_capability}: {model}"
-            )
+            raise ProviderError(f"unsupported MiMo model for {expected_capability}: {model}")
 
     def _next_operation_id(self, operation: str) -> str:
         self._operation_counter += 1
@@ -434,21 +435,25 @@ def _get_value(value: Any, key: str) -> Any:
 
 
 class _MissingCredentialsClient:
-    def __init__(self, api_key_env: str) -> None:
-        self.chat = _MissingCredentialsChat(api_key_env)
+    def __init__(self, api_key_env: str, *, provider_id: str) -> None:
+        self.chat = _MissingCredentialsChat(api_key_env, provider_id=provider_id)
 
 
 class _MissingCredentialsChat:
-    def __init__(self, api_key_env: str) -> None:
-        self.completions = _MissingCredentialsCompletions(api_key_env)
+    def __init__(self, api_key_env: str, *, provider_id: str) -> None:
+        self.completions = _MissingCredentialsCompletions(api_key_env, provider_id=provider_id)
 
 
 class _MissingCredentialsCompletions:
-    def __init__(self, api_key_env: str) -> None:
+    def __init__(self, api_key_env: str, *, provider_id: str) -> None:
         self._api_key_env = api_key_env
+        self._provider_id = provider_id
 
     def create(self, **_: Any) -> Any:
-        raise ProviderError(f"{self._api_key_env} is required for provider mimo")
+        raise ProviderError(
+            f"{self._api_key_env} is required for provider {self._provider_id}; "
+            "set it in environment or .env"
+        )
 
 
 def _tts_metadata(

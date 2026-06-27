@@ -69,11 +69,11 @@ def load_app_config(
     payload = _read_toml(config_path)
     payload["config_path"] = config_path
     _warn_ignored_env(env)
-    if not payload.get("providers"):
-        logger.warning("providers is empty; using built-in default provider")
-        payload["providers"] = [_default_provider_payload(env, use_env_base_url=False)]
-    payload["providers"] = [_fill_mimo_defaults(provider) for provider in payload["providers"]]
     try:
+        if not payload.get("providers"):
+            logger.warning("providers is empty; using built-in default provider")
+            payload["providers"] = [_default_provider_payload(env, use_env_base_url=False)]
+        payload["providers"] = [_fill_mimo_defaults(provider) for provider in payload["providers"]]
         return AppConfig.model_validate(payload)
     except ValidationError as exc:
         raise ConfigError(str(exc)) from exc
@@ -138,15 +138,18 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 
 def _fallback_config(env: dict[str, str]) -> AppConfig:
-    payload = {
-        "config_path": None,
-        "api": {
-            "host": env.get("VOICE_TOOLBOX_API_HOST") or env.get("API_HOST") or "127.0.0.1",
-            "port": int(env.get("VOICE_TOOLBOX_API_PORT") or env.get("API_PORT") or "8000"),
-        },
-        "providers": [_default_provider_payload(env, use_env_base_url=True)],
-    }
-    return AppConfig.model_validate(payload)
+    try:
+        payload = {
+            "config_path": None,
+            "api": {
+                "host": env.get("VOICE_TOOLBOX_API_HOST") or env.get("API_HOST") or "127.0.0.1",
+                "port": int(env.get("VOICE_TOOLBOX_API_PORT") or env.get("API_PORT") or "8000"),
+            },
+            "providers": [_default_provider_payload(env, use_env_base_url=True)],
+        }
+        return AppConfig.model_validate(payload)
+    except (ValidationError, ValueError) as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _default_provider_payload(env: dict[str, str], *, use_env_base_url: bool) -> dict[str, Any]:

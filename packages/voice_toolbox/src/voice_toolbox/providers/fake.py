@@ -154,7 +154,7 @@ class FakeProvider:
             metadata={
                 "base64_size": request.base64_size,
                 "language": request.language,
-                "model": request.model,
+                "model": request.model or "fake-asr",
                 "operation": "asr",
                 "provider_id": self.id,
                 "raw_byte_size": request.raw_byte_size,

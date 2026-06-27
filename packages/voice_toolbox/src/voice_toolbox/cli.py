@@ -7,10 +7,12 @@ from typing import Annotated, Any, Literal, NoReturn, cast
 import typer
 from pydantic import ValidationError
 
+from voice_toolbox.config import load_app_config, load_env_values
 from voice_toolbox.models import ASRRequest, AudioArtifact, TranscriptArtifact, TTSMode, TTSRequest
 from voice_toolbox.providers import ProviderError, ProviderRegistry
-from voice_toolbox.providers.mimo import MimoProvider
-from voice_toolbox.settings import has_mimo_api_key
+from voice_toolbox.providers.factory import (
+    build_provider_registry as build_configured_provider_registry,
+)
 
 app = typer.Typer(help="Voice Toolbox")
 tts_app = typer.Typer(help="Text-to-speech commands")
@@ -36,8 +38,13 @@ StyleOption = Annotated[
 
 
 def build_provider_registry() -> ProviderRegistry:
-    _ensure_default_provider_configured()
-    return ProviderRegistry([MimoProvider(artifact_root=Path.cwd())])
+    env_values = load_env_values()
+    config = load_app_config(env_values=env_values)
+    return build_configured_provider_registry(
+        config,
+        artifact_root=Path.cwd(),
+        env_values=env_values,
+    )
 
 
 @app.callback()
@@ -137,7 +144,7 @@ def transcribe(
         typer.Option("--language", help="Language hint."),
     ] = "auto",
     provider: ProviderOption = DEFAULT_PROVIDER,
-    model: Annotated[str, typer.Option("--model", help="Provider ASR model id.")] = "mimo-v2.5-asr",
+    model: Annotated[str | None, typer.Option("--model", help="Provider ASR model id.")] = None,
 ) -> None:
     if file is None:
         _fail("--file is required")
@@ -216,11 +223,6 @@ def _normalize_output_format(output_format: str) -> Literal["wav"]:
     if output_format != DEFAULT_OUTPUT_FORMAT:
         _fail("unsupported output format; expected wav")
     return DEFAULT_OUTPUT_FORMAT
-
-
-def _ensure_default_provider_configured() -> None:
-    if not has_mimo_api_key():
-        _fail("MIMO_API_KEY is required for provider mimo; set it in environment or .env")
 
 
 def _fail(message: str) -> NoReturn:

@@ -127,11 +127,6 @@ def test_tts_synthesize_rejects_unsupported_format(monkeypatch, tmp_path: Path) 
 def test_default_mimo_provider_fails_fast_without_api_key(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("MIMO_API_KEY", raising=False)
-
-    def fail_if_constructed(**_: object) -> object:
-        raise AssertionError("MimoProvider should not be constructed without MIMO_API_KEY")
-
-    monkeypatch.setattr(cli, "MimoProvider", fail_if_constructed)
     runner = CliRunner()
 
     result = runner.invoke(
@@ -269,3 +264,4 @@ def test_asr_transcribe_auto_language_succeeds(monkeypatch, tmp_path: Path) -> N
     assert request.raw_byte_size == 5
     assert request.base64_size == 8
     assert request.language == "auto"
+    assert request.model is None

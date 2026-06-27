@@ -157,6 +157,21 @@ def test_provider_summary_non_local_host_hides_key_preview(tmp_path: Path) -> No
     assert response.json()["providers"][0]["api_key_preview"] == "configured"
 
 
+def test_provider_summary_remote_client_hides_key_preview(tmp_path: Path) -> None:
+    provider = RecordingMimoProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "tp-1234567890abcd"},
+    )
+    client = TestClient(app, client=("203.0.113.10", 50000))
+
+    response = client.get("/v1/providers")
+
+    assert response.json()["providers"][0]["api_key_preview"] == "configured"
+
+
 def test_provider_summary_falls_back_for_unconfigured_injected_provider(tmp_path: Path) -> None:
     provider = FakeProvider(artifact_root=tmp_path)
     app = create_app(
@@ -174,7 +189,7 @@ def test_provider_summary_falls_back_for_unconfigured_injected_provider(tmp_path
     assert summary["type"] == "test"
     assert summary["base_url"] is None
     assert summary["api_key_env"] is None
-    assert summary["has_api_key"] is True
+    assert summary["has_api_key"] is False
     assert summary["default_models"] == {}
     assert summary["config_path_preview"] == "built-in default"
     assert summary["capabilities"] == sorted(provider.capabilities())

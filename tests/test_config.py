@@ -162,6 +162,65 @@ capability = "asr.transcribe"
         load_app_config(path)
 
 
+def test_fill_defaults_validation_errors_are_config_errors(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "bad"
+type = "mimo"
+name = "Bad"
+base_url = "https://example.test/v1"
+api_key_env = "BAD_KEY"
+
+[[providers.models]]
+id = "broken"
+name = "Broken"
+capability = 123
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError):
+        load_app_config(path)
+
+
+def test_fallback_bad_env_port_is_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VOICE_TOOLBOX_API_PORT", "not-a-port")
+
+    with pytest.raises(ConfigError, match="not-a-port"):
+        load_app_config()
+
+
+def test_api_port_range_is_validated(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text("[api]\nport = 70000\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="65535|less than or equal"):
+        load_app_config(path)
+
+
+def test_provider_string_fields_reject_empty_values(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = ""
+type = "mimo"
+name = ""
+base_url = ""
+api_key_env = ""
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="at least 1 character"):
+        load_app_config(path)
+
+
 def test_load_app_config_uses_explicit_env_path(tmp_path: Path) -> None:
     env_path = tmp_path / ".env.custom"
     env_path.write_text("MIMO_BASE_URL=https://custom-env.example/v1\n", encoding="utf-8")

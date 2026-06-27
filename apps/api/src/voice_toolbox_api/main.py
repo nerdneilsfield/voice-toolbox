@@ -54,9 +54,7 @@ def create_app(
     env_path: Path | str | None = None,
     env_values: Mapping[str, str] | None = None,
 ) -> FastAPI:
-    resolved_env_values = (
-        dict(env_values) if env_values is not None else load_env_values(env_path)
-    )
+    resolved_env_values = dict(env_values) if env_values is not None else load_env_values(env_path)
     if config is None:
         config = load_app_config(env_path=env_path, env_values=resolved_env_values)
     root = Path(artifact_root) if artifact_root is not None else _infer_artifact_root(registry)
@@ -96,7 +94,12 @@ def create_app(
         env_values = _env_values_from_request(http_request)
         return {
             "providers": [
-                _provider_summary(provider, config=config, env_values=env_values)
+                _provider_summary(
+                    provider,
+                    config=config,
+                    env_values=env_values,
+                    trusted_local=_trusted_local_request(http_request, config=config),
+                )
                 for provider in provider_registry.list_providers()
             ]
         }
@@ -309,6 +312,7 @@ def _provider_summary(
     *,
     config: AppConfig,
     env_values: Mapping[str, str],
+    trusted_local: bool,
 ) -> dict[str, Any]:
     provider_config = _configured_provider_for_id(config, provider.id)
     if provider_config is None:
@@ -318,7 +322,7 @@ def _provider_summary(
             "type": "test",
             "base_url": None,
             "api_key_env": None,
-            "has_api_key": True,
+            "has_api_key": False,
             "api_key_preview": None,
             "config_path_preview": preview_config_path(config.config_path),
             "default_voice": None,
@@ -329,7 +333,6 @@ def _provider_summary(
         }
 
     api_key = env_values.get(provider_config.api_key_env)
-    trusted_local = config.api.host in {"127.0.0.1", "localhost"}
     return {
         "id": provider.id,
         "name": provider.name,
@@ -404,13 +407,23 @@ def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
 def _ensure_provider_configured_for_operation(request: Request, provider_id: str) -> None:
     config_provider = _configured_provider_for_id(request.app.state.config, provider_id)
     if config_provider is None:
-        return
+        provider = _get_provider(request.app.state.provider_registry, provider_id)
+        if getattr(provider, "id", None) == "fake":
+            return
+        raise HTTPException(status_code=503, detail=f"provider {provider_id} is not configured")
     value = request.app.state.env_values.get(config_provider.api_key_env)
     if not value:
         raise HTTPException(
             status_code=503,
             detail=f"{config_provider.api_key_env} is required for provider {provider_id}",
         )
+
+
+def _trusted_local_request(request: Request, *, config: AppConfig) -> bool:
+    if config.api.host not in {"127.0.0.1", "localhost"}:
+        return False
+    client_host = request.client.host if request.client is not None else ""
+    return client_host in {"127.0.0.1", "::1", "localhost", "testclient"}
 
 
 def _run_clone_upload(
