@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 from typing import Protocol
 
@@ -49,7 +50,12 @@ class VoiceProvider(Protocol):
     def list_voices(self) -> list[VoiceInfo]:
         raise NotImplementedError
 
-    def synthesize(self, request: TTSRequest) -> AudioArtifact:
+    def synthesize(
+        self,
+        request: TTSRequest,
+        *,
+        artifact_metadata: Mapping[str, object] | None = None,
+    ) -> AudioArtifact:
         raise NotImplementedError
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:

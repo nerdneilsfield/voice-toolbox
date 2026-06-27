@@ -19,8 +19,6 @@ from voice_toolbox.providers.mimo import (
     TTS_TIMEOUT_SECONDS,
     MimoProvider,
     _audio_file_to_data_url,
-    _build_asr_body,
-    _build_tts_body,
 )
 
 
@@ -40,6 +38,15 @@ class FakeChatCompletions:
 class FakeClient:
     def __init__(self, completion: object | list[object]) -> None:
         self.chat = SimpleNamespace(completions=FakeChatCompletions(completion))
+
+
+@pytest.fixture
+def mimo_provider(tmp_path: Path) -> MimoProvider:
+    return MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=FakeClient(_tts_completion()),
+    )
 
 
 def test_provider_generation_timeout_defaults_to_300_seconds() -> None:
@@ -80,7 +87,7 @@ def _api_status_error(status_code: int) -> APIStatusError:
     return APIStatusError("status failed", response=response, body=None)
 
 
-def test_builtin_tts_places_tags_in_assistant_content() -> None:
+def test_builtin_tts_places_tags_in_assistant_content(mimo_provider: MimoProvider) -> None:
     request = TTSRequest(
         mode=TTSMode.BUILTIN,
         text="(唱歌)啦啦啦[叹气]",
@@ -88,7 +95,7 @@ def test_builtin_tts_places_tags_in_assistant_content() -> None:
         voice_id="冰糖",
     )
 
-    body = _build_tts_body(request)
+    body = mimo_provider._build_tts_body(request)
 
     assert body["model"] == "mimo-v2.5-tts"
     assert body["messages"] == [
@@ -98,14 +105,16 @@ def test_builtin_tts_places_tags_in_assistant_content() -> None:
     assert body["audio"] == {"voice": "冰糖", "format": "wav"}
 
 
-def test_design_optimized_preview_omits_assistant_message_when_text_missing() -> None:
+def test_design_optimized_preview_omits_assistant_message_when_text_missing(
+    mimo_provider: MimoProvider,
+) -> None:
     request = TTSRequest(
         mode=TTSMode.DESIGN,
         voice_description="Warm alto voice with gentle pacing.",
         optimize_text_preview=True,
     )
 
-    body = _build_tts_body(request)
+    body = mimo_provider._build_tts_body(request)
 
     assert body["model"] == "mimo-v2.5-tts-voicedesign"
     assert body["messages"] == [{"role": "user", "content": "Warm alto voice with gentle pacing."}]
@@ -126,7 +135,13 @@ def test_clone_builds_data_url_and_never_metadata_payload(tmp_path: Path) -> Non
         consent_confirmed=True,
     )
 
-    body = _build_tts_body(request)
+    client = FakeClient(_tts_completion())
+    provider = MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+    )
+    body = provider._build_tts_body(request)
 
     assert body["model"] == "mimo-v2.5-tts-voiceclone"
     assert body["audio"] == {
@@ -134,12 +149,6 @@ def test_clone_builds_data_url_and_never_metadata_payload(tmp_path: Path) -> Non
         "format": "wav",
     }
 
-    client = FakeClient(_tts_completion())
-    provider = MimoProvider(
-        api_key="secret",
-        artifact_root=tmp_path,
-        client=client,
-    )
     artifact = provider.synthesize(request)
     sidecar = artifact.path.with_suffix(".json").read_text(encoding="utf-8")
 
@@ -166,7 +175,12 @@ def test_clone_rejects_unsupported_mime_before_data_url(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ProviderError, match="MIME"):
-        _build_tts_body(request)
+        provider = MimoProvider(
+            api_key="secret",
+            artifact_root=tmp_path,
+            client=FakeClient(_tts_completion()),
+        )
+        provider._build_tts_body(request)
 
 
 def test_clone_rejects_unsupported_suffix_before_reading_file(tmp_path: Path) -> None:
@@ -180,7 +194,12 @@ def test_clone_rejects_unsupported_suffix_before_reading_file(tmp_path: Path) ->
     )
 
     with pytest.raises(ProviderError, match="suffix"):
-        _build_tts_body(request)
+        provider = MimoProvider(
+            api_key="secret",
+            artifact_root=tmp_path,
+            client=FakeClient(_tts_completion()),
+        )
+        provider._build_tts_body(request)
 
 
 def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) -> None:
@@ -195,7 +214,12 @@ def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) ->
         language="zh",
     )
 
-    body = _build_asr_body(request, data_url)
+    provider = MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=FakeClient(_asr_completion()),
+    )
+    body = provider._build_asr_body(request, data_url)
 
     assert body == {
         "model": "mimo-v2.5-asr",
@@ -402,12 +426,18 @@ def test_model_resolution_explicit_request_model_wins(tmp_path: Path) -> None:
         clone_base64_size=4,
     )
 
-    assert _build_tts_body(explicit)["model"] == "mimo-v2.5-tts"
-    assert _build_tts_body(design)["model"] == "mimo-v2.5-tts-voicedesign"
-    assert _build_tts_body(clone)["model"] == "mimo-v2.5-tts-voiceclone"
+    provider = MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=FakeClient(_tts_completion()),
+    )
+
+    assert provider._build_tts_body(explicit)["model"] == "mimo-v2.5-tts"
+    assert provider._build_tts_body(design)["model"] == "mimo-v2.5-tts-voicedesign"
+    assert provider._build_tts_body(clone)["model"] == "mimo-v2.5-tts-voiceclone"
 
 
-def test_unsupported_explicit_model_is_rejected() -> None:
+def test_unsupported_explicit_model_is_rejected(mimo_provider: MimoProvider) -> None:
     request = TTSRequest(
         mode=TTSMode.BUILTIN,
         model="gpt-4",
@@ -416,7 +446,7 @@ def test_unsupported_explicit_model_is_rejected() -> None:
     )
 
     with pytest.raises(ProviderError, match="unsupported MiMo model"):
-        _build_tts_body(request)
+        mimo_provider._build_tts_body(request)
 
 
 def test_clone_and_asr_base64_size_max_10_mib(tmp_path: Path) -> None:
@@ -438,7 +468,12 @@ def test_clone_and_asr_base64_size_max_10_mib(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ProviderError, match="base64"):
-        _build_tts_body(clone_request)
+        provider = MimoProvider(
+            api_key="secret",
+            artifact_root=tmp_path,
+            client=FakeClient(_tts_completion()),
+        )
+        provider._build_tts_body(clone_request)
     provider = MimoProvider(
         api_key="secret",
         artifact_root=tmp_path,

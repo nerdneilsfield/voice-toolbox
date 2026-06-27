@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -34,8 +35,14 @@ class RecordingProvider:
     def list_voices(self) -> list[object]:
         return []
 
-    def synthesize(self, request: TTSRequest) -> AudioArtifact:
+    def synthesize(
+        self,
+        request: TTSRequest,
+        *,
+        artifact_metadata: Mapping[str, object] | None = None,
+    ) -> AudioArtifact:
         self.tts_requests.append(request)
+        metadata = {"tts_mode": request.mode.value, **dict(artifact_metadata or {})}
         path = self.artifact_root / f"audio-{len(self.tts_requests)}.wav"
         path.write_bytes(b"WAV")
         return AudioArtifact(
@@ -45,7 +52,7 @@ class RecordingProvider:
             path=path,
             mime_type="audio/wav",
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
-            metadata={"tts_mode": request.mode.value},
+            metadata=metadata,
         )
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:

@@ -114,7 +114,7 @@ class ASRRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider_id: str = "mimo"
-    model: str | None = "mimo-v2.5-asr"
+    model: str | None = None
     audio_path: Path
     mime_type: Literal["audio/wav", "audio/mpeg", "audio/mp3"]
     raw_byte_size: int = Field(ge=0)

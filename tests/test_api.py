@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -30,14 +31,19 @@ class RecordingMimoProvider(FakeProvider):
         self.asr_error: ProviderError | None = None
 
     def list_voices(self) -> list[VoiceInfo]:
-        return [VoiceInfo(**voice) for voice in MIMO_VOICES]
+        return [voice.model_copy() for voice in MIMO_VOICES]
 
-    def synthesize(self, request: TTSRequest):
+    def synthesize(
+        self,
+        request: TTSRequest,
+        *,
+        artifact_metadata: Mapping[str, object] | None = None,
+    ):
         self.tts_requests.append(request)
         if request.clone_sample_path is not None:
             self.clone_sample_paths.append(request.clone_sample_path)
             self.clone_sample_exists_during_call.append(request.clone_sample_path.exists())
-        return super().synthesize(request)
+        return super().synthesize(request, artifact_metadata=artifact_metadata)
 
     def transcribe(self, request: ASRRequest):
         if self.asr_error is not None:

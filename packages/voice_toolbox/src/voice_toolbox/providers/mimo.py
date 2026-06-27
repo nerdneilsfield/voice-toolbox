@@ -5,8 +5,9 @@ import binascii
 import os
 import tempfile
 import time
-from datetime import UTC, datetime
 from collections.abc import Callable
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -15,6 +16,12 @@ from uuid import uuid4
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
 
 from voice_toolbox.artifacts import ArtifactStore
+from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
+from voice_toolbox import defaults as _defaults
+from voice_toolbox.defaults import (
+    DEFAULT_MIMO_BASE_URL,
+    make_default_mimo_provider_config,
+)
 from voice_toolbox.models import (
     ASRRequest,
     AudioArtifact,
@@ -28,8 +35,9 @@ from voice_toolbox.models import (
 )
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES
-from voice_toolbox.settings import get_mimo_api_key, load_settings
 
+MIMO_MODELS = _defaults.MIMO_MODELS
+MIMO_VOICES = _defaults.MIMO_VOICES
 MAX_BASE64_AUDIO_SIZE = 10 * 1024 * 1024
 GENERATION_TIMEOUT_SECONDS = 300.0
 TTS_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
@@ -40,102 +48,6 @@ CLONE_MIME_SUFFIXES = {
     "audio/mpeg": {".mp3"},
     "audio/mp3": {".mp3"},
 }
-
-MIMO_MODELS = [
-    {"id": "mimo-v2.5-tts", "capability": "tts.builtin"},
-    {"id": "mimo-v2.5-tts-voicedesign", "capability": "tts.design"},
-    {"id": "mimo-v2.5-tts-voiceclone", "capability": "tts.clone"},
-    {"id": "mimo-v2.5-asr", "capability": "asr.transcribe"},
-]
-
-MIMO_VOICES = [
-    {"id": "mimo_default", "name": "MiMo-默认", "note": "cluster-dependent"},
-    {"id": "冰糖", "name": "冰糖", "language": "zh", "gender": "female"},
-    {"id": "茉莉", "name": "茉莉", "language": "zh", "gender": "female"},
-    {"id": "苏打", "name": "苏打", "language": "zh", "gender": "male"},
-    {"id": "白桦", "name": "白桦", "language": "zh", "gender": "male"},
-    {"id": "Mia", "name": "Mia", "language": "en", "gender": "female"},
-    {"id": "Chloe", "name": "Chloe", "language": "en", "gender": "female"},
-    {"id": "Milo", "name": "Milo", "language": "en", "gender": "male"},
-    {"id": "Dean", "name": "Dean", "language": "en", "gender": "male"},
-]
-
-_TTS_MODEL_BY_MODE = {
-    TTSMode.BUILTIN: "mimo-v2.5-tts",
-    TTSMode.DESIGN: "mimo-v2.5-tts-voicedesign",
-    TTSMode.CLONE: "mimo-v2.5-tts-voiceclone",
-}
-
-_MODEL_NAMES = {
-    "mimo-v2.5-tts": "MiMo TTS",
-    "mimo-v2.5-tts-voicedesign": "MiMo Voice Design",
-    "mimo-v2.5-tts-voiceclone": "MiMo Voice Clone",
-    "mimo-v2.5-asr": "MiMo ASR",
-}
-_MODEL_IDS = {model["id"] for model in MIMO_MODELS}
-
-
-def _build_tts_body(request: TTSRequest) -> dict[str, Any]:
-    _validate_tts_request(request)
-    audio: dict[str, Any] = {"format": request.output_format}
-    body: dict[str, Any] = {
-        "model": _resolve_tts_model(request),
-        "messages": [],
-        "audio": audio,
-    }
-    messages = body["messages"]
-
-    if request.mode == TTSMode.BUILTIN:
-        if request.style_instruction:
-            messages.append({"role": "user", "content": request.style_instruction})
-        messages.append({"role": "assistant", "content": request.text})
-        audio["voice"] = request.voice_id
-        return body
-
-    if request.mode == TTSMode.DESIGN:
-        messages.append({"role": "user", "content": request.voice_description})
-        if request.text:
-            messages.append({"role": "assistant", "content": request.text})
-        audio["optimize_text_preview"] = request.optimize_text_preview
-        return body
-
-    if request.mode == TTSMode.CLONE:
-        _validate_clone_audio_input(request)
-        if request.clone_base64_size is not None:
-            _validate_base64_size(request.clone_base64_size)
-        if request.style_instruction:
-            messages.append({"role": "user", "content": request.style_instruction})
-        messages.append({"role": "assistant", "content": request.text})
-        if request.clone_sample_path is None or request.clone_mime_type is None:
-            raise ProviderError("clone mode requires clone sample path and MIME type")
-        audio_data_url, _, _ = _audio_file_to_data_url(
-            request.clone_sample_path,
-            request.clone_mime_type,
-        )
-        audio["voice"] = audio_data_url
-        return body
-
-    raise UnsupportedCapability(f"mimo provider does not support TTS mode: {request.mode}")
-
-
-def _build_asr_body(request: ASRRequest, audio_data_url: str) -> dict[str, Any]:
-    model = request.model or "mimo-v2.5-asr"
-    _validate_model_id(model)
-    _validate_base64_size(request.base64_size)
-    return {
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "input_audio": {"data": audio_data_url},
-                    }
-                ],
-            }
-        ],
-    }
 
 
 def _audio_file_to_data_url(path: Path, mime_type: str) -> tuple[str, int, int]:
@@ -154,6 +66,7 @@ class MimoProvider:
     def __init__(
         self,
         *,
+        config: ConfiguredProvider | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
         artifact_store: ArtifactStore | None = None,
@@ -163,25 +76,34 @@ class MimoProvider:
         client_factory: Callable[..., Any] = OpenAI,
         sleep_func: Callable[[float], None] = time.sleep,
     ) -> None:
-        settings = load_settings(env_path)
-        resolved_api_key = api_key if api_key is not None else get_mimo_api_key(env_path)
-        resolved_base_url = base_url if base_url is not None else settings.base_url
+        resolved_config = config or make_default_mimo_provider_config(
+            base_url=base_url or DEFAULT_MIMO_BASE_URL
+        )
+        if base_url is not None:
+            resolved_config = resolved_config.model_copy(update={"base_url": base_url})
+
+        self._config = resolved_config
+        self.id = resolved_config.id
+        self.name = resolved_config.name
+        self._models_by_id = {model.id: model for model in resolved_config.models}
+        self._default_models = resolved_config.default_models or ProviderDefaultModels()
 
         if client is not None:
             self._client = client
-        elif resolved_api_key:
+        elif api_key:
             self._client = client_factory(
-                api_key=resolved_api_key,
-                base_url=resolved_base_url,
+                api_key=api_key,
+                base_url=resolved_config.base_url,
                 max_retries=0,
             )
         else:
-            self._client = _MissingCredentialsClient()
+            self._client = _MissingCredentialsClient(resolved_config.api_key_env)
         self._operation_prefix = uuid4().hex
         self._operation_counter = 0
         self._closed = False
         self._sleep_func = sleep_func
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._env_path = Path(env_path) if env_path is not None else None
 
         if artifact_store is not None:
             self._artifact_store = artifact_store
@@ -196,20 +118,17 @@ class MimoProvider:
             self._artifact_store = ArtifactStore(root)
 
     def capabilities(self) -> set[str]:
-        return {"tts.builtin", "tts.design", "tts.clone", ASR_CAPABILITY}
+        capabilities: set[str] = set()
+        for model in self._config.models:
+            if model.capability is not None:
+                capabilities.add(model.capability)
+        return capabilities
 
     def list_models(self) -> list[ModelInfo]:
-        return [
-            ModelInfo(
-                id=model["id"],
-                name=_MODEL_NAMES[model["id"]],
-                capability=model["capability"],
-            )
-            for model in MIMO_MODELS
-        ]
+        return [model.model_copy() for model in self._config.models]
 
     def list_voices(self) -> list[VoiceInfo]:
-        return [VoiceInfo(**voice) for voice in MIMO_VOICES]
+        return [voice.model_copy() for voice in self._config.voices]
 
     @property
     def artifact_root(self) -> Path:
@@ -232,12 +151,78 @@ class MimoProvider:
     ) -> None:
         self.close()
 
-    def synthesize(self, request: TTSRequest) -> AudioArtifact:
+    def _build_tts_body(self, request: TTSRequest) -> dict[str, Any]:
+        self._validate_tts_request(request)
+        audio: dict[str, Any] = {"format": request.output_format}
+        body: dict[str, Any] = {
+            "model": self._resolve_tts_model(request),
+            "messages": [],
+            "audio": audio,
+        }
+        messages = body["messages"]
+
+        if request.mode == TTSMode.BUILTIN:
+            if request.style_instruction:
+                messages.append({"role": "user", "content": request.style_instruction})
+            messages.append({"role": "assistant", "content": request.text})
+            audio["voice"] = request.voice_id
+            return body
+
+        if request.mode == TTSMode.DESIGN:
+            messages.append({"role": "user", "content": request.voice_description})
+            if request.text:
+                messages.append({"role": "assistant", "content": request.text})
+            audio["optimize_text_preview"] = request.optimize_text_preview
+            return body
+
+        if request.mode == TTSMode.CLONE:
+            self._validate_clone_audio_input(request)
+            if request.clone_base64_size is not None:
+                _validate_base64_size(request.clone_base64_size)
+            if request.style_instruction:
+                messages.append({"role": "user", "content": request.style_instruction})
+            messages.append({"role": "assistant", "content": request.text})
+            if request.clone_sample_path is None or request.clone_mime_type is None:
+                raise ProviderError("clone mode requires clone sample path and MIME type")
+            audio_data_url, _, _ = _audio_file_to_data_url(
+                request.clone_sample_path,
+                request.clone_mime_type,
+            )
+            audio["voice"] = audio_data_url
+            return body
+
+        raise UnsupportedCapability(f"mimo provider does not support TTS mode: {request.mode}")
+
+    def _build_asr_body(self, request: ASRRequest, audio_data_url: str) -> dict[str, Any]:
+        model = self._resolve_asr_model(request)
+        self._validate_model_id(model, expected_capability=ASR_CAPABILITY)
+        _validate_base64_size(request.base64_size)
+        return {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": audio_data_url},
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def synthesize(
+        self,
+        request: TTSRequest,
+        *,
+        artifact_metadata: Mapping[str, object] | None = None,
+    ) -> AudioArtifact:
         self._ensure_open()
         self._ensure_tts_capability(request)
         operation_id = self._next_operation_id("tts")
         started_at = datetime.now(UTC)
-        body = _build_tts_body(request)
+        body = self._build_tts_body(request)
         completion = self._create_completion(body, timeout=TTS_TIMEOUT_SECONDS)
         audio_payload = _message_audio_data(completion)
 
@@ -251,7 +236,10 @@ class MimoProvider:
             provider_id=self.id,
             operation="tts",
             audio=audio,
-            metadata=_tts_metadata(request, body),
+            metadata={
+                **_tts_metadata(request, body, provider_id=self.id),
+                **dict(artifact_metadata or {}),
+            },
         )
         self._artifact_store.record_operation(
             OperationResult(
@@ -274,7 +262,7 @@ class MimoProvider:
             request.audio_path,
             request.mime_type,
         )
-        body = _build_asr_body(request, audio_data_url)
+        body = self._build_asr_body(request, audio_data_url)
         completion = self._create_completion(
             body,
             timeout=ASR_TIMEOUT_SECONDS,
@@ -290,7 +278,7 @@ class MimoProvider:
             metadata={
                 "base64_size": base64_size,
                 "language": request.language,
-                "model": request.model,
+                "model": body["model"],
                 "operation": "asr",
                 "provider_id": self.id,
                 "raw_byte_size": raw_size,
@@ -342,6 +330,57 @@ class MimoProvider:
         if capability not in self.capabilities():
             raise UnsupportedCapability(f"mimo provider does not support capability: {capability}")
 
+    def _validate_tts_request(self, request: TTSRequest) -> None:
+        if request.output_format != "wav":
+            raise ProviderError("mimo TTS output format must be wav")
+
+    def _validate_clone_audio_input(self, request: TTSRequest) -> None:
+        if request.clone_sample_path is None or request.clone_mime_type is None:
+            raise ProviderError("clone mode requires clone sample path and MIME type")
+        allowed_suffixes = CLONE_MIME_SUFFIXES.get(request.clone_mime_type)
+        if allowed_suffixes is None:
+            raise ProviderError(
+                "mimo clone sample MIME type must be audio/wav, audio/mpeg, or audio/mp3"
+            )
+        suffix = request.clone_sample_path.suffix.lower()
+        if suffix not in allowed_suffixes:
+            expected = ", ".join(sorted(allowed_suffixes))
+            raise ProviderError(
+                f"mimo clone sample suffix must be {expected} for {request.clone_mime_type}"
+            )
+
+    def _resolve_tts_model(self, request: TTSRequest) -> str:
+        capability = TTS_MODE_CAPABILITIES[request.mode]
+        model = request.model or self._default_tts_model(request.mode)
+        self._validate_model_id(model, expected_capability=capability)
+        return model
+
+    def _resolve_asr_model(self, request: ASRRequest) -> str:
+        model = request.model or self._default_models.asr
+        if model is None:
+            raise ProviderError(f"mimo provider {self.id} has no default ASR model")
+        return model
+
+    def _default_tts_model(self, mode: TTSMode) -> str:
+        default_by_mode = {
+            TTSMode.BUILTIN: self._default_models.tts_builtin,
+            TTSMode.DESIGN: self._default_models.tts_design,
+            TTSMode.CLONE: self._default_models.tts_clone,
+        }
+        model = default_by_mode[mode]
+        if model is None:
+            raise ProviderError(f"mimo provider {self.id} has no default TTS model for {mode}")
+        return model
+
+    def _validate_model_id(self, model: str, *, expected_capability: str | None = None) -> None:
+        model_info = self._models_by_id.get(model)
+        if model_info is None:
+            raise ProviderError(f"unsupported MiMo model: {model}")
+        if expected_capability is not None and model_info.capability != expected_capability:
+            raise ProviderError(
+                f"unsupported MiMo model for {expected_capability}: {model}"
+            )
+
     def _next_operation_id(self, operation: str) -> str:
         self._operation_counter += 1
         return f"mimo-{self._operation_prefix}-{operation}-{self._operation_counter}"
@@ -349,27 +388,6 @@ class MimoProvider:
     def _ensure_open(self) -> None:
         if self._closed:
             raise ProviderError("mimo provider is closed")
-
-
-def _validate_tts_request(request: TTSRequest) -> None:
-    if request.output_format != "wav":
-        raise ProviderError("mimo TTS output format must be wav")
-
-
-def _validate_clone_audio_input(request: TTSRequest) -> None:
-    if request.clone_sample_path is None or request.clone_mime_type is None:
-        raise ProviderError("clone mode requires clone sample path and MIME type")
-    allowed_suffixes = CLONE_MIME_SUFFIXES.get(request.clone_mime_type)
-    if allowed_suffixes is None:
-        raise ProviderError(
-            "mimo clone sample MIME type must be audio/wav, audio/mpeg, or audio/mp3"
-        )
-    suffix = request.clone_sample_path.suffix.lower()
-    if suffix not in allowed_suffixes:
-        expected = ", ".join(sorted(allowed_suffixes))
-        raise ProviderError(
-            f"mimo clone sample suffix must be {expected} for {request.clone_mime_type}"
-        )
 
 
 def _validate_base64_size(base64_size: int) -> None:
@@ -384,17 +402,6 @@ def _api_status_error_message(exc: APIStatusError) -> str:
     if status_code is not None:
         return f"mimo API request failed with status {status_code}"
     return "mimo API request failed"
-
-
-def _resolve_tts_model(request: TTSRequest) -> str:
-    model = request.model or _TTS_MODEL_BY_MODE[request.mode]
-    _validate_model_id(model)
-    return model
-
-
-def _validate_model_id(model: str) -> None:
-    if model not in _MODEL_IDS:
-        raise ProviderError(f"unsupported MiMo model: {model}")
 
 
 def _message_audio_data(completion: Any) -> str:
@@ -427,26 +434,34 @@ def _get_value(value: Any, key: str) -> Any:
 
 
 class _MissingCredentialsClient:
-    def __init__(self) -> None:
-        self.chat = _MissingCredentialsChat()
+    def __init__(self, api_key_env: str) -> None:
+        self.chat = _MissingCredentialsChat(api_key_env)
 
 
 class _MissingCredentialsChat:
-    def __init__(self) -> None:
-        self.completions = _MissingCredentialsCompletions()
+    def __init__(self, api_key_env: str) -> None:
+        self.completions = _MissingCredentialsCompletions(api_key_env)
 
 
 class _MissingCredentialsCompletions:
+    def __init__(self, api_key_env: str) -> None:
+        self._api_key_env = api_key_env
+
     def create(self, **_: Any) -> Any:
-        raise ProviderError("MIMO_API_KEY is required for provider mimo")
+        raise ProviderError(f"{self._api_key_env} is required for provider mimo")
 
 
-def _tts_metadata(request: TTSRequest, body: dict[str, Any]) -> dict[str, Any]:
+def _tts_metadata(
+    request: TTSRequest,
+    body: dict[str, Any],
+    *,
+    provider_id: str,
+) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "model": body["model"],
         "operation": "tts",
         "output_format": request.output_format,
-        "provider_id": "mimo",
+        "provider_id": provider_id,
         "source_text": request.text,
         "style_instruction": request.style_instruction,
         "tts_mode": request.mode.value,

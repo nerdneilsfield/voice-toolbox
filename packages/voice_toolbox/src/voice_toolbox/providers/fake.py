@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -93,7 +94,12 @@ class FakeProvider:
     ) -> None:
         self.close()
 
-    def synthesize(self, request: TTSRequest) -> AudioArtifact:
+    def synthesize(
+        self,
+        request: TTSRequest,
+        *,
+        artifact_metadata: Mapping[str, object] | None = None,
+    ) -> AudioArtifact:
         self._ensure_open()
         capability = TTS_MODE_CAPABILITIES[request.mode]
         if capability not in self._capabilities:
@@ -101,20 +107,23 @@ class FakeProvider:
 
         operation_id = self._next_operation_id("tts")
         started_at = datetime.now(UTC)
+        metadata = {
+            "model": request.model or "fake-tts",
+            "operation": "tts",
+            "output_format": request.output_format,
+            "provider_id": self.id,
+            "source_text": request.text,
+            "tts_mode": request.mode.value,
+            "voice_description": request.voice_description,
+            "voice_id": request.voice_id,
+            **dict(artifact_metadata or {}),
+        }
         artifact = self._artifact_store.write_audio(
             operation_id=operation_id,
             provider_id=self.id,
             operation="tts",
             audio=self._audio_bytes(request),
-            metadata={
-                "operation": "tts",
-                "output_format": request.output_format,
-                "provider_id": self.id,
-                "source_text": request.text,
-                "tts_mode": request.mode.value,
-                "voice_description": request.voice_description,
-                "voice_id": request.voice_id,
-            },
+            metadata=metadata,
         )
         self._artifact_store.record_operation(
             OperationResult(
