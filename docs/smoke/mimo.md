@@ -20,6 +20,17 @@ rtk cp -n .env.example .env
 
 Set `MIMO_API_KEY` in `.env`. Keep `MIMO_BASE_URL=https://api.xiaomimimo.com/v1` for baseline checks.
 
+Provider config is optional for baseline smoke:
+
+- With no `voice_toolbox.toml`, the built-in MiMo provider is used and legacy `.env` values such as `MIMO_BASE_URL` apply.
+- With `voice_toolbox.toml`, set provider `base_url`, models, and voices in TOML; keep only secret values such as `MIMO_API_KEY` in `.env`.
+- Do not put API key values in `voice_toolbox.toml`.
+- Confirm the active provider before real smoke:
+
+```bash
+rtk uv run --env-file .env python -c "from voice_toolbox.config import load_app_config; c=load_app_config(); print(c.providers[0].id, c.providers[0].base_url)"
+```
+
 Prepare local smoke inputs:
 
 - `smoke-inputs/clone-sample.wav`: short voice sample, ideally under 10 seconds, with consent to use the voice.
@@ -128,23 +139,25 @@ Pass:
 
 Run only after baseline default URL passes. These candidates are not verified yet; failures do not block default-url release.
 
-China candidate:
+China candidate, when no `voice_toolbox.toml` is active:
 
 ```bash
-MIMO_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1 rtk uv run --env-file .env voice-toolbox tts synthesize \
+rtk uv run --env-file .env env MIMO_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1 voice-toolbox tts synthesize \
   --text "Token Plan China candidate smoke test." \
   --voice 冰糖 \
   --format wav
 ```
 
-Singapore candidate:
+Singapore candidate, when no `voice_toolbox.toml` is active:
 
 ```bash
-MIMO_BASE_URL=https://token-plan-sgp.xiaomimimo.com/v1 rtk uv run --env-file .env voice-toolbox tts synthesize \
+rtk uv run --env-file .env env MIMO_BASE_URL=https://token-plan-sgp.xiaomimimo.com/v1 voice-toolbox tts synthesize \
   --text "Token Plan Singapore candidate smoke test." \
   --voice 冰糖 \
   --format wav
 ```
+
+If a `voice_toolbox.toml` is active, edit that provider's `base_url` instead of setting `MIMO_BASE_URL`; TOML provider config takes precedence over legacy fallback env.
 
 Record:
 
