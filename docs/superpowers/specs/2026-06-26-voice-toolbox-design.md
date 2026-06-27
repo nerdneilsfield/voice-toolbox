@@ -533,7 +533,7 @@ Validation errors are caught before provider calls:
 
 Provider calls:
 
-- Use bounded HTTP timeouts: 60 seconds for TTS, 90 seconds for ASR, and 30 seconds for metadata-style provider calls if added later.
+- Use bounded HTTP timeouts: 300 seconds for TTS/ASR generation calls, and 30 seconds for metadata-style provider calls if added later.
 - Retry only 429 responses once with bounded backoff. Do not retry `APIConnectionError`,
   `APITimeoutError`, 5xx, validation errors, or non-429 4xx errors for generation calls,
   because MiMo may already have accepted the request body and a retry can double bill.

@@ -628,8 +628,8 @@ The TTS builder must keep audio tags inside `assistant.content`. It must put nat
 
 Implement `MimoProvider.synthesize()` and `MimoProvider.transcribe()` with the OpenAI SDK. Use SDK `api_key` and `base_url`. Do not add custom `api-key` header in v1. Use:
 
-- TTS timeout: 60 seconds.
-- ASR timeout: 90 seconds.
+- TTS timeout: 300 seconds.
+- ASR timeout: 300 seconds.
 - Retry 429 once with bounded backoff.
 - Do not retry `APIConnectionError`, `APITimeoutError`, HTTP 500/502/503/504, validation
   errors, or non-429 4xx errors for generation calls because the provider may have

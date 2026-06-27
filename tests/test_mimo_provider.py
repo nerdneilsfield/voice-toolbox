@@ -134,7 +134,7 @@ def test_clone_builds_data_url_and_never_metadata_payload(tmp_path: Path) -> Non
     artifact = provider.synthesize(request)
     sidecar = artifact.path.with_suffix(".json").read_text(encoding="utf-8")
 
-    assert client.chat.completions.calls[0]["timeout"] == 60.0
+    assert client.chat.completions.calls[0]["timeout"] == 300.0
     assert artifact.metadata["uploaded_file_name"] == "sample.wav"
     assert artifact.metadata["uploaded_file_mime_type"] == "audio/wav"
     assert artifact.metadata["base64_size"] == len(expected_payload)
@@ -212,7 +212,7 @@ def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) ->
             "model": "mimo-v2.5-asr",
             "messages": body["messages"],
             "extra_body": {"asr_options": {"language": "zh"}},
-            "timeout": 90.0,
+            "timeout": 300.0,
         }
     ]
     assert artifact.path.read_text(encoding="utf-8") == "你好"
