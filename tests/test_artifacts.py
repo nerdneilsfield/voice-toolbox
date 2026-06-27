@@ -105,6 +105,34 @@ def test_redact_metadata_preserves_allowed_direct_keys_and_text_lengths() -> Non
     }
 
 
+def test_redact_metadata_preserves_normalization_metadata_without_raw_text() -> None:
+    metadata = redact_metadata(
+        {
+            "normalizer_id": "markdown_basic",
+            "normalization_input_format": "markdown",
+            "normalization_output_format": "plain",
+            "normalization_changed": True,
+            "normalization_input_length": 22,
+            "normalization_output_length": 17,
+            "normalization_ignored_options": ["preserve_unknown"],
+            "source_text": "# Secret",
+            "raw_text": "# Secret",
+            "normalized_text": "Secret",
+        }
+    )
+
+    assert metadata == {
+        "normalizer_id": "markdown_basic",
+        "normalization_input_format": "markdown",
+        "normalization_output_format": "plain",
+        "normalization_changed": True,
+        "normalization_input_length": 22,
+        "normalization_output_length": 17,
+        "normalization_ignored_options": ["preserve_unknown"],
+        "source_text_length": 8,
+    }
+
+
 def test_redact_metadata_maps_prompt_fields_to_lengths() -> None:
     metadata = redact_metadata(
         {
