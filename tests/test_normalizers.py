@@ -36,6 +36,38 @@ def test_auto_uses_markdown_for_structural_signals() -> None:
     assert result.text == "Title\n\none\ntwo"
 
 
+def test_auto_uses_markdown_for_single_structural_signal() -> None:
+    result = NormalizerRegistry.default().normalize(
+        "# Title",
+        input_format="auto",
+        normalizer_id=None,
+    )
+
+    assert result.normalizer_id == "markdown_basic"
+    assert result.text == "Title"
+
+
+def test_markdown_preserves_code_content_before_stripping_markup() -> None:
+    result = NormalizerRegistry.default().normalize(
+        '```python\nprint("**x** <tag>")\n```\n\nUse `**literal** <tag>`.',
+        input_format="markdown",
+        normalizer_id=None,
+    )
+
+    assert 'print("**x** <tag>")' in result.text
+    assert "**literal** <tag>" in result.text
+
+
+def test_markdown_table_rows_become_plain_text() -> None:
+    result = NormalizerRegistry.default().normalize(
+        "| Name | Value |\n| --- | --- |\n| A | **B** |",
+        input_format="markdown",
+        normalizer_id=None,
+    )
+
+    assert result.text == "Name Value\nA B"
+
+
 def test_html_tag_stripping_does_not_strip_comparisons() -> None:
     result = NormalizerRegistry.default().normalize(
         '<em>Hello</em><br><img src="x"> a < b 且 c > d',
@@ -48,4 +80,6 @@ def test_html_tag_stripping_does_not_strip_comparisons() -> None:
 
 def test_unknown_normalizer_fails() -> None:
     with pytest.raises(ValueError, match="unknown normalizer"):
-        NormalizerRegistry.default().normalize("hello", input_format="plain", normalizer_id="missing")
+        NormalizerRegistry.default().normalize(
+            "hello", input_format="plain", normalizer_id="missing"
+        )

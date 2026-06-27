@@ -165,6 +165,8 @@ def test_tts_design_optimized_preview_works_without_text(monkeypatch, tmp_path: 
             "design",
             "--description",
             "warm narrator",
+            "--text",
+            "   ",
             "--optimize-text-preview",
         ],
     )

@@ -108,7 +108,7 @@ def test_redact_metadata_preserves_allowed_direct_keys_and_text_lengths() -> Non
 def test_redact_metadata_preserves_normalization_metadata_without_raw_text() -> None:
     metadata = redact_metadata(
         {
-            "normalizer_id": "markdown_basic",
+            "normalization_normalizer_id": "markdown_basic",
             "normalization_input_format": "markdown",
             "normalization_output_format": "plain",
             "normalization_changed": True,
@@ -122,7 +122,7 @@ def test_redact_metadata_preserves_normalization_metadata_without_raw_text() -> 
     )
 
     assert metadata == {
-        "normalizer_id": "markdown_basic",
+        "normalization_normalizer_id": "markdown_basic",
         "normalization_input_format": "markdown",
         "normalization_output_format": "plain",
         "normalization_changed": True,

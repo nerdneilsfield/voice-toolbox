@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import inspect
 import logging
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 
@@ -40,6 +39,7 @@ LOG_METADATA_KEYS = frozenset(
 )
 
 INTERCEPT_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi", "starlette")
+QUERY_STRING_PATTERN = re.compile(r"(\s/[^\s?]*)(\?[^ \"]*)")
 
 
 class InterceptHandler(logging.Handler):
@@ -49,13 +49,9 @@ class InterceptHandler(logging.Handler):
         except ValueError:
             level = record.levelno
 
-        frame = inspect.currentframe()
-        depth = 0
-        while frame is not None and _is_logging_frame(frame):
-            frame = frame.f_back
-            depth += 1
-
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        logger.opt(depth=6, exception=record.exc_info).log(
+            level, _sanitize_log_message(record.getMessage())
+        )
 
 
 def sanitize_log_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
@@ -105,10 +101,10 @@ def _resolve_log_path(path: str, *, config_path: Path | None) -> Path:
     return log_path
 
 
-def _is_logging_frame(frame: Any) -> bool:
-    filename = frame.f_code.co_filename
-    return filename == logging.__file__ or filename == __file__
-
-
 def _safe_log_metadata_value(value: object) -> bool:
     return value is None or isinstance(value, str | int | float | bool | tuple | list)
+
+
+def _sanitize_log_message(message: str) -> str:
+    sanitized = QUERY_STRING_PATTERN.sub(r"\1?...", message)
+    return sanitized

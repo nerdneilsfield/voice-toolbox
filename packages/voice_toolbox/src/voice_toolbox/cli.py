@@ -99,7 +99,7 @@ def design(
 ) -> None:
     registry = build_provider_registry()
     provider_id = _resolve_provider_id(registry, provider)
-    raw_text = (text or None) if optimize_text_preview else text
+    raw_text = _design_raw_text(text, optimize_text_preview=optimize_text_preview)
     prepared = _prepare_tts_or_fail(
         raw_text=raw_text,
         text_format=text_format,
@@ -204,6 +204,12 @@ def _prepare_tts_or_fail(
         _fail(str(exc))
     except ValueError as exc:
         _fail(str(exc))
+
+
+def _design_raw_text(text: str | None, *, optimize_text_preview: bool) -> str | None:
+    if not optimize_text_preview:
+        return text
+    return (text or "").strip() or None
 
 
 def _synthesize(

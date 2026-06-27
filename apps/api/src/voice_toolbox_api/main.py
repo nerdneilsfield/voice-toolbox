@@ -174,7 +174,7 @@ def create_app(
             )
             return _run_tts(_registry_from_request(http_request), provider_id, prepared)
         if mode == TTSMode.DESIGN:
-            raw_text = (text or None) if optimize_text_preview else text
+            raw_text = _design_raw_text(text, optimize_text_preview=optimize_text_preview)
             prepared = _prepare_tts_or_422(
                 raw_text=raw_text,
                 text_format=text_format,
@@ -235,7 +235,7 @@ def create_app(
         model: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
-        raw_text = (text or None) if optimize_text_preview else text
+        raw_text = _design_raw_text(text, optimize_text_preview=optimize_text_preview)
         prepared = _prepare_tts_or_422(
             raw_text=raw_text,
             text_format=text_format,
@@ -446,6 +446,12 @@ def _prepare_tts_or_422(
         raise HTTPException(status_code=422, detail=_safe_validation_errors(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _design_raw_text(text: str | None, *, optimize_text_preview: bool) -> str | None:
+    if not optimize_text_preview:
+        return text
+    return (text or "").strip() or None
 
 
 def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:

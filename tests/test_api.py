@@ -370,7 +370,9 @@ def test_tts_endpoint_normalizes_markdown_and_writes_metadata(tmp_path: Path) ->
 
     assert response.status_code == 200
     assert provider.tts_requests[-1].text == "Title\nHello world"
-    assert response.json()["artifact"]["metadata"]["normalizer_id"] == "markdown_basic"
+    assert (
+        response.json()["artifact"]["metadata"]["normalization_normalizer_id"] == "markdown_basic"
+    )
     assert "Hello **world**" not in str(response.json())
 
 
@@ -390,7 +392,9 @@ def test_clone_endpoint_normalizes_markdown(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert provider.tts_requests[-1].text == "Clone"
-    assert response.json()["artifact"]["metadata"]["normalizer_id"] == "markdown_basic"
+    assert (
+        response.json()["artifact"]["metadata"]["normalization_normalizer_id"] == "markdown_basic"
+    )
 
 
 def test_design_optimize_preview_empty_text_skips_normalization(tmp_path: Path) -> None:
@@ -401,7 +405,7 @@ def test_design_optimize_preview_empty_text_skips_normalization(tmp_path: Path) 
         data={
             "provider_id": "mimo",
             "voice_description": "warm narrator",
-            "text": "",
+            "text": "   ",
             "text_format": "markdown",
             "optimize_text_preview": "true",
         },

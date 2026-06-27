@@ -29,11 +29,13 @@ TABLE_SEPARATOR_LINE_PATTERN = re.compile(
     r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$\n?",
     re.MULTILINE,
 )
+INLINE_CODE_PATTERN = re.compile(r"`([^`\n]+?)`")
 STRONG_EMPHASIS_PATTERN = re.compile(r"(\*\*|__)(?=\S)(.*?\S)\1")
 STAR_EMPHASIS_PATTERN = re.compile(r"(?<!\*)\*(?=\S)([^*\n]*?\S)\*(?!\*)")
 UNDERSCORE_EMPHASIS_PATTERN = re.compile(r"(?<![\w_])_(?=\S)([^_\n]*?\S)_(?![\w_])")
 THREE_OR_MORE_BLANK_LINES_PATTERN = re.compile(r"\n{3,}")
 KNOWN_MARKDOWN_OPTIONS = {"preserve_code_blocks"}
+PLACEHOLDER_TEMPLATE = "\x00VT_CODE_{index}\x00"
 
 
 def markdown_signal_count(content: str) -> int:
@@ -79,7 +81,7 @@ class MarkdownBasicNormalizer:
     ) -> NormalizedContent:
         normalization_options = options or {}
         preserve_code_blocks = bool(normalization_options.get("preserve_code_blocks", True))
-        text = _strip_code_fences(content, preserve_code_blocks=preserve_code_blocks)
+        text, protected_chunks = _protect_code(content, preserve_code_blocks=preserve_code_blocks)
         text = IMAGE_PATTERN.sub(r"\1", text)
         text = LINK_PATTERN.sub(r"\1", text)
         text = HTML_TAG_PATTERN.sub("", text)
@@ -91,6 +93,8 @@ class MarkdownBasicNormalizer:
         text = STAR_EMPHASIS_PATTERN.sub(r"\1", text)
         text = UNDERSCORE_EMPHASIS_PATTERN.sub(r"\1", text)
         text = TABLE_SEPARATOR_LINE_PATTERN.sub("", text)
+        text = _strip_table_pipes(text)
+        text = _restore_protected_chunks(text, protected_chunks)
         text = "\n".join(line.rstrip() for line in text.splitlines())
         text = THREE_OR_MORE_BLANK_LINES_PATTERN.sub("\n\n", text).strip()
 
@@ -131,15 +135,46 @@ class AutoTextNormalizer:
         input_format: str,
         options: dict[str, Any] | None = None,
     ) -> NormalizedContent:
-        if markdown_signal_count(content) >= 2:
+        if markdown_signal_count(content) >= 1:
             return self._markdown.normalize(content, input_format="markdown", options=options)
         return self._plain.normalize(content, input_format=input_format, options=options)
 
 
-def _strip_code_fences(content: str, *, preserve_code_blocks: bool) -> str:
-    if preserve_code_blocks:
-        return CODE_FENCE_PATTERN.sub(lambda match: match.group(1).strip("\n"), content)
-    return CODE_FENCE_PATTERN.sub("", content)
+def _protect_code(content: str, *, preserve_code_blocks: bool) -> tuple[str, list[str]]:
+    protected_chunks: list[str] = []
+
+    def add_chunk(text: str) -> str:
+        placeholder = PLACEHOLDER_TEMPLATE.format(index=len(protected_chunks))
+        protected_chunks.append(text)
+        return placeholder
+
+    def fence_replacement(match: re.Match[str]) -> str:
+        if not preserve_code_blocks:
+            return ""
+        return add_chunk(match.group(1).strip("\n"))
+
+    text = CODE_FENCE_PATTERN.sub(fence_replacement, content)
+    text = INLINE_CODE_PATTERN.sub(lambda match: add_chunk(match.group(1)), text)
+    return text, protected_chunks
+
+
+def _restore_protected_chunks(text: str, protected_chunks: list[str]) -> str:
+    for index, chunk in enumerate(protected_chunks):
+        text = text.replace(PLACEHOLDER_TEMPLATE.format(index=index), chunk)
+    return text
+
+
+def _strip_table_pipes(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "|" in stripped and (
+            stripped.startswith("|") or stripped.endswith("|") or stripped.count("|") >= 2
+        ):
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            line = " ".join(cell for cell in cells if cell)
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _ignored_options(

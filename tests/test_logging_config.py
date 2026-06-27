@@ -90,6 +90,26 @@ def test_log_file_never_contains_raw_request_values(tmp_path: Path) -> None:
     assert "source_text_length" not in text
 
 
+def test_uvicorn_access_log_query_string_is_redacted(tmp_path: Path) -> None:
+    path = tmp_path / "voice.log"
+    configure_logging(
+        LoggingConfig(
+            console=ConsoleLoggingConfig(enabled=False),
+            file=FileLoggingConfig(enabled=True, path=str(path), enqueue=False),
+        ),
+        config_path=None,
+    )
+
+    logging.getLogger("uvicorn.access").info(
+        '127.0.0.1:12345 - "GET /v1/tts/builtin?text=raw-secret&api_key=tp-secret HTTP/1.1" 200'
+    )
+
+    text = path.read_text(encoding="utf-8")
+    assert "raw-secret" not in text
+    assert "tp-secret" not in text
+    assert "/v1/tts/builtin?..." in text
+
+
 def test_relative_file_path_resolves_against_config_dir(tmp_path: Path) -> None:
     config_path = tmp_path / "configs" / "voice_toolbox.toml"
     config_path.parent.mkdir()
