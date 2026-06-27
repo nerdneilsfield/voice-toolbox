@@ -22,7 +22,7 @@ help:
 	@echo "  make install              Install Python dev deps and frontend bun deps"
 	@echo "  make test                 Run backend and frontend tests"
 	@echo "  make check                Run tests, lint, type checks, and web build"
-	@echo "  make backend-server       Start FastAPI on $(API_HOST):$(API_PORT)"
+	@echo "  make backend-server       Start FastAPI from voice_toolbox.toml or fallback config"
 	@echo "  make frontend-server      Start Vite on $(WEB_HOST):$(WEB_PORT)"
 
 install:
@@ -51,7 +51,7 @@ backend-type:
 backend-check: backend-lint backend-format-check backend-type backend-test
 
 backend-server:
-	$(PYTHON_ENV) uvicorn voice_toolbox_api.main:app --host $(API_HOST) --port $(API_PORT)
+	$(PYTHON_ENV) python -m voice_toolbox_api.server
 
 backend-test-server: backend-server
 

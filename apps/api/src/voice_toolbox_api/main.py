@@ -30,6 +30,7 @@ from voice_toolbox.models import (
     TTSMode,
     TTSRequest,
 )
+from voice_toolbox.logging_config import configure_logging
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.factory import build_provider_registry
 from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE
@@ -57,6 +58,7 @@ def create_app(
     resolved_env_values = dict(env_values) if env_values is not None else load_env_values(env_path)
     if config is None:
         config = load_app_config(env_path=env_path, env_values=resolved_env_values)
+    configure_logging(config.logging, config_path=config.config_path)
     root = Path(artifact_root) if artifact_root is not None else _infer_artifact_root(registry)
     provider_registry = registry or build_provider_registry(
         config,
