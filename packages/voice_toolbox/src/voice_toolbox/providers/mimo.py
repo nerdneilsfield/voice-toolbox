@@ -119,10 +119,11 @@ def _build_tts_body(request: TTSRequest) -> dict[str, Any]:
 
 
 def _build_asr_body(request: ASRRequest, audio_data_url: str) -> dict[str, Any]:
-    _validate_model_id(request.model)
+    model = request.model or "mimo-v2.5-asr"
+    _validate_model_id(model)
     _validate_base64_size(request.base64_size)
     return {
-        "model": request.model,
+        "model": model,
         "messages": [
             {
                 "role": "user",

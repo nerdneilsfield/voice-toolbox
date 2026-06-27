@@ -5,6 +5,7 @@ description = "Local-first voice toolbox for TTS and ASR providers"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
+  "loguru>=0.7",
   "openai>=1.0",
   "pydantic>=2.0",
   "python-dotenv>=1.0",
