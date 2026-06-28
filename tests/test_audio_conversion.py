@@ -98,7 +98,17 @@ def test_convert_audio_bytes_keeps_matching_format_without_decoder(monkeypatch) 
 
 def test_upload_mime_and_suffix_normalization() -> None:
     assert normalize_mime_type("audio/x-m4a; codecs=mp4a") == "audio/mp4"
+    assert normalize_mime_type("audio/L16; rate=24000; channels=1") == "audio/pcm"
     assert validate_mime_suffix_match("audio/mp4", ".m4a") == "m4a"
 
     with pytest.raises(AudioConversionError, match="does not match"):
         validate_mime_suffix_match("audio/wav", ".mp3")
+
+
+def test_l16_input_requires_explicit_24k_mono_contract() -> None:
+    with pytest.raises(AudioConversionError, match="rate=24000"):
+        normalize_mime_type("audio/L16")
+    with pytest.raises(AudioConversionError, match="rate=24000"):
+        normalize_mime_type("audio/L16; rate=8000; channels=1")
+    with pytest.raises(AudioConversionError, match="channels=1"):
+        normalize_mime_type("audio/L16; rate=24000; channels=2")

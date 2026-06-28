@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO
+from email.message import Message
 from typing import Any, Literal, cast
 
 AudioFormat = Literal["wav", "mp3", "pcm", "flac", "m4a", "ogg", "webm", "aac"]
@@ -27,7 +28,6 @@ FORMAT_BY_MIME: Mapping[str, AudioFormat] = cast(
         "audio/mpeg": "mp3",
         "audio/mp3": "mp3",
         "audio/pcm": "pcm",
-        "audio/l16": "pcm",
         "audio/flac": "flac",
         "audio/x-flac": "flac",
         "audio/mp4": "m4a",
@@ -67,7 +67,6 @@ SUFFIX_BY_FORMAT: Mapping[AudioFormat, str] = {
 PYDUB_INPUT_FORMAT_BY_FORMAT: Mapping[AudioFormat, str] = {
     "wav": "wav",
     "mp3": "mp3",
-    "pcm": "s16le",
     "flac": "flac",
     "m4a": "m4a",
     "ogg": "ogg",
@@ -99,9 +98,12 @@ class ConvertedAudio:
 
 
 def normalize_mime_type(mime_type: str | None) -> str:
-    base_type = (mime_type or "").split(";", maxsplit=1)[0].strip().lower()
+    base_type, params = _parse_mime_type(mime_type)
     if not base_type:
         raise AudioConversionError("audio MIME type is required")
+    if base_type == "audio/l16":
+        _validate_l16_params(params)
+        return "audio/pcm"
     if base_type not in FORMAT_BY_MIME:
         supported = ", ".join(sorted(set(FORMAT_BY_MIME)))
         raise AudioConversionError(f"unsupported audio MIME type; expected one of: {supported}")
@@ -196,3 +198,23 @@ def _audio_segment_class() -> Any:
     except Exception as exc:
         raise AudioConversionError("audio conversion requires pydub and ffmpeg") from exc
     return AudioSegment
+
+
+def _parse_mime_type(mime_type: str | None) -> tuple[str, Mapping[str, str]]:
+    raw = (mime_type or "").strip()
+    message = Message()
+    message["content-type"] = raw or "application/octet-stream"
+    base_type = message.get_content_type().lower()
+    raw_params = message.get_params() or []
+    params = {key.lower(): value for key, value in raw_params[1:]}
+    return base_type, params
+
+
+def _validate_l16_params(params: Mapping[str, str]) -> None:
+    rate = params.get("rate")
+    channels = params.get("channels")
+    if rate != "24000" or channels != "1":
+        raise AudioConversionError(
+            "audio/L16 input must specify rate=24000 and channels=1; "
+            "raw PCM is interpreted as 24 kHz mono int16 little-endian"
+        )

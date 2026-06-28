@@ -108,7 +108,9 @@ Converted download names use `YYYYMMDD-HHMMSS-<hash>.<ext>` instead of exposing
 internal operation IDs. Raw `pcm` is 24 kHz mono int16 little-endian. ASR and
 voice clone uploads accept common audio inputs (`wav`, `mp3`, `pcm`, `m4a`,
 `flac`, `ogg`, `webm`, `aac`) and convert non-native inputs to a
-provider-compatible format before calling the provider.
+provider-compatible format before calling the provider. `audio/L16` uploads must
+include `rate=24000; channels=1`; other L16 rates are rejected instead of being
+silently reinterpreted.
 
 ASR:
 

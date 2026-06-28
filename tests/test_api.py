@@ -911,6 +911,44 @@ def test_upload_routes_accept_wav_mime_alias_with_parameters(tmp_path: Path) -> 
     assert provider.asr_requests[0].mime_type == "audio/wav"
 
 
+def test_upload_routes_reject_l16_without_pcm_contract(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.pcm", b"\x00\x00" * 8, "audio/L16; rate=8000; channels=1")},
+    )
+
+    assert response.status_code == 422
+    assert "rate=24000" in response.json()["detail"]
+    assert provider.asr_requests == []
+
+
+def test_upload_routes_accept_l16_with_explicit_pcm_contract(monkeypatch, tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    def fake_convert_audio_bytes(contents, *, source_format, target_format):
+        assert contents == b"\x00\x00" * 8
+        assert source_format == "pcm"
+        assert target_format == "wav"
+        return api_main.ConvertedAudio(
+            data=WAV_BYTES,
+            format="wav",
+            mime_type="audio/wav",
+            suffix=".wav",
+        )
+
+    monkeypatch.setattr(api_main, "convert_audio_bytes", fake_convert_audio_bytes)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.pcm", b"\x00\x00" * 8, "audio/L16; rate=24000; channels=1")},
+    )
+
+    assert response.status_code == 200
+    assert provider.asr_requests[0].mime_type == "audio/wav"
+
+
 def test_validation_errors_do_not_echo_raw_input(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
 
