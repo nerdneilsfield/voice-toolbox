@@ -559,17 +559,24 @@ function TextTools({
 }) {
   return (
     <section className="text-tools">
-      <label>
-        Text format
-        <select value={textFormat} onChange={(event) => setTextFormat(event.target.value as TextFormat)}>
-          <option value="plain">plain</option>
-          <option value="markdown">markdown</option>
-          <option value="auto">auto</option>
-        </select>
-      </label>
-      <button className="secondary-action" type="button" onClick={onPreview} disabled={previewState === "loading"}>
-        {previewState === "loading" ? "Previewing..." : "Preview cleaned text"}
-      </button>
+      <div className="text-tools-row">
+        <label className="text-format-field">
+          Text format
+          <select value={textFormat} onChange={(event) => setTextFormat(event.target.value as TextFormat)}>
+            <option value="plain">plain</option>
+            <option value="markdown">markdown</option>
+            <option value="auto">auto</option>
+          </select>
+        </label>
+        <button
+          className="secondary-action preview-action"
+          type="button"
+          onClick={onPreview}
+          disabled={previewState === "loading"}
+        >
+          {previewState === "loading" ? "Previewing..." : "Preview cleaned text"}
+        </button>
+      </div>
       {previewError ? <div className="notice error compact">{previewError}</div> : null}
       {cleanedPreview ? <pre className="cleaned-preview">{cleanedPreview}</pre> : null}
     </section>

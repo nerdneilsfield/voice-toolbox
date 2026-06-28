@@ -474,12 +474,32 @@ textarea {
 
 .text-tools {
   display: grid;
-  grid-template-columns: minmax(150px, 0.42fr) auto;
   gap: 12px;
-  align-items: end;
   border-bottom: 1px solid var(--border);
   background: transparent;
-  padding: 0 0 18px;
+  padding: 0 0 16px;
+}
+
+.text-tools-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 14px;
+}
+
+.text-format-field {
+  flex: 0 1 280px;
+  max-width: 100%;
+}
+
+.text-format-field select {
+  min-height: 44px;
+}
+
+.preview-action {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 8px 16px;
 }
 
 .text-tools .notice,
@@ -889,8 +909,14 @@ textarea {
     flex-direction: row;
   }
 
-  .text-tools {
-    grid-template-columns: 1fr;
+  .text-tools-row {
+    align-items: stretch;
+  }
+
+  .text-format-field,
+  .preview-action {
+    flex-basis: 100%;
+    width: 100%;
   }
 
   .fullscreen-editor {
