@@ -30,9 +30,20 @@ def test_design_mode_requires_text_when_optimize_text_preview_false() -> None:
         TTSRequest(mode=TTSMode.DESIGN, voice_description="warm and calm")
 
 
-def test_output_format_rejects_mp3_v1_only_wav() -> None:
+def test_output_format_accepts_wav_and_mp3() -> None:
+    request = TTSRequest(
+        mode=TTSMode.BUILTIN,
+        text="hello",
+        voice_id="voice-1",
+        output_format="mp3",
+    )
+
+    assert request.output_format == "mp3"
+
+
+def test_output_format_rejects_unknown_values() -> None:
     with pytest.raises(ValidationError):
-        TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="voice-1", output_format="mp3")
+        TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="voice-1", output_format="flac")
 
 
 def test_asr_language_supports_auto() -> None:

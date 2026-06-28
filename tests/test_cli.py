@@ -109,6 +109,19 @@ def test_tts_synthesize_accepts_format_wav(monkeypatch, tmp_path: Path) -> None:
     assert provider.tts_requests[0].output_format == "wav"
 
 
+def test_tts_synthesize_accepts_format_mp3(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        ["tts", "synthesize", "--text", "hello", "--voice", "Mia", "--format", "mp3"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.tts_requests[0].output_format == "mp3"
+
+
 def test_cli_tts_accepts_text_format_markdown(monkeypatch, tmp_path: Path) -> None:
     provider = _install_recording_provider(monkeypatch, tmp_path)
     runner = CliRunner()
@@ -123,18 +136,18 @@ def test_cli_tts_accepts_text_format_markdown(monkeypatch, tmp_path: Path) -> No
     assert provider.tts_requests[0].text == "Title"
 
 
-def test_tts_synthesize_rejects_unsupported_format(monkeypatch, tmp_path: Path) -> None:
+def test_tts_synthesize_rejects_unknown_format(monkeypatch, tmp_path: Path) -> None:
     provider = _install_recording_provider(monkeypatch, tmp_path)
     runner = CliRunner()
 
     result = runner.invoke(
         cli.app,
-        ["tts", "synthesize", "--text", "hello", "--voice", "Mia", "--format", "mp3"],
+        ["tts", "synthesize", "--text", "hello", "--voice", "Mia", "--format", "flac"],
     )
 
     assert result.exit_code != 0
     assert "format" in result.output.lower()
-    assert "wav" in result.output
+    assert "wav or mp3" in result.output
     assert provider.tts_requests == []
 
 

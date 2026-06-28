@@ -95,6 +95,10 @@ rtk uv run --env-file .env voice-toolbox tts synthesize \
   --format wav
 ```
 
+MiMo and Fish Audio currently accept `wav` output through Voice Toolbox. OpenRouter
+TTS uses its OpenAI-compatible speech endpoint and stores browser-friendly MP3
+artifacts, so use `--format mp3` when targeting the OpenRouter provider.
+
 ASR:
 
 ```bash
@@ -114,7 +118,7 @@ Fish Audio provider support:
 
 OpenRouter provider support:
 
-- `tts.builtin`: calls `POST /api/v1/audio/speech`; OpenRouter supports `mp3` or `pcm`, so artifacts are stored as `.mp3`.
+- `tts.builtin`: calls `POST /api/v1/audio/speech`; OpenRouter supports `mp3` or `pcm`, so artifacts are stored as `.mp3`. Style prompts are sent as OpenAI provider instructions.
 - `asr.transcribe`: calls `POST /api/v1/audio/transcriptions` with base64 `input_audio`.
 - `tts.design` and `tts.clone`: not enabled because OpenRouter docs only define the standard TTS endpoint.
 

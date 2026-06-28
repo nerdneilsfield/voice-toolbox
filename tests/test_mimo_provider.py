@@ -8,8 +8,6 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
-from pydantic import ValidationError
-
 from voice_toolbox.models import ASRRequest, TTSMode, TTSRequest
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.mimo import (
@@ -496,10 +494,16 @@ def test_clone_and_asr_base64_size_max_10_mib(tmp_path: Path) -> None:
 
 
 def test_tts_output_format_stays_wav_only() -> None:
-    with pytest.raises(ValidationError):
-        TTSRequest(
-            mode=TTSMode.BUILTIN,
-            text="hello",
-            voice_id="Mia",
-            output_format="mp3",
-        )
+    request = TTSRequest(
+        mode=TTSMode.BUILTIN,
+        text="hello",
+        voice_id="Mia",
+        output_format="mp3",
+    )
+    provider = MimoProvider(
+        api_key="secret",
+        client=FakeClient(_tts_completion()),
+    )
+
+    with pytest.raises(ProviderError, match="output format must be wav"):
+        provider._build_tts_body(request)

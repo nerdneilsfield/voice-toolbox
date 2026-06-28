@@ -71,6 +71,11 @@ class ExplodingProvider(RecordingMimoProvider):
         raise RuntimeError("raw traceback secret /Users/private/path")
 
 
+class NoCloneProvider(RecordingMimoProvider):
+    def capabilities(self) -> set[str]:
+        return {"tts.builtin", "asr.transcribe"}
+
+
 def _test_config(*, host: str = "127.0.0.1") -> AppConfig:
     return AppConfig(
         api=APIConfig(host=host, port=8000),
@@ -541,6 +546,27 @@ def test_tts_synthesize_rejects_sample_for_non_clone_mode(tmp_path: Path) -> Non
 
     assert response.status_code == 422
     assert "sample" in response.json()["detail"]
+    assert provider.tts_requests == []
+
+
+def test_clone_route_checks_capability_before_reading_upload(tmp_path: Path) -> None:
+    provider = NoCloneProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tts/clone",
+        data={"text": "hello", "consent_confirmed": "true"},
+        files={"sample": ("sample.wav", b"not a valid wav", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "tts.clone" in response.json()["detail"]
     assert provider.tts_requests == []
 
 

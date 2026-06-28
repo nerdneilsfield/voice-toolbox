@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from voice_toolbox.config import AppConfig, load_app_config, load_env_values, replay_config_warnings
 from voice_toolbox.logging_config import configure_logging, sanitize_log_metadata
 from voice_toolbox.models import ASRRequest, AudioArtifact, TranscriptArtifact, TTSMode
+from voice_toolbox.models import TTSOutputFormat
 from voice_toolbox.pipeline import PreparedTTSRequest, prepare_tts_request
 from voice_toolbox.providers import ProviderError, ProviderRegistry
 from voice_toolbox.providers.factory import (
@@ -40,7 +41,7 @@ TextFormatOption = Annotated[
     typer.Option("--text-format", help="Input text format."),
 ]
 ModelOption = Annotated[str | None, typer.Option("--model", help="Provider model id.")]
-FormatOption = Annotated[str, typer.Option("--format", help="Output format; v1 supports wav.")]
+FormatOption = Annotated[str, typer.Option("--format", help="Output format: wav or mp3.")]
 StyleOption = Annotated[
     str | None,
     typer.Option("--style", help="Optional style instruction."),
@@ -327,10 +328,10 @@ def _audio_upload_metadata(path: Path) -> tuple[AudioMime, int, int]:
     return cast(AudioMime, mime_type), raw_byte_size, base64_size
 
 
-def _normalize_output_format(output_format: str) -> Literal["wav"]:
-    if output_format != DEFAULT_OUTPUT_FORMAT:
-        _fail("unsupported output format; expected wav")
-    return DEFAULT_OUTPUT_FORMAT
+def _normalize_output_format(output_format: str) -> TTSOutputFormat:
+    if output_format not in {"wav", "mp3"}:
+        _fail("unsupported output format; expected wav or mp3")
+    return cast(TTSOutputFormat, output_format)
 
 
 def _fail(message: str) -> NoReturn:

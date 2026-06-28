@@ -553,6 +553,19 @@ def _run_clone_upload(
     clone_reference_text: str | None,
     model: str | None,
 ) -> dict[str, Any]:
+    registry = _registry_from_request(http_request)
+    _ensure_tts_provider(
+        registry,
+        provider_id,
+        TTSRequest(
+            provider_id=provider_id,
+            mode=TTSMode.CLONE,
+            text="preflight",
+            clone_sample_path=Path("preflight.wav"),
+            clone_mime_type="audio/wav",
+            consent_confirmed=True,
+        ),
+    )
     contents = _read_upload(sample)
     mime_type = _normalize_mime_type(sample.content_type)
     suffix = _suffix_for_upload(sample.filename)
@@ -576,7 +589,7 @@ def _run_clone_upload(
                 "consent_confirmed": consent_confirmed,
             },
         )
-        return _run_tts(_registry_from_request(http_request), provider_id, prepared)
+        return _run_tts(registry, provider_id, prepared)
 
 
 def _run_tts(

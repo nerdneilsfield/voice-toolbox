@@ -429,7 +429,7 @@ function App() {
                 models={selectedProvider?.models ?? []}
                 selectedModel={activeTtsModel(ttsMode, builtinModel, designModel, cloneModel)}
               />
-              <span className="format-pill">WAV</span>
+              <span className="format-pill">{expectedTtsOutputLabel(selectedProvider)}</span>
             </div>
             {ttsError ? <div className="notice error compact">{ttsError}</div> : null}
             <button
@@ -889,7 +889,7 @@ function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: Re
     <aside className="result-panel">
       <div className="result-heading">
         <h2>Output</h2>
-        {artifact ? <span className="format-pill">Audio</span> : null}
+        {artifact ? <span className="format-pill">{audioLabel(artifact.mime_type)}</span> : null}
       </div>
       {state === "idle" ? <EmptyState title="Ready for audio" /> : null}
       {state === "loading" ? <LoadingState lines={3} /> : null}
@@ -1027,8 +1027,15 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) {
     return `${bytes} B`;
   }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
   const mib = bytes / (1024 * 1024);
   return `${mib.toFixed(2)} MiB`;
+}
+
+function expectedTtsOutputLabel(provider: Provider | null | undefined) {
+  return provider?.type === "openrouter" || provider?.id === "openrouter" ? "MP3" : "WAV";
 }
 
 function audioLabel(mimeType: string) {

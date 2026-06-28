@@ -40,6 +40,8 @@ TTS_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
 ASR_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
 RATE_LIMIT_BACKOFF_SECONDS = 0.25
 OPENROUTER_TTS_RESPONSE_FORMAT = "mp3"
+OPENROUTER_TITLE_HEADER = "Voice Toolbox"
+OPENROUTER_REFERER_HEADER = "https://github.com/dengqi/voice-toolbox"
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,9 @@ class OpenRouterProvider:
             base_url=base_url or DEFAULT_OPENROUTER_BASE_URL
         )
         if base_url is not None:
-            resolved_config = resolved_config.model_copy(update={"base_url": base_url})
+            resolved_config = ConfiguredProvider.model_validate(
+                {**resolved_config.model_dump(), "base_url": base_url}
+            )
 
         self._config = resolved_config
         self.id = resolved_config.id
@@ -140,12 +144,15 @@ class OpenRouterProvider:
 
     def _build_tts_body(self, request: TTSRequest) -> dict[str, Any]:
         self._validate_tts_request(request)
-        return {
+        body: dict[str, Any] = {
             "model": self._resolve_tts_model(request),
             "input": request.text,
             "voice": request.voice_id,
             "response_format": OPENROUTER_TTS_RESPONSE_FORMAT,
         }
+        if request.style_instruction:
+            body["provider"] = {"options": {"openai": {"instructions": request.style_instruction}}}
+        return body
 
     def _build_asr_body(self, request: ASRRequest) -> dict[str, Any]:
         model = self._resolve_asr_model(request)
@@ -255,14 +262,16 @@ class OpenRouterProvider:
             except (OSError, urllib.error.URLError) as exc:
                 raise ProviderError("openrouter API connection failed") from exc
             if response.status_code == 429 and attempt == 0:
-                self._sleep_func(RATE_LIMIT_BACKOFF_SECONDS)
+                self._sleep_func(_retry_after_seconds(response.headers))
                 continue
             if response.status_code == 429:
                 raise ProviderError("openrouter API rate limit exceeded")
+            if 300 <= response.status_code < 400:
+                raise ProviderError("openrouter API redirect refused")
             if response.status_code >= 400:
                 raise ProviderError(_http_error_message(response))
             return response
-        raise ProviderError("openrouter API request failed")
+        raise ProviderError("openrouter API request failed")  # pragma: no cover - defensive
 
     def _ensure_tts_capability(self, request: TTSRequest) -> None:
         capability = TTS_MODE_CAPABILITIES[request.mode]
@@ -329,11 +338,13 @@ class OpenRouterHTTPClient:
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
+                "HTTP-Referer": OPENROUTER_REFERER_HEADER,
+                "X-Title": OPENROUTER_TITLE_HEADER,
             },
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with _no_redirect_opener().open(request, timeout=timeout) as response:
                 return OpenRouterHTTPResponse(
                     status_code=response.status,
                     content=response.read(),
@@ -383,6 +394,35 @@ def _http_error_message(response: OpenRouterHTTPResponse) -> str:
     if response.status_code == 402:
         return "openrouter API payment required or credits exhausted"
     return f"openrouter API request failed with status {response.status_code}"
+
+
+def _retry_after_seconds(headers: Mapping[str, str]) -> float:
+    value = _header_value(headers, "Retry-After")
+    if value is None:
+        return RATE_LIMIT_BACKOFF_SECONDS
+    try:
+        seconds = float(value)
+    except ValueError:
+        return RATE_LIMIT_BACKOFF_SECONDS
+    if seconds < 0:
+        return RATE_LIMIT_BACKOFF_SECONDS
+    return min(seconds, 5.0)
+
+
+def _header_value(headers: Mapping[str, str], name: str) -> str | None:
+    for key, value in headers.items():
+        if key.lower() == name.lower():
+            return value
+    return None
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_: Any, **__: Any) -> None:
+        return None
+
+
+def _no_redirect_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_NoRedirectHandler())
 
 
 def _tts_metadata(

@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+TTSOutputFormat = Literal["wav", "mp3"]
+
 
 class TTSMode(StrEnum):
     BUILTIN = "builtin"
@@ -64,7 +66,7 @@ class TTSRequest(BaseModel):
     model: str | None = None
     text: str | None = None
     style_instruction: str | None = None
-    output_format: Literal["wav"] = "wav"
+    output_format: TTSOutputFormat = "wav"
     voice_id: str | None = None
     voice_description: str | None = None
     optimize_text_preview: bool = False

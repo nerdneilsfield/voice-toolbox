@@ -22,10 +22,10 @@ rtk uv run --env-file .env voice-toolbox tts synthesize \
   --model openai/gpt-4o-mini-tts-2025-12-15 \
   --voice alloy \
   --text "Hello from OpenRouter text to speech." \
-  --format wav
+  --format mp3
 ```
 
-Expected: local `data/artifacts/YYYYMMDD/openrouter-*-tts-1.mp3`. The shared CLI keeps `--format wav` for compatibility, but OpenRouter TTS stores MP3 because their endpoint supports `mp3` or `pcm`, not `wav`.
+Expected: local `data/artifacts/YYYYMMDD/openrouter-*-tts-1.mp3`. OpenRouter TTS stores MP3 artifacts in v1; MiMo and Fish Audio remain WAV-only.
 
 ## ASR
 
