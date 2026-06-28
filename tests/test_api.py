@@ -975,3 +975,119 @@ def test_cors_allows_vite_origin(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+
+
+def test_list_artifacts(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    artifact_root = tmp_path / "data" / "artifacts"
+    artifact_root.mkdir(parents=True)
+    op_dir = artifact_root / "20260628"
+    op_dir.mkdir()
+    sidecars = [
+        {
+            "id": "test-artifact-1",
+            "provider_id": "mimo",
+            "operation": "tts",
+            "kind": "audio",
+            "mime_type": "audio/wav",
+            "created_at": "2026-06-28T12:00:00+00:00",
+            "path": "test1.wav",
+            "metadata": {"tts_mode": "builtin"},
+        },
+        {
+            "id": "test-artifact-2",
+            "provider_id": "mimo",
+            "operation": "asr",
+            "kind": "transcript",
+            "mime_type": "text/plain; charset=utf-8",
+            "created_at": "2026-06-28T13:00:00+00:00",
+            "path": "test2.txt",
+        },
+        {
+            "id": "test-artifact-3",
+            "provider_id": "mimo",
+            "operation": "tts",
+            "kind": "audio",
+            "mime_type": "audio/wav",
+            "created_at": "2026-06-28T11:00:00+00:00",
+            "path": "test3.wav",
+            "metadata": {"tts_mode": "design"},
+        },
+    ]
+    for sidecar in sidecars:
+        (op_dir / f"{sidecar['id']}.json").write_text(json.dumps(sidecar))
+
+    response = client.get("/v1/artifacts?limit=2")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["artifacts"]) == 2
+    assert data["artifacts"][0]["id"] == "test-artifact-2"  # newest first
+    assert data["artifacts"][1]["id"] == "test-artifact-1"
+
+
+def test_list_artifacts_empty_root(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    response = client.get("/v1/artifacts")
+    assert response.status_code == 200
+    assert response.json() == {"artifacts": []}
+
+
+def test_list_artifacts_skips_invalid_sidecars(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    artifact_root = tmp_path / "data" / "artifacts"
+    artifact_root.mkdir(parents=True)
+    op_dir = artifact_root / "20260628"
+    op_dir.mkdir()
+    (op_dir / "bad.json").write_text("not json")
+    response = client.get("/v1/artifacts")
+    assert response.status_code == 200
+    assert response.json() == {"artifacts": []}
+
+
+def test_list_artifacts_limit_validation(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    assert client.get("/v1/artifacts?limit=0").status_code == 422
+    assert client.get("/v1/artifacts?limit=101").status_code == 422
+
+
+class MetadataStrippingProvider(RecordingMimoProvider):
+    """Proves _run_tts injects tts_mode itself. This provider bypasses
+    FakeProvider.synthesize (which would add tts_mode from request.mode) and
+    persists ONLY the injected artifact_metadata, so the only way tts_mode can
+    appear in the sidecar is the _run_tts injection."""
+
+    def synthesize(self, request, *, artifact_metadata=None):
+        self.tts_requests.append(request)
+        self._ensure_open()
+        operation_id = self._next_operation_id("tts")
+        return self._artifact_store.write_audio(
+            operation_id=operation_id,
+            provider_id=self.id,
+            operation="tts",
+            audio=self._audio_bytes(request),
+            metadata=dict(artifact_metadata or {}),
+        )
+
+
+def test_tts_mode_persisted_in_artifact_metadata(tmp_path: Path) -> None:
+    """_run_tts injects tts_mode into artifact_metadata before synthesize, so the
+    listing endpoint can label each artifact even when the provider omits it."""
+    provider = MetadataStrippingProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    client = TestClient(app)
+
+    builtin_response = client.post(
+        "/v1/tts/builtin",
+        data={"provider_id": "mimo", "text": "hello world", "voice_id": "Mia"},
+    )
+    assert builtin_response.status_code == 200
+    builtin_id = builtin_response.json()["artifact"]["id"]
+
+    listed = client.get("/v1/artifacts").json()["artifacts"]
+    by_id = {item["id"]: item for item in listed}
+    assert by_id[builtin_id]["metadata"]["tts_mode"] == "builtin"

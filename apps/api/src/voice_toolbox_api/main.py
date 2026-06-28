@@ -388,6 +388,33 @@ def create_app(
             )
             return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
 
+    @app.get("/v1/artifacts")
+    def list_artifacts(
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> dict[str, list[dict[str, Any]]]:
+        artifact_root = (root / "data" / "artifacts").resolve(strict=False)
+        if not artifact_root.exists():
+            return {"artifacts": []}
+        sidecars = artifact_root.glob("*/*.json")
+        artifacts: list[Artifact] = []
+        for sidecar_path in sidecars:
+            try:
+                artifacts.append(_read_artifact_sidecar_path(sidecar_path, root))
+            # Listing is intentionally lenient: a single corrupt/malformed sidecar
+            # must not 500 the whole list. All per-sidecar failures (invalid JSON,
+            # schema validation, path-escape guard, IO errors) are logged and skipped.
+            except (
+                HTTPException,
+                ValidationError,
+                json.JSONDecodeError,
+                OSError,
+                ValueError,
+            ) as exc:
+                logger.warning("skipping unreadable artifact sidecar: {} - {}", sidecar_path, exc)
+                continue
+        artifacts.sort(key=lambda artifact: artifact.created_at, reverse=True)
+        return {"artifacts": [_safe_artifact_payload(artifact) for artifact in artifacts[:limit]]}
+
     @app.get("/v1/artifacts/{artifact_id}")
     def artifact_metadata(artifact_id: str) -> dict[str, Any]:
         artifact = _read_artifact_sidecar(root, artifact_id)
@@ -651,10 +678,14 @@ def _run_tts(
         expected_capability=TTS_MODE_CAPABILITIES[prepared.request.mode],
     )
     started_at = datetime.now(UTC)
+    mode_metadata = {
+        **prepared.artifact_metadata,
+        "tts_mode": prepared.request.mode.value,
+    }
     try:
         artifact = provider.synthesize(
             prepared.request,
-            artifact_metadata=prepared.artifact_metadata,
+            artifact_metadata=mode_metadata,
         )
     except ProviderError as exc:
         _log_operation(
@@ -865,22 +896,32 @@ def _read_artifact_sidecar(root: Path, artifact_id: str) -> Artifact:
     matches = sorted(artifact_root.glob(f"*/{artifact_id}.json"))
     if not matches:
         raise HTTPException(status_code=404, detail="artifact not found")
+    artifact = _read_artifact_sidecar_path(matches[-1], root)
+    if artifact.id != artifact_id:
+        raise HTTPException(status_code=422, detail="artifact sidecar id mismatch")
+    return artifact
+
+
+def _read_artifact_sidecar_path(sidecar_path: Path, root: Path) -> Artifact:
+    artifact_root = (root / "data" / "artifacts").resolve(strict=False)
+    # Resolve before any read so symlink/relative-glob cases are normalized once.
+    resolved_sidecar = sidecar_path.resolve(strict=False)
+    if not resolved_sidecar.is_relative_to(artifact_root):
+        raise HTTPException(status_code=422, detail="artifact sidecar is outside artifact root")
     try:
-        with matches[-1].open(encoding="utf-8") as sidecar_file:
+        with resolved_sidecar.open(encoding="utf-8") as sidecar_file:
             payload = json.load(sidecar_file)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail="artifact sidecar is invalid") from exc
     if "path" not in payload:
-        payload["path"] = str(_artifact_path_for_sidecar(matches[-1], payload))
+        payload["path"] = str(_artifact_path_for_sidecar(resolved_sidecar, payload))
     try:
         artifact = Artifact.model_validate(payload)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="artifact sidecar is invalid") from exc
-    if artifact.id != artifact_id:
-        raise HTTPException(status_code=422, detail="artifact sidecar id mismatch")
     raw_path = artifact.path
     path = (
-        (matches[-1].parent / raw_path).resolve(strict=False)
+        (resolved_sidecar.parent / raw_path).resolve(strict=False)
         if not raw_path.is_absolute()
         else raw_path.resolve(strict=False)
     )
