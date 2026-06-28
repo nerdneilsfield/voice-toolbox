@@ -66,8 +66,8 @@ function App() {
   const [asrArtifact, setAsrArtifact] = useState<Artifact | null>(null);
   const [transcript, setTranscript] = useState("");
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
-  const previousModelProviderIdRef = useRef("");
-  const previousVoiceProviderIdRef = useRef("");
+  const [modelProviderId, setModelProviderId] = useState("");
+  const [voiceProviderId, setVoiceProviderId] = useState("");
 
   useEffect(() => {
     if (!selectedProviderId) {
@@ -102,8 +102,7 @@ function App() {
   }, [selectedProviderId]);
 
   useEffect(() => {
-    const providerChanged = previousModelProviderIdRef.current !== selectedProviderId;
-    previousModelProviderIdRef.current = selectedProviderId;
+    const providerChanged = modelProviderId !== selectedProviderId;
     setBuiltinModel((current) =>
       selectModelForCapability(selectedProvider, "tts.builtin", providerChanged ? null : current),
     );
@@ -116,13 +115,14 @@ function App() {
     setAsrModel((current) =>
       selectModelForCapability(selectedProvider, "asr.transcribe", providerChanged ? null : current),
     );
-  }, [selectedProviderId, selectedProvider]);
+    setModelProviderId(selectedProviderId);
+  }, [modelProviderId, selectedProviderId, selectedProvider]);
 
   useEffect(() => {
-    const providerChanged = previousVoiceProviderIdRef.current !== selectedProviderId;
-    previousVoiceProviderIdRef.current = selectedProviderId;
+    const providerChanged = voiceProviderId !== selectedProviderId;
     setVoiceId((current) => selectDefaultVoice(selectedProvider, voices, providerChanged ? null : current) ?? "");
-  }, [selectedProviderId, selectedProvider, voices]);
+    setVoiceProviderId(selectedProviderId);
+  }, [voiceProviderId, selectedProviderId, selectedProvider, voices]);
 
   useEffect(() => {
     setCleanedPreview("");

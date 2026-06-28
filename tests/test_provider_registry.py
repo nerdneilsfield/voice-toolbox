@@ -7,6 +7,11 @@ from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.models import ASRRequest, TTSMode, TTSRequest
 
 
+def test_registry_rejects_duplicate_provider_ids() -> None:
+    with pytest.raises(ProviderError, match="duplicate provider"):
+        ProviderRegistry([FakeProvider(), FakeProvider()])
+
+
 def test_registry_blocks_unsupported_tts_mode() -> None:
     registry = ProviderRegistry([FakeProvider(capabilities={"tts.builtin"})])
     request = TTSRequest(

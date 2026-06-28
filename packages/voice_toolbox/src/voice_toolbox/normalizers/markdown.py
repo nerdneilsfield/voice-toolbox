@@ -34,7 +34,7 @@ STRONG_EMPHASIS_PATTERN = re.compile(r"(\*\*|__)(?=\S)(.*?\S)\1")
 STAR_EMPHASIS_PATTERN = re.compile(r"(?<!\*)\*(?=\S)([^*\n]*?\S)\*(?!\*)")
 UNDERSCORE_EMPHASIS_PATTERN = re.compile(r"(?<![\w_])_(?=\S)([^_\n]*?\S)_(?![\w_])")
 THREE_OR_MORE_BLANK_LINES_PATTERN = re.compile(r"\n{3,}")
-SPACE_BEFORE_PUNCTUATION_PATTERN = re.compile(r"\s+([.,!?;:，。！？；：])")
+SPACE_BEFORE_PUNCTUATION_PATTERN = re.compile(r"(?<=[A-Za-z])\s+([.,!?;:])(?=\s|$)")
 KNOWN_MARKDOWN_OPTIONS = {"preserve_code_blocks", "preserve_inline_code"}
 PLACEHOLDER_TEMPLATE = "\x00VT_CODE_{index}\x00"
 
@@ -142,6 +142,7 @@ class AutoTextNormalizer:
         input_format: str,
         options: dict[str, Any] | None = None,
     ) -> NormalizedContent:
+        # Auto mode requires two structural Markdown signals to avoid mutating plain TTS prose.
         if markdown_signal_count(content) >= 2:
             return self._markdown.normalize(content, input_format="markdown", options=options)
         return self._plain.normalize(content, input_format=input_format, options=options)

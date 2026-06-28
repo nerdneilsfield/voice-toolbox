@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import traceback
 from collections.abc import Mapping
 from pathlib import Path
+from types import TracebackType
 
 from loguru import logger
 
@@ -12,6 +14,7 @@ from voice_toolbox.artifacts import ALLOWED_METADATA_KEYS
 from voice_toolbox.config_models import LoggingConfig
 
 HUMAN_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
+LOGURU_INTERCEPT_DEPTH = 6  # stdlib logging -> InterceptHandler -> Loguru call stack depth.
 
 LOG_METADATA_KEYS = frozenset(
     {
@@ -42,6 +45,7 @@ QUERY_STRING_PATTERN = re.compile(r"(\s/[^\s?]*)(\?[^ \"]*)")
 SECRET_TOKEN_PATTERN = re.compile(r"\b(?:tp|sk)-[^\s\"']+\b")
 DATA_URL_PATTERN = re.compile(r"data:[^;\s]+;base64,[A-Za-z0-9+/=_-]+")
 BASE64_LABEL_PATTERN = re.compile(r"(base64[=:])([A-Za-z0-9+/=_-]{8,})", re.IGNORECASE)
+LOCAL_PATH_PATTERN = re.compile(r"(?<!\w)/(?:Users|private|var|tmp|Volumes)/[^\s\"']+")
 
 
 class InterceptHandler(logging.Handler):
@@ -53,8 +57,8 @@ class InterceptHandler(logging.Handler):
 
         message = _sanitize_log_message(record.getMessage())
         if record.exc_info and record.exc_info[0] is not None:
-            message = f"{message} ({record.exc_info[0].__name__})"
-        logger.opt(depth=6).log(level, message)
+            message = f"{message}\n{_format_safe_exception(record.exc_info)}"
+        logger.opt(depth=LOGURU_INTERCEPT_DEPTH).log(level, message)
 
 
 def sanitize_log_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
@@ -126,12 +130,31 @@ def _sanitize_log_message(message: str) -> str:
     sanitized = DATA_URL_PATTERN.sub("data:...;base64,...", sanitized)
     sanitized = BASE64_LABEL_PATTERN.sub(r"\1...", sanitized)
     sanitized = SECRET_TOKEN_PATTERN.sub("configured", sanitized)
+    sanitized = LOCAL_PATH_PATTERN.sub(_mask_path_match, sanitized)
     return sanitized
+
+
+def _format_safe_exception(
+    exc_info: tuple[type[BaseException], BaseException, TracebackType | None],
+) -> str:
+    exc_type, exc, traceback_object = exc_info
+    frames = traceback.extract_tb(traceback_object) if traceback_object is not None else []
+    lines = ["Traceback (sanitized):"]
+    for frame in frames:
+        path = Path(frame.filename)
+        lines.append(f'  File "{path.name}", line {frame.lineno}, in {frame.name}')
+    lines.append(f"{exc_type.__name__}: {_sanitize_log_message(str(exc))}")
+    return "\n".join(lines)
 
 
 def _is_safe_log_string(value: str) -> bool:
     return not (
         SECRET_TOKEN_PATTERN.search(value)
         or DATA_URL_PATTERN.search(value)
+        or LOCAL_PATH_PATTERN.search(value)
         or "base64," in value.lower()
     )
+
+
+def _mask_path_match(match: re.Match[str]) -> str:
+    return f"[path:{Path(match.group(0)).name}]"

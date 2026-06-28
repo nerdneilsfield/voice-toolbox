@@ -24,6 +24,7 @@ from voice_toolbox.config import (
     load_env_values,
     mask_api_key_preview,
     preview_config_path,
+    replay_config_warnings,
 )
 from voice_toolbox.models import (
     ASRRequest,
@@ -36,13 +37,15 @@ from voice_toolbox.models import (
 from voice_toolbox.normalizers.base import NormalizationRequest
 from voice_toolbox.normalizers.registry import NormalizerRegistry
 from voice_toolbox.pipeline import PreparedTTSRequest, prepare_tts_request
-from voice_toolbox.logging_config import configure_logging
+from voice_toolbox.logging_config import configure_logging, sanitize_log_metadata
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.factory import build_provider_registry
 from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE
-from voice_toolbox.providers.registry import ProviderRegistry
+from voice_toolbox.providers.registry import TTS_MODE_CAPABILITIES, ProviderRegistry
 
 CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
+CORS_METHODS = ["GET", "POST"]
+CORS_HEADERS = ["Accept", "Content-Type"]
 SUPPORTED_UPLOAD_MIME_TYPES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3"}
 MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
 MAX_TEXT_INPUT_LENGTH = 200_000
@@ -63,8 +66,13 @@ def create_app(
 ) -> FastAPI:
     resolved_env_values = dict(env_values) if env_values is not None else load_env_values(env_path)
     if config is None:
-        config = load_app_config(env_path=env_path, env_values=resolved_env_values)
+        config = load_app_config(
+            env_path=env_path,
+            env_values=resolved_env_values,
+            emit_warnings=False,
+        )
     configure_logging(config.logging, config_path=config.config_path)
+    replay_config_warnings(config, resolved_env_values)
     root = Path(artifact_root) if artifact_root is not None else _infer_artifact_root(registry)
     provider_registry = registry or build_provider_registry(
         config,
@@ -87,8 +95,8 @@ def create_app(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,
         allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=CORS_METHODS,
+        allow_headers=CORS_HEADERS,
     )
 
     @app.exception_handler(RequestValidationError)
@@ -144,8 +152,11 @@ def create_app(
     def normalize_text(request: NormalizationRequest) -> dict[str, Any]:
         if not request.content.strip():
             raise HTTPException(status_code=422, detail="content is required")
-        if len(request.content) > 200_000:
-            raise HTTPException(status_code=413, detail="content exceeds 200000 characters")
+        if len(request.content) > MAX_TEXT_INPUT_LENGTH:
+            raise HTTPException(
+                status_code=413,
+                detail=f"content exceeds {MAX_TEXT_INPUT_LENGTH} characters",
+            )
         try:
             result = NormalizerRegistry.default().normalize(
                 request.content,
@@ -323,8 +334,25 @@ def create_app(
             try:
                 artifact = provider.transcribe(request)
             except ProviderError as exc:
+                _log_operation(
+                    operation="asr",
+                    status="failed",
+                    provider_id=provider_id,
+                    model=request.model,
+                    error_summary=str(exc),
+                )
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
             finished_at = datetime.now(UTC)
+            _log_operation(
+                operation="asr",
+                status="completed",
+                provider_id=provider_id,
+                model=artifact.metadata.get("model")
+                if isinstance(artifact.metadata, dict)
+                else None,
+                artifact_id=artifact.id,
+                elapsed_ms=int((finished_at - started_at).total_seconds() * 1000),
+            )
             return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
 
     @app.get("/v1/artifacts/{artifact_id}")
@@ -493,9 +521,6 @@ def _safe_request_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
 def _ensure_provider_configured_for_operation(request: Request, provider_id: str) -> None:
     config_provider = _configured_provider_for_id(request.app.state.config, provider_id)
     if config_provider is None:
-        provider = _get_provider(request.app.state.provider_registry, provider_id)
-        if getattr(provider, "_test_provider", False):
-            return
         raise HTTPException(status_code=503, detail=f"provider {provider_id} is not configured")
     value = request.app.state.env_values.get(config_provider.api_key_env)
     if not value:
@@ -555,7 +580,9 @@ def _run_tts(
 ) -> dict[str, Any]:
     provider = _ensure_tts_provider(provider_registry, provider_id, prepared.request)
     _ensure_model_allowed(
-        provider, prepared.request.model, expected_capability=_tts_capability(prepared.request.mode)
+        provider,
+        prepared.request.model,
+        expected_capability=TTS_MODE_CAPABILITIES[prepared.request.mode],
     )
     started_at = datetime.now(UTC)
     try:
@@ -564,8 +591,25 @@ def _run_tts(
             artifact_metadata=prepared.artifact_metadata,
         )
     except ProviderError as exc:
+        _log_operation(
+            operation="tts",
+            status="failed",
+            provider_id=provider_id,
+            model=prepared.request.model,
+            tts_mode=prepared.request.mode.value,
+            error_summary=str(exc),
+        )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finished_at = datetime.now(UTC)
+    _log_operation(
+        operation="tts",
+        status="completed",
+        provider_id=provider_id,
+        model=artifact.metadata.get("model") if isinstance(artifact.metadata, dict) else None,
+        tts_mode=prepared.request.mode.value,
+        artifact_id=artifact.id,
+        elapsed_ms=int((finished_at - started_at).total_seconds() * 1000),
+    )
     return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
 
 
@@ -602,12 +646,9 @@ def _ensure_model_allowed(provider: Any, model_id: str | None, *, expected_capab
         )
 
 
-def _tts_capability(mode: TTSMode) -> str:
-    if mode == TTSMode.BUILTIN:
-        return "tts.builtin"
-    if mode == TTSMode.DESIGN:
-        return "tts.design"
-    return "tts.clone"
+def _log_operation(**metadata: object) -> None:
+    sanitized = sanitize_log_metadata(metadata)
+    logger.bind(**sanitized).info("voice operation {}", sanitized)
 
 
 def _safe_artifact_payload(artifact: Artifact) -> dict[str, Any]:

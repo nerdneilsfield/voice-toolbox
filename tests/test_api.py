@@ -144,7 +144,7 @@ def test_create_app_accepts_config_and_provider_summary_masks_key(tmp_path: Path
 
     mimo = response.json()["providers"][0]
     assert mimo["api_key_env"] == "MIMO_API_KEY"
-    assert mimo["api_key_preview"] == "...abcd"
+    assert mimo["api_key_preview"] == "tp-...abcd"
     assert mimo["config_path_preview"] == "built-in default"
     assert mimo["base_url"] == "https://api.xiaomimimo.com/v1"
     assert mimo["default_voice"] == "mimo_default"

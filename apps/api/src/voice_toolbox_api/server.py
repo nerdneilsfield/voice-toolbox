@@ -8,7 +8,7 @@ from voice_toolbox_api.main import create_app
 
 def main() -> None:
     env_values = load_env_values()
-    config = load_app_config(env_values=env_values)
+    config = load_app_config(env_values=env_values, emit_warnings=False)
     app = create_app(config=config, env_values=env_values)
     replay_config_warnings(config, env_values)
     uvicorn.run(

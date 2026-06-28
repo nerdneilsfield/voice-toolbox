@@ -150,7 +150,7 @@ def test_intercepted_exception_does_not_write_raw_traceback_or_args(tmp_path: Pa
     text = path.read_text(encoding="utf-8")
     assert "tp-short" not in text
     assert "/Users/private/path" not in text
-    assert "Traceback" not in text
+    assert "Traceback (sanitized)" in text
     assert "RuntimeError" in text
 
 

@@ -7,6 +7,8 @@ from voice_toolbox.models import ProviderConfig
 
 
 def load_settings(env_path: Path | str | None = None) -> ProviderConfig:
+    """Legacy single-provider compatibility wrapper; prefer load_app_config()."""
+
     app_config = load_app_config(env_path=env_path)
     provider = app_config.providers[0]
     return ProviderConfig(
@@ -19,6 +21,8 @@ def load_settings(env_path: Path | str | None = None) -> ProviderConfig:
 
 
 def get_mimo_api_key(env_path: Path | str | None = None) -> str | None:
+    """Legacy MiMo key helper; prefer provider-specific AppConfig lookup."""
+
     app_config = load_app_config(env_path=env_path)
     env = load_env_values(env_path)
     provider = next(
@@ -29,4 +33,6 @@ def get_mimo_api_key(env_path: Path | str | None = None) -> str | None:
 
 
 def has_mimo_api_key(env_path: Path | str | None = None) -> bool:
+    """Legacy MiMo key presence helper; prefer provider-specific AppConfig lookup."""
+
     return get_mimo_api_key(env_path) is not None

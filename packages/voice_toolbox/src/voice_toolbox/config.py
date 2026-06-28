@@ -62,6 +62,7 @@ def load_app_config(
     *,
     env_path: Path | str | None = None,
     env_values: dict[str, str] | None = None,
+    emit_warnings: bool = True,
 ) -> AppConfig:
     env = env_values if env_values is not None else load_env_values(env_path)
     config_path = _discover_config_path(path, env)
@@ -69,10 +70,12 @@ def load_app_config(
         return _fallback_config(env)
     payload = _read_toml(config_path)
     payload["config_path"] = config_path
-    _warn_ignored_env(env)
+    if emit_warnings:
+        _warn_ignored_env(env)
     try:
         if not payload.get("providers"):
-            logger.warning("providers is empty; using built-in default provider")
+            if emit_warnings:
+                logger.warning("providers is empty; using built-in default provider")
             payload["providers"] = [_default_provider_payload(env, use_env_base_url=False)]
         payload["providers"] = [_fill_mimo_defaults(provider) for provider in payload["providers"]]
         return AppConfig.model_validate(payload)
@@ -102,6 +105,7 @@ def mask_api_key_preview(value: str | None, *, trusted_local: bool) -> str | Non
         prefix = value.split("-", 1)[0] + "-"
         if len(value) <= len(prefix) + 8:
             return "configured"
+        return f"{prefix}...{value[-4:]}"
     return f"...{value[-4:]}"
 
 

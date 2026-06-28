@@ -25,6 +25,10 @@ class OperationStatus(StrEnum):
 
 
 class ProviderConfig(BaseModel):
+    """Legacy single-provider settings view; prefer AppConfig for new code."""
+
+    model_config = ConfigDict(extra="forbid")
+
     provider_id: str = "mimo"
     base_url: str = "https://api.xiaomimimo.com/v1"
     api_key_env: str = "MIMO_API_KEY"
@@ -135,6 +139,8 @@ class ASRRequest(BaseModel):
 
 
 class Artifact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     kind: ArtifactKind
     provider_id: str
@@ -154,6 +160,8 @@ class TranscriptArtifact(Artifact):
 
 
 class OperationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     operation_id: str
     operation: str
     status: OperationStatus

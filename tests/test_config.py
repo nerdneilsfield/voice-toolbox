@@ -9,6 +9,7 @@ from voice_toolbox.config import (
     load_app_config,
     mask_api_key_preview,
     preview_config_path,
+    replay_config_warnings,
 )
 
 
@@ -117,12 +118,29 @@ def test_legacy_env_applies_only_without_toml(
     assert "ignored env var MIMO_BASE_URL" in caplog.text
 
 
+def test_config_warnings_can_be_replayed_without_duplicate_load_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text("[api]\nhost = '127.0.0.1'\n", encoding="utf-8")
+    env = {"MIMO_BASE_URL": "https://env.example/v1"}
+
+    config = load_app_config(path, env_values=env, emit_warnings=False)
+    assert caplog.text == ""
+
+    replay_config_warnings(config, env)
+
+    assert caplog.text.count("providers is empty") == 1
+    assert caplog.text.count("ignored env var MIMO_BASE_URL") == 1
+
+
 def test_masked_key_preview_short_boundaries() -> None:
     assert mask_api_key_preview(None, trusted_local=True) is None
     assert mask_api_key_preview("tp-1234", trusted_local=True) == "configured"
     assert mask_api_key_preview("tp-123456", trusted_local=True) == "configured"
     assert mask_api_key_preview("tp-12345678", trusted_local=True) == "configured"
-    assert mask_api_key_preview("tp-1234567890abcd", trusted_local=True) == "...abcd"
+    assert mask_api_key_preview("tp-1234567890abcd", trusted_local=True) == "tp-...abcd"
     assert mask_api_key_preview("abcdef123456", trusted_local=True) == "...3456"
     assert mask_api_key_preview("tp-1234567890abcd", trusted_local=False) == "configured"
 

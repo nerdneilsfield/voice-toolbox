@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Annotated, Literal, NoReturn, cast
 
 import typer
+from loguru import logger
 from pydantic import ValidationError
 
 from voice_toolbox.config import AppConfig, load_app_config, load_env_values, replay_config_warnings
-from voice_toolbox.logging_config import configure_logging
+from voice_toolbox.logging_config import configure_logging, sanitize_log_metadata
 from voice_toolbox.models import ASRRequest, AudioArtifact, TranscriptArtifact, TTSMode
 from voice_toolbox.pipeline import PreparedTTSRequest, prepare_tts_request
 from voice_toolbox.providers import ProviderError, ProviderRegistry
@@ -29,6 +30,7 @@ SUPPORTED_AUDIO_MIME_BY_SUFFIX = {
 AudioMime = Literal["audio/wav", "audio/mpeg", "audio/mp3"]
 _CLI_CONFIG: AppConfig | None = None
 _CLI_ENV_VALUES: dict[str, str] | None = None
+_CLI_LOGGING_SIGNATURE: tuple[str | None, str] | None = None
 
 ProviderOption = Annotated[str | None, typer.Option("--provider", help="Provider id.")]
 TextOption = Annotated[str, typer.Option("--text", help="Text to synthesize.")]
@@ -223,11 +225,28 @@ def _synthesize(
 ) -> AudioArtifact:
     try:
         provider = registry.ensure_tts_capability(provider_id, prepared.request)
-        return provider.synthesize(
+        artifact = provider.synthesize(
             prepared.request,
             artifact_metadata=prepared.artifact_metadata,
         )
+        _log_cli_operation(
+            operation="tts",
+            status="completed",
+            provider_id=provider_id,
+            model=artifact.metadata.get("model"),
+            tts_mode=prepared.request.mode.value,
+            artifact_id=artifact.id,
+        )
+        return artifact
     except ProviderError as exc:
+        _log_cli_operation(
+            operation="tts",
+            status="failed",
+            provider_id=provider_id,
+            model=prepared.request.model,
+            tts_mode=prepared.request.mode.value,
+            error_summary=str(exc),
+        )
         _fail(str(exc))
 
 
@@ -238,8 +257,23 @@ def _transcribe(
 ) -> TranscriptArtifact:
     try:
         provider = registry.ensure_asr_capability(provider_id, request)
-        return provider.transcribe(request)
+        artifact = provider.transcribe(request)
+        _log_cli_operation(
+            operation="asr",
+            status="completed",
+            provider_id=provider_id,
+            model=artifact.metadata.get("model"),
+            artifact_id=artifact.id,
+        )
+        return artifact
     except ProviderError as exc:
+        _log_cli_operation(
+            operation="asr",
+            status="failed",
+            provider_id=provider_id,
+            model=request.model,
+            error_summary=str(exc),
+        )
         _fail(str(exc))
 
 
@@ -297,15 +331,37 @@ def _fail(message: str) -> NoReturn:
 
 
 def _load_cli_context(*, refresh: bool = False) -> tuple[AppConfig, Mapping[str, str]]:
-    global _CLI_CONFIG, _CLI_ENV_VALUES
+    global _CLI_CONFIG, _CLI_ENV_VALUES, _CLI_LOGGING_SIGNATURE
     if refresh or _CLI_CONFIG is None or _CLI_ENV_VALUES is None:
         env_values = load_env_values()
-        config = load_app_config(env_values=env_values)
-        configure_logging(config.logging, config_path=config.config_path)
+        config = load_app_config(env_values=env_values, emit_warnings=False)
+        signature = (
+            str(config.config_path) if config.config_path is not None else None,
+            config.logging.model_dump_json(),
+        )
+        if signature != _CLI_LOGGING_SIGNATURE:
+            configure_logging(config.logging, config_path=config.config_path)
+            _CLI_LOGGING_SIGNATURE = signature
         replay_config_warnings(config, dict(env_values))
         _CLI_CONFIG = config
         _CLI_ENV_VALUES = env_values
     return _CLI_CONFIG, _CLI_ENV_VALUES
+
+
+def reset_cli_context() -> None:
+    global _CLI_CONFIG, _CLI_ENV_VALUES, _CLI_LOGGING_SIGNATURE
+    _CLI_CONFIG = None
+    _CLI_ENV_VALUES = None
+    _CLI_LOGGING_SIGNATURE = None
+
+
+def _log_cli_operation(**metadata: object) -> None:
+    sanitized = sanitize_log_metadata(metadata)
+    bound_logger = logger.bind(**sanitized)
+    if sanitized.get("status") == "failed":
+        bound_logger.debug("voice operation {}", sanitized)
+    else:
+        bound_logger.info("voice operation {}", sanitized)
 
 
 def _safe_validation_message(exc: ValidationError) -> str:

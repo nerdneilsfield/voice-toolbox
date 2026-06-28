@@ -26,7 +26,6 @@ from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITI
 class FakeProvider:
     id = "fake"
     name = "Fake Provider"
-    _test_provider = True
 
     def __init__(
         self,
