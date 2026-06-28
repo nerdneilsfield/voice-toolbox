@@ -752,6 +752,9 @@ def test_artifact_download_infers_mp3_path_from_audio_mpeg_sidecar(tmp_path: Pat
     assert download.status_code == 200
     assert download.content == b"MP3"
     assert download.headers["content-type"].startswith("audio/mpeg")
+    content_disposition = download.headers["content-disposition"]
+    assert 'filename="20260101-000000-' in content_disposition
+    assert content_disposition.endswith('.mp3"')
 
 
 def test_artifact_download_converts_audio_format(monkeypatch, tmp_path: Path) -> None:
@@ -777,22 +780,49 @@ def test_artifact_download_converts_audio_format(monkeypatch, tmp_path: Path) ->
     def fake_convert_audio_bytes(contents, *, source_format, target_format):
         assert contents == b"MP3"
         assert source_format == "mp3"
-        assert target_format == "wav"
+        assert target_format == "m4a"
         return api_main.ConvertedAudio(
-            data=WAV_BYTES,
-            format="wav",
-            mime_type="audio/wav",
-            suffix=".wav",
+            data=b"M4A",
+            format="m4a",
+            mime_type="audio/mp4",
+            suffix=".m4a",
         )
 
     monkeypatch.setattr(api_main, "convert_audio_bytes", fake_convert_audio_bytes)
 
-    download = client.get("/v1/artifacts/op_audio/download?format=wav")
+    download = client.get("/v1/artifacts/op_audio/download?format=m4a")
 
     assert download.status_code == 200
-    assert download.content == WAV_BYTES
-    assert download.headers["content-type"].startswith("audio/wav")
-    assert 'filename="op_audio.wav"' in download.headers["content-disposition"]
+    assert download.content == b"M4A"
+    assert download.headers["content-type"].startswith("audio/mp4")
+    assert 'filename="20260101-000000-' in download.headers["content-disposition"]
+    assert download.headers["content-disposition"].endswith('.m4a"')
+
+
+def test_artifact_download_rejects_unknown_format(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    artifact_dir = tmp_path / "data" / "artifacts" / "20260101"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "op_audio.mp3").write_bytes(b"MP3")
+    (artifact_dir / "op_audio.json").write_text(
+        json.dumps(
+            {
+                "id": "op_audio",
+                "kind": "audio",
+                "provider_id": "openrouter",
+                "operation": "tts",
+                "mime_type": "audio/mpeg",
+                "created_at": "2026-01-01T00:00:00Z",
+                "metadata": {"operation": "tts", "output_format": "mp3"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/v1/artifacts/op_audio/download?format=docx")
+
+    assert response.status_code == 422
+    assert "download format" in response.json()["detail"]
 
 
 def test_artifact_download_rejects_transcript_format_conversion(tmp_path: Path) -> None:

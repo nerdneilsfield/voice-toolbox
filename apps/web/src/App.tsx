@@ -20,6 +20,7 @@ import {
 type MainTab = "tts" | "asr";
 type TtsMode = "builtin" | "design" | "clone";
 type RequestState = "idle" | "loading" | "success" | "error";
+type DownloadFormat = "source" | "wav" | "mp3" | "pcm" | "m4a" | "aac" | "flac" | "ogg" | "webm";
 
 const INLINE_TAGS = ["(唱歌)", "(笑)", "(叹气)", "(停顿)", "[breath]", "[laughter]"];
 const BASE64_LIMIT_BYTES = 10 * 1024 * 1024;
@@ -886,7 +887,7 @@ function ModelSummary({ models, selectedModel }: { models: ProviderModel[]; sele
 }
 
 function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: RequestState }) {
-  const [downloadFormat, setDownloadFormat] = useState<"source" | "wav" | "mp3">("source");
+  const [downloadFormat, setDownloadFormat] = useState<DownloadFormat>("source");
   const downloadUrl = artifact ? downloadUrlForFormat(artifact.download_url, downloadFormat) : "";
   const downloadLabel =
     downloadFormat === "source" || !artifact ? audioLabel(artifact?.mime_type ?? "") : downloadFormat.toUpperCase();
@@ -906,11 +907,17 @@ function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: Re
               <span>Download as</span>
               <select
                 value={downloadFormat}
-                onChange={(event) => setDownloadFormat(event.target.value as typeof downloadFormat)}
+                onChange={(event) => setDownloadFormat(event.target.value as DownloadFormat)}
               >
                 <option value="source">Source</option>
                 <option value="wav">WAV</option>
                 <option value="mp3">MP3</option>
+                <option value="pcm">PCM</option>
+                <option value="m4a">M4A</option>
+                <option value="aac">AAC</option>
+                <option value="flac">FLAC</option>
+                <option value="ogg">OGG</option>
+                <option value="webm">WEBM</option>
               </select>
             </label>
             <a className="download-link" href={downloadUrl}>
@@ -1061,10 +1068,28 @@ function audioLabel(mimeType: string) {
   if (mimeType === "audio/wav") {
     return "WAV";
   }
+  if (mimeType === "audio/pcm" || mimeType === "audio/l16") {
+    return "PCM";
+  }
+  if (mimeType === "audio/mp4" || mimeType === "audio/m4a") {
+    return "M4A";
+  }
+  if (mimeType === "audio/aac") {
+    return "AAC";
+  }
+  if (mimeType === "audio/flac") {
+    return "FLAC";
+  }
+  if (mimeType === "audio/ogg") {
+    return "OGG";
+  }
+  if (mimeType === "audio/webm") {
+    return "WEBM";
+  }
   return "audio";
 }
 
-function downloadUrlForFormat(url: string, format: "source" | "wav" | "mp3") {
+function downloadUrlForFormat(url: string, format: DownloadFormat) {
   if (format === "source") {
     return url;
   }

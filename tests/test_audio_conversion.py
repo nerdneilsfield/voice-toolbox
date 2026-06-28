@@ -14,9 +14,19 @@ from voice_toolbox.audio_conversion import (
 
 
 class FakeSegment:
-    def __init__(self, data: bytes, source_format: str) -> None:
+    def __init__(
+        self,
+        data: bytes,
+        source_format: str = "pcm",
+        sample_width: int | None = None,
+        frame_rate: int | None = None,
+        channels: int | None = None,
+    ) -> None:
         self.data = data
         self.source_format = source_format
+        self.sample_width = sample_width
+        self.frame_rate = frame_rate
+        self.channels = channels
 
     @classmethod
     def from_file(cls, stream: BytesIO, *, format: str) -> FakeSegment:
@@ -25,6 +35,22 @@ class FakeSegment:
     def export(self, output: BytesIO, *, format: str) -> None:
         output.write(f"{self.source_format}->{format}:".encode())
         output.write(self.data)
+
+    def set_frame_rate(self, frame_rate: int) -> FakeSegment:
+        self.frame_rate = frame_rate
+        return self
+
+    def set_channels(self, channels: int) -> FakeSegment:
+        self.channels = channels
+        return self
+
+    def set_sample_width(self, sample_width: int) -> FakeSegment:
+        self.sample_width = sample_width
+        return self
+
+    @property
+    def raw_data(self) -> bytes:
+        return b"PCM:" + self.data
 
 
 def test_convert_audio_bytes_uses_pydub_for_different_formats(monkeypatch) -> None:
@@ -36,6 +62,25 @@ def test_convert_audio_bytes_uses_pydub_for_different_formats(monkeypatch) -> No
     assert converted.format == "wav"
     assert converted.mime_type == "audio/wav"
     assert converted.suffix == ".wav"
+
+
+def test_convert_audio_bytes_exports_pcm_24k_mono_int16(monkeypatch) -> None:
+    monkeypatch.setattr(audio_conversion, "_audio_segment_class", lambda: FakeSegment)
+
+    converted = convert_audio_bytes(b"MP3", source_format="mp3", target_format="pcm")
+
+    assert converted.data == b"PCM:MP3"
+    assert converted.format == "pcm"
+    assert converted.mime_type == "audio/pcm"
+    assert converted.suffix == ".pcm"
+
+
+def test_convert_audio_bytes_reads_raw_pcm_with_fixed_parameters(monkeypatch) -> None:
+    monkeypatch.setattr(audio_conversion, "_audio_segment_class", lambda: FakeSegment)
+
+    converted = convert_audio_bytes(b"RAW", source_format="pcm", target_format="wav")
+
+    assert converted.data == b"pcm->wav:RAW"
 
 
 def test_convert_audio_bytes_keeps_matching_format_without_decoder(monkeypatch) -> None:

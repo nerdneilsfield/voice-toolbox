@@ -103,10 +103,12 @@ TTS uses its OpenAI-compatible speech endpoint and stores browser-friendly MP3
 artifacts, so use `--format mp3` when targeting the OpenRouter provider.
 
 The API can convert generated audio on download with
-`/v1/artifacts/{id}/download?format=wav|mp3`. ASR and voice clone uploads accept
-common audio containers (`wav`, `mp3`, `m4a`, `flac`, `ogg`, `webm`, `aac`) and
-convert non-native inputs to a provider-compatible format before calling the
-provider.
+`/v1/artifacts/{id}/download?format=wav|mp3|pcm|m4a|aac|flac|ogg|webm`.
+Converted download names use `YYYYMMDD-HHMMSS-<hash>.<ext>` instead of exposing
+internal operation IDs. Raw `pcm` is 24 kHz mono int16 little-endian. ASR and
+voice clone uploads accept common audio inputs (`wav`, `mp3`, `pcm`, `m4a`,
+`flac`, `ogg`, `webm`, `aac`) and convert non-native inputs to a
+provider-compatible format before calling the provider.
 
 ASR:
 

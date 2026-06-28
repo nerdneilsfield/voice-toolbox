@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+from hashlib import sha1
 from uuid import uuid4
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -63,6 +64,16 @@ MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
 MAX_TEXT_INPUT_LENGTH = 200_000
 SAFE_UPLOAD_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 PROVIDER_NATIVE_UPLOAD_FORMATS = {"wav", "mp3"}
+DOWNLOAD_AUDIO_FORMATS: set[DownloadAudioFormat] = {
+    "wav",
+    "mp3",
+    "pcm",
+    "m4a",
+    "aac",
+    "flac",
+    "ogg",
+    "webm",
+}
 
 
 def create_app(
@@ -385,17 +396,22 @@ def create_app(
     @app.get("/v1/artifacts/{artifact_id}/download", response_model=None)
     def artifact_download(
         artifact_id: str,
-        format: Annotated[Literal["source", "wav", "mp3"], Query()] = "source",
+        format: Annotated[str, Query()] = "source",
     ) -> Response:
         artifact = _read_artifact_sidecar(root, artifact_id)
         path = artifact.path
         if not path.is_file():
             raise HTTPException(status_code=404, detail="artifact file not found")
-        if format != "source":
+        download_format = _normalize_download_format(format)
+        if download_format is not None:
             if artifact.kind.value != "audio":
                 raise HTTPException(status_code=422, detail="format conversion is only for audio")
-            return _converted_audio_response(artifact, target_format=format)
-        return FileResponse(path, media_type=artifact.mime_type, filename=path.name)
+            return _converted_audio_response(artifact, target_format=download_format)
+        return FileResponse(
+            path,
+            media_type=artifact.mime_type,
+            filename=_source_download_filename(artifact),
+        )
 
     return app
 
@@ -756,9 +772,7 @@ def _convert_upload_for_provider(
 ) -> ConvertedAudio:
     del provider_id, operation
     target_format: DownloadAudioFormat = (
-        cast(DownloadAudioFormat, source_format)
-        if source_format in PROVIDER_NATIVE_UPLOAD_FORMATS
-        else "wav"
+        source_format if source_format in PROVIDER_NATIVE_UPLOAD_FORMATS else "wav"
     )
     try:
         converted = convert_audio_bytes(
@@ -776,6 +790,16 @@ def _convert_upload_for_provider(
     return converted
 
 
+def _normalize_download_format(value: str) -> DownloadAudioFormat | None:
+    normalized = value.strip().lower()
+    if normalized == "source":
+        return None
+    if normalized not in DOWNLOAD_AUDIO_FORMATS:
+        supported = ", ".join(["source", *sorted(DOWNLOAD_AUDIO_FORMATS)])
+        raise HTTPException(status_code=422, detail=f"download format must be one of: {supported}")
+    return cast(DownloadAudioFormat, normalized)
+
+
 def _converted_audio_response(
     artifact: Artifact,
     *,
@@ -790,12 +814,29 @@ def _converted_audio_response(
         )
     except AudioConversionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    filename = f"{artifact.id}{suffix_for_format(target_format)}"
+    filename = _download_filename(artifact, suffix_for_format(target_format))
     return Response(
         converted.data,
         media_type=mime_for_format(target_format),
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _source_download_filename(artifact: Artifact) -> str:
+    suffix = artifact.path.suffix
+    if artifact.kind.value == "audio":
+        try:
+            suffix = suffix_for_format(_audio_format_for_artifact(artifact))
+        except HTTPException:
+            pass
+    return _download_filename(artifact, suffix)
+
+
+def _download_filename(artifact: Artifact, suffix: str) -> str:
+    safe_suffix = suffix if suffix.startswith(".") and "/" not in suffix else ".bin"
+    time_str = artifact.created_at.astimezone(UTC).strftime("%Y%m%d-%H%M%S")
+    digest = sha1(artifact.id.encode("utf-8")).hexdigest()[:8]
+    return f"{time_str}-{digest}{safe_suffix}"
 
 
 def _audio_format_for_artifact(artifact: Artifact) -> AudioFormat:
