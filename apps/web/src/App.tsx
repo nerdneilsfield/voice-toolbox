@@ -311,7 +311,10 @@ function App() {
       {globalError ? <div className="notice error">{globalError}</div> : null}
 
       {tab === "tts" ? (
-        <section className="tool-grid" aria-label="Text to speech toolbox">
+        <section
+          className={ttsArtifact || ttsState !== "idle" ? "tool-grid" : "tool-grid tool-grid--single"}
+          aria-label="Text to speech toolbox"
+        >
           <form className="tool-panel" onSubmit={submitTts}>
             <fieldset className="segmented" aria-label="TTS mode">
               <button
@@ -441,10 +444,13 @@ function App() {
             </button>
           </form>
 
-          <ResultPanel artifact={ttsArtifact} state={ttsState} />
+          {ttsArtifact || ttsState !== "idle" ? <ResultPanel artifact={ttsArtifact} state={ttsState} /> : null}
         </section>
       ) : (
-        <section className="tool-grid" aria-label="Speech to text toolbox">
+        <section
+          className={asrArtifact || asrState !== "idle" ? "tool-grid" : "tool-grid tool-grid--single"}
+          aria-label="Speech to text toolbox"
+        >
           <form className="tool-panel" onSubmit={submitAsr}>
             <label>
               Audio file
@@ -490,7 +496,9 @@ function App() {
             </button>
           </form>
 
-          <TranscriptPanel artifact={asrArtifact} transcript={transcript} state={asrState} />
+          {asrArtifact || asrState !== "idle" ? (
+            <TranscriptPanel artifact={asrArtifact} transcript={transcript} state={asrState} />
+          ) : null}
         </section>
       )}
     </main>

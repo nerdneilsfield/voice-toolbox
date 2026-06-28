@@ -5,6 +5,7 @@
   --bg-base: #f8f9fa;
   --bg-elevated: #ffffff;
   --bg-sunken: #f3f4f6;
+  --bg-quiet: #fbfcfd;
   --text: #18212f;
   --muted: #667085;
   --muted-strong: #475467;
@@ -16,7 +17,7 @@
   --warning-soft: #fff7e6;
   --radius-sm: 6px;
   --radius-md: 8px;
-  --shadow-sm: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
   color: var(--text);
   background: var(--bg-base);
   font-family:
@@ -81,7 +82,7 @@ h2 {
 .app-shell {
   width: min(1180px, calc(100vw - 40px));
   margin: 0 auto;
-  padding: 24px 0 40px;
+  padding: 24px 0 48px;
 }
 
 .topbar {
@@ -121,35 +122,43 @@ h2 {
 }
 
 .provider-details {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  padding: 14px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 12px 0 0;
 }
 
 .status-item {
   min-width: 0;
-  display: grid;
-  gap: 3px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  padding: 9px 11px;
-  box-shadow: var(--shadow-sm);
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 7px;
+  border-right: 1px solid var(--border);
+  padding: 0 14px 0 0;
 }
 
 .status-item span {
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 800;
   text-transform: uppercase;
 }
 
 .status-item strong {
   min-width: 0;
+  max-width: min(360px, 70vw);
+  overflow: hidden;
   overflow-wrap: anywhere;
   color: var(--text);
-  font-size: 0.84rem;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-item:last-child {
+  border-right: 0;
+  padding-right: 0;
 }
 
 label,
@@ -276,6 +285,10 @@ textarea {
   align-items: start;
 }
 
+.tool-grid--single {
+  grid-template-columns: minmax(0, 920px);
+}
+
 .tool-panel,
 .result-panel {
   border: 1px solid var(--border);
@@ -286,8 +299,8 @@ textarea {
 
 .tool-panel {
   display: grid;
-  gap: 24px;
-  padding: 22px;
+  gap: 26px;
+  padding: 22px 24px;
 }
 
 .result-panel {
@@ -385,11 +398,10 @@ textarea {
 
 .tag-panel {
   display: grid;
-  gap: 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--accent-soft);
-  padding: 12px;
+  gap: 9px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, white);
+  background: transparent;
+  padding: 2px 0 2px 12px;
 }
 
 .tag-row {
@@ -405,7 +417,7 @@ textarea {
   min-height: 32px;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
   border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
+  background: #ffffff;
   color: var(--accent-strong);
   padding: 5px 10px;
   font-size: 0.84rem;
@@ -456,7 +468,7 @@ textarea {
   justify-content: space-between;
   gap: 12px;
   border-top: 1px solid var(--border);
-  padding-top: 14px;
+  padding-top: 16px;
   color: var(--muted);
 }
 
@@ -465,10 +477,9 @@ textarea {
   grid-template-columns: minmax(150px, 0.42fr) auto;
   gap: 12px;
   align-items: end;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-sunken);
-  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  padding: 0 0 18px;
 }
 
 .text-tools .notice,
@@ -490,10 +501,10 @@ textarea {
 }
 
 .advanced-settings {
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--bg-sunken);
-  padding: 10px 12px;
+  background: var(--bg-quiet);
+  padding: 10px 0;
 }
 
 .advanced-settings summary {
@@ -501,10 +512,12 @@ textarea {
   cursor: pointer;
   font-size: 0.9rem;
   font-weight: 900;
+  padding: 0;
 }
 
 .advanced-settings .field {
   margin-top: 12px;
+  padding: 0;
 }
 
 .model-chip {
@@ -728,7 +741,7 @@ textarea {
   gap: 16px;
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-md);
-  background: linear-gradient(180deg, #ffffff 0%, #f6faf9 100%);
+  background: var(--bg-quiet);
   color: var(--muted);
   font-weight: 800;
 }
@@ -836,7 +849,13 @@ textarea {
   }
 
   .provider-details {
+    display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .status-item {
+    border-right: 0;
+    padding-right: 0;
   }
 
   .tool-grid {
@@ -866,8 +885,8 @@ textarea {
   }
 
   .section-heading {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
   }
 
   .text-tools {
