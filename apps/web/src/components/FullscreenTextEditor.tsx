@@ -4,10 +4,9 @@ type FullscreenTextEditorProps = {
   title: string;
   value: string;
   onApply(value: string): void;
-  buttonLabel?: string;
 };
 
-export function FullscreenTextEditor({ title, value, onApply, buttonLabel = "Fullscreen" }: FullscreenTextEditorProps) {
+export function FullscreenTextEditor({ title, value, onApply }: FullscreenTextEditorProps) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(value);
 
@@ -44,20 +43,26 @@ export function FullscreenTextEditor({ title, value, onApply, buttonLabel = "Ful
 
   return (
     <>
-      <button className="secondary-action" type="button" onClick={() => setOpen(true)}>
-        {buttonLabel}
+      <button
+        className="expand-link"
+        type="button"
+        onClick={() => setOpen(true)}
+        title="Expand"
+        aria-label="Expand editor"
+      >
+        ↗
       </button>
       {open ? (
         <div className="modal-overlay" role="presentation">
           <section className="fullscreen-editor" role="dialog" aria-modal="true" aria-labelledby="fullscreen-title">
             <header className="fullscreen-editor__header">
               <h2 id="fullscreen-title">{title}</h2>
-              <button className="secondary-action" type="button" onClick={() => setOpen(false)}>
+              <button className="btn btn-secondary" type="button" onClick={() => setOpen(false)}>
                 Cancel
               </button>
             </header>
             <textarea
-              className="fullscreen-editor__textarea"
+              className="fullscreen-editor__textarea script-input"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleEditorKeyDown}
@@ -65,7 +70,7 @@ export function FullscreenTextEditor({ title, value, onApply, buttonLabel = "Ful
             />
             <footer className="fullscreen-editor__footer">
               <span>{draft.length} chars</span>
-              <button className="primary-action compact-action" type="button" onClick={apply}>
+              <button className="btn btn-primary" type="button" onClick={apply}>
                 Apply
               </button>
             </footer>

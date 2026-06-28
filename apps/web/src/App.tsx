@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { AdvancedSettings } from "./components/AdvancedSettings";
 import { FullscreenTextEditor } from "./components/FullscreenTextEditor";
 import { useProviderCatalog } from "./hooks/useProviderCatalog";
@@ -11,6 +11,7 @@ import {
   Voice,
   cloneVoice,
   designVoice,
+  getArtifacts,
   getVoices,
   normalizeText,
   synthesizeBuiltin,
@@ -71,6 +72,35 @@ function App() {
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const [modelProviderId, setModelProviderId] = useState("");
   const [voiceProviderId, setVoiceProviderId] = useState("");
+  const [history, setHistory] = useState<Artifact[]>([]);
+  const [historyError, setHistoryError] = useState("");
+  const historyMountedRef = useRef(true);
+
+  useEffect(() => {
+    historyMountedRef.current = true;
+    return () => {
+      historyMountedRef.current = false;
+    };
+  }, []);
+
+  // useCallback with empty deps so the initial load effect and the post-submit
+  // refresh share one stable identity and exhaustive-deps stays satisfied.
+  const refreshHistory = useCallback(() => {
+    return getArtifacts(20)
+      .then((items) => {
+        if (!historyMountedRef.current) return;
+        setHistory(items);
+        setHistoryError("");
+      })
+      .catch((err) => {
+        if (!historyMountedRef.current) return;
+        setHistoryError(err instanceof Error ? err.message : "Failed to load history");
+      });
+  }, []);
+
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory]);
 
   useEffect(() => {
     if (!selectedProviderId) {
@@ -223,6 +253,7 @@ function App() {
             : await submitClone();
       setTtsArtifact(result.artifact);
       setTtsState("success");
+      void refreshHistory();
     } catch (err) {
       setTtsError(err instanceof Error ? err.message : "TTS request failed");
       setTtsState("error");
@@ -272,8 +303,39 @@ function App() {
       }
       setTranscript(await transcriptResponse.text());
       setAsrState("success");
+      void refreshHistory();
     } catch (err) {
       setAsrError(err instanceof Error ? err.message : "ASR request failed");
+      setAsrState("error");
+    }
+  }
+
+  async function selectHistoryItem(artifact: Artifact) {
+    setTtsError("");
+    setAsrError("");
+    if (artifact.kind === "audio") {
+      setTtsArtifact(artifact);
+      setTtsState("success");
+      setTab("tts");
+      return;
+    }
+    setAsrArtifact(artifact);
+    setTranscript("");
+    setAsrState("loading");
+    setTab("asr");
+    try {
+      // Plain fetch, not requestJson: the download endpoint returns the raw
+      // transcript as text/plain, not JSON. requestJson expects a JSON body and
+      // would throw on the non-JSON response.
+      const response = await fetch(artifact.download_url);
+      if (!response.ok) {
+        throw new Error(`Transcript download failed with status ${response.status}`);
+      }
+      setTranscript(await response.text());
+      setAsrState("success");
+    } catch (err) {
+      setTranscript("");
+      setAsrError(err instanceof Error ? err.message : "Failed to load transcript");
       setAsrState("error");
     }
   }
@@ -281,14 +343,21 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
-          <h1>Voice Toolbox</h1>
-          <p>TTS / ASR provider workbench</p>
+        <div className="brand">
+          <div className="brand-mark">V</div>
+          <div>
+            <h1 className="brand-title">Voice Toolbox</h1>
+            <p className="brand-subtitle">TTS / ASR provider workbench</p>
+          </div>
         </div>
         <div className="provider-strip" aria-live="polite">
           <label>
-            Provider
-            <select value={selectedProviderId} onChange={(event) => setSelectedProviderId(event.target.value)}>
+            <select
+              className="select-input"
+              aria-label="Provider"
+              value={selectedProviderId}
+              onChange={(event) => setSelectedProviderId(event.target.value)}
+            >
               {providers.length === 0 ? <option value="">No providers</option> : null}
               {providers.map((provider) => (
                 <option key={provider.id} value={provider.id}>
@@ -303,49 +372,19 @@ function App() {
 
       <ProviderDetails provider={selectedProvider} />
 
-      <nav className="tabs" aria-label="Toolbox sections">
-        <button className={tab === "tts" ? "active" : ""} type="button" onClick={() => setTab("tts")}>
-          TTS
-        </button>
-        <button className={tab === "asr" ? "active" : ""} type="button" onClick={() => setTab("asr")}>
-          ASR
-        </button>
-      </nav>
-
       {globalError ? <div className="notice error">{globalError}</div> : null}
 
-      {tab === "tts" ? (
-        <section
-          className={ttsArtifact || ttsState !== "idle" ? "tool-grid" : "tool-grid tool-grid--single"}
-          aria-label="Text to speech toolbox"
-        >
-          <form className="tool-panel" onSubmit={submitTts}>
-            <fieldset className="segmented" aria-label="TTS mode">
-              <button
-                className={ttsMode === "builtin" ? "active" : ""}
-                type="button"
-                disabled={!supportsCapability("tts.builtin")}
-                onClick={() => setTtsMode("builtin")}
-              >
-                Built-in
-              </button>
-              <button
-                className={ttsMode === "design" ? "active" : ""}
-                type="button"
-                disabled={!supportsCapability("tts.design")}
-                onClick={() => setTtsMode("design")}
-              >
-                Design
-              </button>
-              <button
-                className={ttsMode === "clone" ? "active" : ""}
-                type="button"
-                disabled={!supportsCapability("tts.clone")}
-                onClick={() => setTtsMode("clone")}
-              >
-                Clone
-              </button>
-            </fieldset>
+      <div className="workspace">
+        <Sidebar
+          activeMode={ttsMode}
+          onModeChange={setTtsMode}
+          tab={tab}
+          onTabChange={setTab}
+          supportsCapability={supportsCapability}
+        />
+
+        {tab === "tts" ? (
+          <form className="canvas" onSubmit={submitTts}>
             {!activeTtsSupported ? (
               <div className="notice error compact">Selected provider does not support this TTS mode.</div>
             ) : null}
@@ -373,12 +412,14 @@ function App() {
                   insertTag={insertTag}
                   textAreaRef={textAreaRef}
                 />
-                <AdvancedSettings
-                  label="Advanced"
-                  models={providerModels("tts.builtin")}
-                  selectedModel={builtinModel}
-                  onModelChange={setBuiltinModel}
-                />
+                <div className="card">
+                  <AdvancedSettings
+                    label="Advanced"
+                    models={providerModels("tts.builtin")}
+                    selectedModel={builtinModel}
+                    onModelChange={setBuiltinModel}
+                  />
+                </div>
               </>
             ) : null}
 
@@ -392,12 +433,14 @@ function App() {
                   optimizePreview={optimizePreview}
                   setOptimizePreview={setOptimizePreview}
                 />
-                <AdvancedSettings
-                  label="Advanced"
-                  models={providerModels("tts.design")}
-                  selectedModel={designModel}
-                  onModelChange={setDesignModel}
-                />
+                <div className="card">
+                  <AdvancedSettings
+                    label="Advanced"
+                    models={providerModels("tts.design")}
+                    selectedModel={designModel}
+                    onModelChange={setDesignModel}
+                  />
+                </div>
               </>
             ) : null}
 
@@ -417,112 +460,189 @@ function App() {
                   base64Size={cloneBase64Size}
                   overLimit={cloneOverLimit}
                 />
-                <AdvancedSettings
-                  label="Advanced"
-                  models={providerModels("tts.clone")}
-                  selectedModel={cloneModel}
-                  onModelChange={setCloneModel}
-                />
+                <div className="card">
+                  <AdvancedSettings
+                    label="Advanced"
+                    models={providerModels("tts.clone")}
+                    selectedModel={cloneModel}
+                    onModelChange={setCloneModel}
+                  />
+                </div>
               </>
             ) : null}
 
-            <div className="meta-row">
-              <ModelSummary
-                models={selectedProvider?.models ?? []}
-                selectedModel={activeTtsModel(ttsMode, builtinModel, designModel, cloneModel)}
-              />
-              <span className="format-pill">{expectedTtsOutputLabel(selectedProvider)}</span>
+            <div className="card">
+              <div className="card-header">
+                <ModelSummary
+                  models={selectedProvider?.models ?? []}
+                  selectedModel={activeTtsModel(ttsMode, builtinModel, designModel, cloneModel)}
+                />
+                <span className="format-pill">{expectedTtsOutputLabel(selectedProvider)}</span>
+              </div>
+              {ttsError ? <div className="notice error compact">{ttsError}</div> : null}
+              <button
+                className="primary-action"
+                type="submit"
+                disabled={ttsState === "loading" || cloneOverLimit || !providerReady || !activeTtsSupported}
+              >
+                {ttsState === "loading" ? (
+                  <>
+                    <span className="spinner" aria-hidden="true" />
+                    Generating...
+                  </>
+                ) : (
+                  "Generate voice"
+                )}
+              </button>
             </div>
-            {ttsError ? <div className="notice error compact">{ttsError}</div> : null}
-            <button
-              className="primary-action"
-              type="submit"
-              disabled={ttsState === "loading" || cloneOverLimit || !providerReady || !activeTtsSupported}
-            >
-              {ttsState === "loading" ? (
-                <>
-                  <span className="spinner" aria-hidden="true" />
-                  Generating...
-                </>
-              ) : (
-                "Generate voice"
-              )}
-            </button>
           </form>
-
-          {ttsArtifact || ttsState !== "idle" ? <ResultPanel artifact={ttsArtifact} state={ttsState} /> : null}
-        </section>
-      ) : (
-        <section
-          className={asrArtifact || asrState !== "idle" ? "tool-grid" : "tool-grid tool-grid--single"}
-          aria-label="Speech to text toolbox"
-        >
-          <form className="tool-panel" onSubmit={submitAsr}>
-            <label>
-              Audio file
-              <input
-                type="file"
-                accept={AUDIO_ACCEPT}
-                onChange={(event) => setAsrFile(event.target.files?.[0] ?? null)}
-              />
-            </label>
-            <label>
-              Language
-              <select value={asrLanguage} onChange={(event) => setAsrLanguage(event.target.value)}>
-                <option value="auto">auto</option>
-                <option value="zh">zh</option>
-                <option value="en">en</option>
-              </select>
-            </label>
-            <AdvancedSettings
-              label="Advanced"
-              models={providerModels("asr.transcribe")}
-              selectedModel={asrModel}
-              onModelChange={setAsrModel}
-            />
-            <div className="meta-row">
-              <ModelSummary models={selectedProvider?.models ?? []} selectedModel={asrModel} />
-              <span className="format-pill">{asrLanguage.toUpperCase()}</span>
+        ) : (
+          <form className="canvas" onSubmit={submitAsr}>
+            <div className="card">
+              <div className="card-header">
+                <span className="card-label">Audio</span>
+              </div>
+              <label className="field">
+                <span className="field-title">Audio file</span>
+                <input
+                  type="file"
+                  accept={AUDIO_ACCEPT}
+                  onChange={(event) => setAsrFile(event.target.files?.[0] ?? null)}
+                  required
+                />
+              </label>
+              <label className="field">
+                <span className="field-title">Language</span>
+                <select value={asrLanguage} onChange={(event) => setAsrLanguage(event.target.value)}>
+                  <option value="auto">auto</option>
+                  <option value="zh">zh</option>
+                  <option value="en">en</option>
+                </select>
+              </label>
             </div>
-            {asrError ? <div className="notice error compact">{asrError}</div> : null}
-            {!asrSupported ? <div className="notice error compact">Selected provider does not support ASR.</div> : null}
-            <button
-              className="primary-action"
-              type="submit"
-              disabled={asrState === "loading" || !providerReady || !asrSupported}
-            >
-              {asrState === "loading" ? (
-                <>
-                  <span className="spinner" aria-hidden="true" />
-                  Transcribing...
-                </>
-              ) : (
-                "Transcribe"
-              )}
-            </button>
+            <div className="card">
+              <AdvancedSettings
+                label="Advanced"
+                models={providerModels("asr.transcribe")}
+                selectedModel={asrModel}
+                onModelChange={setAsrModel}
+              />
+            </div>
+            <div className="card">
+              <div className="card-header">
+                <ModelSummary models={selectedProvider?.models ?? []} selectedModel={asrModel} />
+                <span className="format-pill">{asrLanguage.toUpperCase()}</span>
+              </div>
+              {asrError ? <div className="notice error compact">{asrError}</div> : null}
+              {!asrSupported ? (
+                <div className="notice error compact">Selected provider does not support ASR.</div>
+              ) : null}
+              <button
+                className="primary-action"
+                type="submit"
+                disabled={asrState === "loading" || !providerReady || !asrSupported}
+              >
+                {asrState === "loading" ? (
+                  <>
+                    <span className="spinner" aria-hidden="true" />
+                    Transcribing...
+                  </>
+                ) : (
+                  "Transcribe"
+                )}
+              </button>
+            </div>
           </form>
+        )}
 
-          {asrArtifact || asrState !== "idle" ? (
+        <div className="output-panel">
+          {historyError ? <div className="notice error compact">{historyError}</div> : null}
+          {tab === "tts" ? (
+            <ResultPanel artifact={ttsArtifact} state={ttsState} />
+          ) : (
             <TranscriptPanel artifact={asrArtifact} transcript={transcript} state={asrState} />
-          ) : null}
-        </section>
-      )}
+          )}
+          <div role="status" aria-live="polite" className="sr-only">
+            {history.length} history items
+          </div>
+          <HistoryPanel artifacts={history} onSelect={selectHistoryItem} />
+        </div>
+      </div>
     </main>
+  );
+}
+
+const TTS_MODES: { id: TtsMode; label: string; icon: string }[] = [
+  { id: "builtin", label: "Built-in", icon: "🔊" },
+  { id: "design", label: "Design", icon: "✨" },
+  { id: "clone", label: "Clone", icon: "🎙️" },
+];
+
+function Sidebar({
+  activeMode,
+  onModeChange,
+  tab,
+  onTabChange,
+  supportsCapability,
+}: {
+  activeMode: TtsMode;
+  onModeChange: (mode: TtsMode) => void;
+  tab: MainTab;
+  onTabChange: (tab: MainTab) => void;
+  supportsCapability: (capability: string) => boolean;
+}) {
+  return (
+    <nav className="sidebar" aria-label="Toolbox sections">
+      <div>
+        <div className="sidebar-section">TTS</div>
+        {TTS_MODES.map((mode) => {
+          const supported = supportsCapability(ttsCapability(mode.id));
+          return (
+            <button
+              key={mode.id}
+              className={["nav-item", activeMode === mode.id && tab === "tts" ? "active" : ""]
+                .filter(Boolean)
+                .join(" ")}
+              type="button"
+              disabled={!supported}
+              onClick={() => {
+                onModeChange(mode.id);
+                onTabChange("tts");
+              }}
+            >
+              <span>{mode.icon}</span>
+              <span>{mode.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div>
+        <div className="sidebar-section">ASR</div>
+        <button
+          className={["nav-item", tab === "asr" ? "active" : ""].filter(Boolean).join(" ")}
+          type="button"
+          disabled={!supportsCapability("asr.transcribe")}
+          onClick={() => onTabChange("asr")}
+        >
+          <span>📝</span>
+          <span>Transcribe</span>
+        </button>
+      </div>
+    </nav>
   );
 }
 
 function KeyStatus({ provider, loading }: { provider: Provider | null; loading: boolean }) {
   if (loading) {
-    return <span className="key-status muted">Key status loading</span>;
+    return <span className="status-badge">Key status loading</span>;
   }
   if (!provider || provider.has_api_key === undefined) {
-    return <span className="key-status muted">Key status unavailable</span>;
+    return <span className="status-badge">Key status unavailable</span>;
   }
-  return (
-    <span className={provider.has_api_key ? "key-status ok" : "key-status warn"}>
-      {provider.has_api_key ? "API key configured" : "API key missing"}
-    </span>
-  );
+  if (provider.has_api_key) {
+    return <span className="status-badge ok">API key configured</span>;
+  }
+  return <span className="status-badge warn">API key missing</span>;
 }
 
 function ProviderDetails({ provider }: { provider: Provider | null }) {
@@ -542,7 +662,7 @@ function ProviderDetails({ provider }: { provider: Provider | null }) {
 function StatusItem({ label, value }: { label: string; value: string }) {
   return (
     <span className="status-item">
-      <span>{label}</span>
+      <span className="label">{label}</span>
       <strong>{value}</strong>
     </span>
   );
@@ -564,24 +684,23 @@ function TextTools({
   onPreview: () => void;
 }) {
   return (
-    <section className="text-tools">
-      <div className="text-tools-row">
-        <label className="text-format-field">
-          Text format
-          <select value={textFormat} onChange={(event) => setTextFormat(event.target.value as TextFormat)}>
+    <section className="card">
+      <div className="card-header">
+        <span className="card-label">Text format</span>
+        <div className="card-actions">
+          <select
+            className="select-input"
+            value={textFormat}
+            onChange={(event) => setTextFormat(event.target.value as TextFormat)}
+          >
             <option value="plain">plain</option>
             <option value="markdown">markdown</option>
             <option value="auto">auto</option>
           </select>
-        </label>
-        <button
-          className="secondary-action preview-action"
-          type="button"
-          onClick={onPreview}
-          disabled={previewState === "loading"}
-        >
-          {previewState === "loading" ? "Previewing..." : "Preview cleaned text"}
-        </button>
+          <button className="btn btn-primary" type="button" onClick={onPreview} disabled={previewState === "loading"}>
+            {previewState === "loading" ? "Previewing..." : "Preview"}
+          </button>
+        </div>
       </div>
       {previewError ? <div className="notice error compact">{previewError}</div> : null}
       {cleanedPreview ? <pre className="cleaned-preview">{cleanedPreview}</pre> : null}
@@ -625,8 +744,11 @@ function BuiltinControls({
   }
 
   return (
-    <div className="field-stack">
-      <div className="field-grid">
+    <>
+      <div className="card">
+        <div className="card-header">
+          <span className="card-label">Voice</span>
+        </div>
         <label className="field">
           <span className="field-title">Voice</span>
           <select
@@ -651,36 +773,9 @@ function BuiltinControls({
           />
         </label>
       </div>
-      <section className="field">
-        <div className="section-heading">
-          <span>Script</span>
-          <TextEditorActions title="Script" value={text} onApply={setText} count={text.length} />
-        </div>
-        <div className="tag-panel" aria-label="Insert audio tags">
-          <div className="tag-row">
-            {INLINE_TAGS.map((tag) => (
-              <button key={tag} type="button" onClick={() => insertTag(tag)}>
-                {tag}
-              </button>
-            ))}
-          </div>
-          <div className="custom-tag">
-            <input
-              value={customTag}
-              onChange={(event) => setCustomTag(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  submitCustomTag();
-                }
-              }}
-              placeholder="Custom tag"
-            />
-            <button type="button" onClick={submitCustomTag}>
-              Insert
-            </button>
-          </div>
-        </div>
+
+      <div className="card">
+        <CardHeader label="Script" count={text.length} title="Script" value={text} onApply={setText} />
         <textarea
           className="script-input"
           ref={textAreaRef}
@@ -689,8 +784,27 @@ function BuiltinControls({
           onChange={(event) => setText(event.target.value)}
           required
         />
-      </section>
-    </div>
+        <div className="tag-row">
+          {INLINE_TAGS.map((tag) => (
+            <button key={tag} className="chip" type="button" onClick={() => insertTag(tag)}>
+              {tag}
+            </button>
+          ))}
+          <input
+            className="tag-input"
+            value={customTag}
+            onChange={(event) => setCustomTag(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submitCustomTag();
+              }
+            }}
+            placeholder="+ tag"
+          />
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -710,19 +824,25 @@ function DesignControls({
   setOptimizePreview: (value: boolean) => void;
 }) {
   return (
-    <div className="field-stack">
-      <section className="field">
-        <div className="section-heading">
-          <span>Voice persona</span>
-          <span className="switch-line">
-            <input
-              type="checkbox"
-              checked={optimizePreview}
-              onChange={(event) => setOptimizePreview(event.target.checked)}
-            />
-            <span>Auto-optimize</span>
-          </span>
-        </div>
+    <>
+      <div className="card">
+        <CardHeader
+          label="Voice description"
+          count={description.length}
+          title="Voice description"
+          value={description}
+          onApply={setDescription}
+          extra={
+            <label className="switch-line">
+              <input
+                type="checkbox"
+                checked={optimizePreview}
+                onChange={(event) => setOptimizePreview(event.target.checked)}
+              />
+              <span>Auto-optimize</span>
+            </label>
+          }
+        />
         <textarea
           className="script-input"
           value={description}
@@ -731,24 +851,16 @@ function DesignControls({
           placeholder="Describe timbre, age, accent, energy, pace, and scene"
           required
         />
-        <TextEditorActions
-          title="Voice persona"
-          value={description}
-          onApply={setDescription}
-          count={description.length}
+      </div>
+      <div className="card">
+        <CardHeader
+          label="Script"
+          count={text.length}
+          optional={optimizePreview}
+          title="Script"
+          value={text}
+          onApply={setText}
         />
-      </section>
-      <section className="field">
-        <div className="section-heading">
-          <span>Script</span>
-          <TextEditorActions
-            title="Script"
-            value={text}
-            onApply={setText}
-            count={text.length}
-            optional={optimizePreview}
-          />
-        </div>
         <textarea
           className="script-input"
           value={text}
@@ -757,8 +869,8 @@ function DesignControls({
           placeholder="Preview text for generated voice"
           required={!optimizePreview}
         />
-      </section>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -790,31 +902,34 @@ function CloneControls({
   overLimit: boolean;
 }) {
   return (
-    <div className="field-stack">
-      <label className="field">
-        <span className="field-title">Clone sample</span>
-        <input
-          type="file"
-          accept={AUDIO_ACCEPT}
-          onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-          required
-        />
-      </label>
-      <p className={overLimit ? "notice error compact" : "notice compact"}>
-        Base64 payload limit is 10 MiB.{" "}
-        {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose an audio file."}
-      </p>
-      <section className="field">
-        <div className="section-heading">
-          <span>Sample transcript</span>
-          <TextEditorActions
-            title="Sample transcript"
-            value={referenceText}
-            onApply={setReferenceText}
-            count={referenceText.length}
-            optional
-          />
+    <>
+      <div className="card">
+        <div className="card-header">
+          <span className="card-label">Reference audio</span>
         </div>
+        <label className="field">
+          <span className="field-title">Clone sample</span>
+          <input
+            type="file"
+            accept={AUDIO_ACCEPT}
+            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            required
+          />
+        </label>
+        <p className={overLimit ? "notice error compact" : "notice compact"}>
+          Base64 payload limit is 10 MiB.{" "}
+          {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose an audio file."}
+        </p>
+      </div>
+      <div className="card">
+        <CardHeader
+          label="Sample transcript"
+          count={referenceText.length}
+          optional
+          title="Sample transcript"
+          value={referenceText}
+          onApply={setReferenceText}
+        />
         <textarea
           className="script-input"
           value={referenceText}
@@ -822,12 +937,9 @@ function CloneControls({
           onChange={(event) => setReferenceText(event.target.value)}
           placeholder="Transcript of the uploaded sample. Required by Fish Audio direct clone."
         />
-      </section>
-      <section className="field">
-        <div className="section-heading">
-          <span>Script</span>
-          <TextEditorActions title="Script" value={text} onApply={setText} count={text.length} />
-        </div>
+      </div>
+      <div className="card">
+        <CardHeader label="Script" count={text.length} title="Script" value={text} onApply={setText} />
         <textarea
           className="script-input"
           value={text}
@@ -835,53 +947,75 @@ function CloneControls({
           onChange={(event) => setText(event.target.value)}
           required
         />
-      </section>
-      <label className="field">
-        <span className="field-title">Style prompt</span>
-        <input
-          value={style}
-          onChange={(event) => setStyle(event.target.value)}
-          placeholder="Natural-language delivery, emotion, pacing, or persona"
-        />
-      </label>
-      <label className="checkbox-line">
-        <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />I
-        have permission to use this voice sample for synthesis.
-      </label>
-    </div>
+      </div>
+      <div className="card">
+        <div className="card-header">
+          <span className="card-label">Style & consent</span>
+        </div>
+        <label className="field">
+          <span className="field-title">Style prompt</span>
+          <input
+            value={style}
+            onChange={(event) => setStyle(event.target.value)}
+            placeholder="Natural-language delivery, emotion, pacing, or persona"
+          />
+        </label>
+        <label className="checkbox-line">
+          <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />I
+          have permission to use this voice sample for synthesis.
+        </label>
+      </div>
+    </>
   );
 }
 
-function TextEditorActions({
+function CardHeader({
+  label,
+  count,
+  optional,
   title,
   value,
   onApply,
-  count,
-  optional,
+  extra,
 }: {
+  label: string;
+  count?: number;
+  optional?: boolean;
   title: string;
   value: string;
   onApply: (value: string) => void;
-  count: number;
-  optional?: boolean;
+  extra?: ReactNode;
 }) {
   return (
-    <span className="editor-actions">
-      <span>{optional ? "Optional" : `${count} chars`}</span>
-      <FullscreenTextEditor title={title} value={value} onApply={onApply} />
-    </span>
+    <div className="card-header">
+      <span className="card-label">{label}</span>
+      <div className="card-actions">
+        {extra}
+        {optional ? (
+          <span className="char-count">Optional</span>
+        ) : count !== undefined ? (
+          <span className="char-count">{count} chars</span>
+        ) : null}
+        <FullscreenTextEditor title={title} value={value} onApply={onApply} />
+      </div>
+    </div>
   );
 }
 
 function ModelSummary({ models, selectedModel }: { models: ProviderModel[]; selectedModel: string | null }) {
   const model = models.find((item) => item.id === selectedModel);
   if (!model) {
-    return <span className="model-chip muted">No model selected</span>;
+    return (
+      <span className="meta-label">
+        <span>Model</span>
+        <span>None</span>
+      </span>
+    );
   }
   return (
-    <span className="model-chip">
+    <span className="meta-label">
       <span>Model</span>
-      <strong>{model.name || model.id}</strong>
+      <span>{model.name || model.id}</span>
     </span>
   );
 }
@@ -1094,6 +1228,56 @@ function downloadUrlForFormat(url: string, format: DownloadFormat) {
     return url;
   }
   return `${url}?format=${encodeURIComponent(format)}`;
+}
+
+function HistoryPanel({ artifacts, onSelect }: { artifacts: Artifact[]; onSelect: (artifact: Artifact) => void }) {
+  return (
+    <div className="card">
+      <div className="card-header">
+        <span className="card-label">History</span>
+        <span className="char-count">last {artifacts.length}</span>
+      </div>
+      <div className="history-list">
+        {artifacts.length === 0 ? (
+          <p className="char-count">No history yet.</p>
+        ) : (
+          artifacts.map((artifact) => (
+            <div key={artifact.id} className="history-item">
+              <div className="history-meta">
+                <span className="history-title">{formatHistoryTitle(artifact)}</span>
+                <span className="history-time">{formatHistoryTime(artifact.created_at)}</span>
+              </div>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                aria-label={`Load ${formatHistoryTitle(artifact)}`}
+                onClick={() => onSelect(artifact)}
+              >
+                {artifact.kind === "audio" ? "Play" : "View"}
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatHistoryTitle(artifact: Artifact): string {
+  const op = artifact.operation ?? "unknown";
+  const kind = artifact.kind ?? "unknown";
+  if (op === "tts" && kind === "audio") {
+    const mode = String(artifact.metadata?.tts_mode ?? "unknown");
+    const label = mode === "builtin" ? "Built-in" : mode === "design" ? "Design" : mode === "clone" ? "Clone" : mode;
+    return `TTS • ${label}`;
+  }
+  if (op === "asr" || kind === "transcript") return "ASR • Transcribe";
+  return `${op} • ${kind}`;
+}
+
+function formatHistoryTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
 export default App;
