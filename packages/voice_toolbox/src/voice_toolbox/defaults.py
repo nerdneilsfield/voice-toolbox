@@ -4,6 +4,7 @@ from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModel
 from voice_toolbox.models import ModelInfo, VoiceInfo
 
 DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
+DEFAULT_FISH_AUDIO_BASE_URL = "https://api.fish.audio"
 
 MIMO_MODELS: list[ModelInfo] = [
     ModelInfo(id="mimo-v2.5-tts", name="MiMo TTS", capability="tts.builtin"),
@@ -39,6 +40,31 @@ DEFAULT_MIMO_MODELS = ProviderDefaultModels(
     asr="mimo-v2.5-asr",
 )
 
+FISH_AUDIO_MODELS: list[ModelInfo] = [
+    ModelInfo(id="s1", name="Fish Audio S1", capability="tts.builtin"),
+    ModelInfo(
+        id="s1-design",
+        name="Fish Audio Voice Design",
+        capability="tts.design",
+        note="uses Fish Audio model header s1",
+    ),
+    ModelInfo(id="fish-audio-asr", name="Fish Audio ASR", capability="asr.transcribe"),
+]
+
+FISH_AUDIO_VOICES: list[VoiceInfo] = [
+    VoiceInfo(
+        id="e58b0d7efca34eb38d5c4985e378abcb",
+        name="Fish Audio default reference",
+        note="public reference_id from Fish Audio docs; replace with your own model/reference id",
+    )
+]
+
+DEFAULT_FISH_AUDIO_MODELS = ProviderDefaultModels(
+    tts_builtin="s1",
+    tts_design="s1-design",
+    asr="fish-audio-asr",
+)
+
 
 def make_default_mimo_provider_config(
     *,
@@ -57,4 +83,24 @@ def make_default_mimo_provider_config(
         default_models=DEFAULT_MIMO_MODELS,
         models=[model.model_copy() for model in MIMO_MODELS],
         voices=[voice.model_copy() for voice in MIMO_VOICES],
+    )
+
+
+def make_default_fish_audio_provider_config(
+    *,
+    provider_id: str = "fish-audio",
+    name: str = "Fish Audio",
+    base_url: str = DEFAULT_FISH_AUDIO_BASE_URL,
+    api_key_env: str = "FISH_AUDIO_API_KEY",
+) -> ConfiguredProvider:
+    return ConfiguredProvider(
+        id=provider_id,
+        type="fish_audio",
+        name=name,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        default_voice=FISH_AUDIO_VOICES[0].id,
+        default_models=DEFAULT_FISH_AUDIO_MODELS,
+        models=[model.model_copy() for model in FISH_AUDIO_MODELS],
+        voices=[voice.model_copy() for voice in FISH_AUDIO_VOICES],
     )

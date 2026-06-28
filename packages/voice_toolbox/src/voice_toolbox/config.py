@@ -19,8 +19,11 @@ from voice_toolbox.config_models import (
     ProviderDefaultModels,
 )
 from voice_toolbox.defaults import (
+    DEFAULT_FISH_AUDIO_MODELS,
     DEFAULT_MIMO_BASE_URL,
     DEFAULT_MIMO_MODELS,
+    FISH_AUDIO_MODELS,
+    FISH_AUDIO_VOICES,
     MIMO_MODELS,
     MIMO_VOICES,
 )
@@ -77,7 +80,9 @@ def load_app_config(
             if emit_warnings:
                 logger.warning("providers is empty; using built-in default provider")
             payload["providers"] = [_default_provider_payload(env, use_env_base_url=False)]
-        payload["providers"] = [_fill_mimo_defaults(provider) for provider in payload["providers"]]
+        payload["providers"] = [
+            _fill_provider_defaults(provider) for provider in payload["providers"]
+        ]
         return AppConfig.model_validate(payload)
     except ValidationError as exc:
         raise ConfigError(_safe_validation_message(exc)) from exc
@@ -192,24 +197,69 @@ def replay_config_warnings(config: AppConfig, env: dict[str, str]) -> None:
 
 
 def _fill_mimo_defaults(provider: dict[str, Any]) -> dict[str, Any]:
+    return _fill_provider_defaults(provider)
+
+
+def _fill_provider_defaults(provider: dict[str, Any]) -> dict[str, Any]:
+    if provider.get("type") == "mimo":
+        return _fill_defaults_for_provider(
+            provider,
+            default_models=DEFAULT_MIMO_MODELS,
+            models=MIMO_MODELS,
+            voices=MIMO_VOICES,
+        )
+    if provider.get("type") == "fish_audio":
+        return _fill_defaults_for_provider(
+            provider,
+            default_models=DEFAULT_FISH_AUDIO_MODELS,
+            models=FISH_AUDIO_MODELS,
+            voices=FISH_AUDIO_VOICES,
+        )
+    return dict(provider)
+
+
+def _fill_defaults_for_provider(
+    provider: dict[str, Any],
+    *,
+    default_models: ProviderDefaultModels,
+    models: list[ModelInfo],
+    voices: list[Any],
+) -> dict[str, Any]:
     result = dict(provider)
-    if result.get("type") != "mimo":
-        return result
+    had_models = "models" in result
+    had_voices = "voices" in result
     if "models" not in result:
-        result["models"] = [model.model_dump() for model in MIMO_MODELS]
+        result["models"] = [model.model_dump() for model in models]
     if "voices" not in result:
-        result["voices"] = [voice.model_dump() for voice in MIMO_VOICES]
+        result["voices"] = [voice.model_dump() for voice in voices]
+    if "default_voice" not in result and not had_voices and voices:
+        result["default_voice"] = voices[0].id
     models = [ModelInfo.model_validate(model) for model in result.get("models", [])]
     models_by_capability: dict[str, str] = {}
     for model in models:
         if model.capability and model.capability not in models_by_capability:
             models_by_capability[model.capability] = model.id
     current_defaults = ProviderDefaultModels.model_validate(result.get("default_models") or {})
+    builtin_defaults = default_models if not had_models else ProviderDefaultModels()
     fallback = ProviderDefaultModels(
-        tts_builtin=current_defaults.tts_builtin or models_by_capability.get("tts.builtin"),
-        tts_design=current_defaults.tts_design or models_by_capability.get("tts.design"),
-        tts_clone=current_defaults.tts_clone or models_by_capability.get("tts.clone"),
-        asr=current_defaults.asr or models_by_capability.get("asr.transcribe"),
+        tts_builtin=(
+            current_defaults.tts_builtin
+            or models_by_capability.get("tts.builtin")
+            or builtin_defaults.tts_builtin
+        ),
+        tts_design=(
+            current_defaults.tts_design
+            or models_by_capability.get("tts.design")
+            or builtin_defaults.tts_design
+        ),
+        tts_clone=(
+            current_defaults.tts_clone
+            or models_by_capability.get("tts.clone")
+            or builtin_defaults.tts_clone
+        ),
+        asr=current_defaults.asr
+        or models_by_capability.get("asr.transcribe")
+        or builtin_defaults.asr,
     )
     result["default_models"] = fallback.model_dump()
     return result

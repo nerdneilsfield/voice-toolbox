@@ -53,3 +53,39 @@ capability = "asr.transcribe"
 
 # To add another provider, copy the [[providers]] block and use another api_key_env,
 # for example MIMO_SGP_API_KEY. Do not put API key values in this file.
+#
+# Fish Audio example:
+#
+# [[providers]]
+# id = "fish-audio"
+# type = "fish_audio"
+# name = "Fish Audio"
+# base_url = "https://api.fish.audio"
+# api_key_env = "FISH_AUDIO_API_KEY"
+# default_voice = "e58b0d7efca34eb38d5c4985e378abcb"
+#
+# [providers.default_models]
+# tts_builtin = "s1"
+# tts_design = "s1-design"
+# asr = "fish-audio-asr"
+#
+# [[providers.models]]
+# id = "s1"
+# name = "Fish Audio S1"
+# capability = "tts.builtin"
+#
+# [[providers.models]]
+# id = "s1-design"
+# name = "Fish Audio Voice Design"
+# capability = "tts.design"
+# note = "uses Fish Audio model header s1"
+#
+# [[providers.models]]
+# id = "fish-audio-asr"
+# name = "Fish Audio ASR"
+# capability = "asr.transcribe"
+#
+# [[providers.voices]]
+# id = "e58b0d7efca34eb38d5c4985e378abcb"
+# name = "Fish Audio default reference"
+# note = "Replace with your own Fish Audio reference_id or model id."

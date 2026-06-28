@@ -5,6 +5,7 @@ from pathlib import Path
 
 from voice_toolbox.artifacts import ArtifactStore
 from voice_toolbox.config import AppConfig, load_env_values
+from voice_toolbox.providers.fish_audio import FishAudioProvider
 from voice_toolbox.providers.mimo import MimoProvider
 from voice_toolbox.providers.registry import ProviderRegistry
 
@@ -22,6 +23,14 @@ def build_provider_registry(
         if provider_config.type == "mimo":
             providers.append(
                 MimoProvider(
+                    config=provider_config,
+                    api_key=env.get(provider_config.api_key_env),
+                    artifact_store=ArtifactStore(root),
+                )
+            )
+        elif provider_config.type == "fish_audio":
+            providers.append(
+                FishAudioProvider(
                     config=provider_config,
                     api_key=env.get(provider_config.api_key_env),
                     artifact_store=ArtifactStore(root),

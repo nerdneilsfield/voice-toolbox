@@ -1,6 +1,6 @@
 # voice-toolbox
 
-Local-first voice toolbox for MiMo TTS and ASR. Python core, Typer CLI, FastAPI API, and React web UI share one provider layer.
+Local-first voice toolbox for MiMo and Fish Audio TTS/ASR providers. Python core, Typer CLI, FastAPI API, and React web UI share one provider layer.
 
 ## Setup
 
@@ -22,7 +22,7 @@ Create local environment config:
 rtk cp -n .env.example .env
 ```
 
-Edit `.env` and set `MIMO_API_KEY`. For configurable providers, copy
+Edit `.env` and set `MIMO_API_KEY` and/or `FISH_AUDIO_API_KEY`. For configurable providers, copy
 `voice_toolbox.toml.example` to `voice_toolbox.toml` and edit non-secret provider
 settings there.
 
@@ -39,7 +39,7 @@ Config discovery order:
 
 `voice_toolbox.toml` stores provider IDs, model IDs, voices, logging, and local API
 binding. It stores only API key environment variable names such as
-`MIMO_API_KEY` or `MIMO_SGP_API_KEY`; key values stay in `.env` or the process
+`MIMO_API_KEY`, `MIMO_SGP_API_KEY`, or `FISH_AUDIO_API_KEY`; key values stay in `.env` or the process
 environment. When the API reports provider status, it exposes only whether a key
 is configured plus a masked local preview, never the full key.
 
@@ -104,6 +104,13 @@ rtk uv run --env-file .env voice-toolbox asr transcribe \
 ```
 
 More real-provider checks live in [docs/smoke/mimo.md](docs/smoke/mimo.md).
+
+Fish Audio provider support:
+
+- `tts.builtin`: calls `POST /v1/tts` with Fish `reference_id` from `voice_id`.
+- `tts.design`: calls `POST /v1/voice-design`; optional preview text maps to `reference_text` and must be at most 150 chars.
+- `asr.transcribe`: calls `POST /v1/asr` with multipart audio upload.
+- `tts.clone`: not enabled in v1 because Fish direct clone upload requires MessagePack/model workflows that are not yet represented by the shared provider contract.
 
 ## Markdown Cleanup Preview
 

@@ -361,3 +361,34 @@ capability = "tts.builtin"
     assert defaults.tts_design is None
     assert defaults.tts_clone is None
     assert defaults.asr is None
+
+
+def test_fish_audio_provider_fills_builtin_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "fish"
+type = "fish_audio"
+name = "Fish Audio"
+base_url = "https://api.fish.audio"
+api_key_env = "FISH_AUDIO_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_app_config(path)
+    provider = config.providers[0]
+
+    assert provider.type == "fish_audio"
+    assert provider.default_models is not None
+    assert provider.default_models.tts_builtin == "s1"
+    assert provider.default_models.tts_design == "s1-design"
+    assert provider.default_models.tts_clone is None
+    assert provider.default_models.asr == "fish-audio-asr"
+    assert {model.capability for model in provider.models} == {
+        "tts.builtin",
+        "tts.design",
+        "asr.transcribe",
+    }
+    assert provider.default_voice == "e58b0d7efca34eb38d5c4985e378abcb"
