@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { synthesizeBuiltin } from "./api";
+import { getArtifacts, synthesizeBuiltin } from "./api";
 
 describe("api client", () => {
   afterEach(() => {
@@ -49,5 +49,33 @@ describe("api client", () => {
     expect(body).toBeInstanceOf(FormData);
     expect((body as FormData).get("mode")).toBeNull();
     expect((body as FormData).get("voice_id")).toBe("Mia");
+  });
+
+  it("fetches artifacts with limit", async () => {
+    const mockArtifact = {
+      id: "test-1",
+      provider_id: "mimo",
+      operation: "tts",
+      kind: "audio",
+      mime_type: "audio/wav",
+      created_at: "2026-06-28T12:00:00+00:00",
+      download_url: "/v1/artifacts/test-1/download",
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ artifacts: [mockArtifact] }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const artifacts = await getArtifacts(10);
+
+    expect(globalThis.fetch).toHaveBeenCalledWith("/v1/artifacts?limit=10");
+    expect(artifacts).toEqual([mockArtifact]);
+  });
+
+  it("throws on non-ok response", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Server error", { status: 500 }));
+
+    await expect(getArtifacts()).rejects.toThrow("Server error");
   });
 });

@@ -139,6 +139,12 @@ export function transcribe(formData: FormData): Promise<OperationResponse> {
   return requestForm("/v1/asr/transcribe", formData);
 }
 
+export async function getArtifacts(limit = 20): Promise<Artifact[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const payload = await requestJson<{ artifacts: Artifact[] }>(`/v1/artifacts?${params}`);
+  return payload.artifacts;
+}
+
 async function requestJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
   return parseResponse<T>(response);
