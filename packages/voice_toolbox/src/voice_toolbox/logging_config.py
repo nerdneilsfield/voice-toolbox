@@ -21,6 +21,7 @@ LOG_METADATA_KEYS = frozenset(
         *ALLOWED_METADATA_KEYS,
         "artifact_id",
         "artifact_ids",
+        "clone_reference_text_length",
         "config_path_name",
         "duration_ms",
         "elapsed_ms",

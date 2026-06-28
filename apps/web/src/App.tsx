@@ -53,6 +53,7 @@ function App() {
   const [designText, setDesignText] = useState("");
   const [optimizePreview, setOptimizePreview] = useState(true);
   const [cloneText, setCloneText] = useState("");
+  const [cloneReferenceText, setCloneReferenceText] = useState("");
   const [cloneStyle, setCloneStyle] = useState("");
   const [cloneFile, setCloneFile] = useState<File | null>(null);
   const [cloneConsent, setCloneConsent] = useState(false);
@@ -240,6 +241,7 @@ function App() {
     body.set("consent_confirmed", String(cloneConsent));
     body.set("sample", cloneFile);
     appendFormValue(body, "style_instruction", cloneStyle);
+    appendFormValue(body, "clone_reference_text", cloneReferenceText);
     appendFormValue(body, "model", cloneModel);
     return cloneVoice(body);
   }
@@ -402,6 +404,8 @@ function App() {
                 <CloneControls
                   text={cloneText}
                   setText={setCloneText}
+                  referenceText={cloneReferenceText}
+                  setReferenceText={setCloneReferenceText}
                   style={cloneStyle}
                   setStyle={setCloneStyle}
                   file={cloneFile}
@@ -761,6 +765,8 @@ function CloneControls({
   setText,
   style,
   setStyle,
+  referenceText,
+  setReferenceText,
   file,
   setFile,
   consent,
@@ -772,6 +778,8 @@ function CloneControls({
   setText: (value: string) => void;
   style: string;
   setStyle: (value: string) => void;
+  referenceText: string;
+  setReferenceText: (value: string) => void;
   file: File | null;
   setFile: (value: File | null) => void;
   consent: boolean;
@@ -794,6 +802,25 @@ function CloneControls({
         Base64 payload limit is 10 MiB.{" "}
         {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose wav or mp3."}
       </p>
+      <section className="field">
+        <div className="section-heading">
+          <span>Sample transcript</span>
+          <TextEditorActions
+            title="Sample transcript"
+            value={referenceText}
+            onApply={setReferenceText}
+            count={referenceText.length}
+            optional
+          />
+        </div>
+        <textarea
+          className="script-input"
+          value={referenceText}
+          rows={3}
+          onChange={(event) => setReferenceText(event.target.value)}
+          placeholder="Transcript of the uploaded sample. Required by Fish Audio direct clone."
+        />
+      </section>
       <section className="field">
         <div className="section-heading">
           <span>Script</span>

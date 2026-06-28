@@ -72,6 +72,7 @@ class TTSRequest(BaseModel):
     clone_mime_type: str | None = None
     clone_raw_byte_size: int | None = Field(default=None, ge=0)
     clone_base64_size: int | None = Field(default=None, ge=0)
+    clone_reference_text: str | None = None
     consent_confirmed: bool = False
 
     @field_validator(
@@ -82,6 +83,7 @@ class TTSRequest(BaseModel):
         "voice_id",
         "voice_description",
         "clone_mime_type",
+        "clone_reference_text",
         mode="after",
     )
     @classmethod

@@ -183,6 +183,7 @@ def create_app(
         optimize_text_preview: Annotated[bool, Form()] = False,
         consent_confirmed: Annotated[bool, Form()] = False,
         style_instruction: Annotated[str | None, Form()] = None,
+        clone_reference_text: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
@@ -227,6 +228,7 @@ def create_app(
             text_format=text_format,
             consent_confirmed=consent_confirmed,
             style_instruction=style_instruction,
+            clone_reference_text=clone_reference_text,
             model=model,
         )
 
@@ -288,6 +290,7 @@ def create_app(
         text_format: Annotated[Literal["plain", "markdown", "auto"], Form()] = "plain",
         consent_confirmed: Annotated[bool, Form()] = False,
         style_instruction: Annotated[str | None, Form()] = None,
+        clone_reference_text: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
@@ -299,6 +302,7 @@ def create_app(
             text_format=text_format,
             consent_confirmed=consent_confirmed,
             style_instruction=style_instruction,
+            clone_reference_text=clone_reference_text,
             model=model,
         )
 
@@ -546,6 +550,7 @@ def _run_clone_upload(
     text_format: Literal["plain", "markdown", "auto"],
     consent_confirmed: bool,
     style_instruction: str | None,
+    clone_reference_text: str | None,
     model: str | None,
 ) -> dict[str, Any]:
     contents = _read_upload(sample)
@@ -563,6 +568,7 @@ def _run_clone_upload(
                 "mode": TTSMode.CLONE,
                 "model": model,
                 "style_instruction": style_instruction,
+                "clone_reference_text": clone_reference_text,
                 "clone_sample_path": temp_path,
                 "clone_mime_type": mime_type,
                 "clone_raw_byte_size": len(contents),

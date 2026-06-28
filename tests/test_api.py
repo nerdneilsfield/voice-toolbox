@@ -386,7 +386,12 @@ def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) 
     )
     clone = client.post(
         "/v1/tts/clone",
-        data={"provider_id": "mimo", "text": "clone hello", "consent_confirmed": "true"},
+        data={
+            "provider_id": "mimo",
+            "text": "clone hello",
+            "clone_reference_text": "sample words",
+            "consent_confirmed": "true",
+        },
         files={"sample": ("sample.wav", WAV_BYTES, "audio/wav")},
     )
 
@@ -405,6 +410,7 @@ def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) 
     assert provider.tts_requests[2].clone_mime_type == "audio/wav"
     assert provider.tts_requests[2].clone_raw_byte_size == len(WAV_BYTES)
     assert provider.tts_requests[2].clone_base64_size == 24
+    assert provider.tts_requests[2].clone_reference_text == "sample words"
     assert provider.tts_requests[2].consent_confirmed is True
     assert provider.clone_sample_exists_during_call == [True]
     assert not provider.clone_sample_paths[0].exists()

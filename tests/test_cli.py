@@ -222,7 +222,17 @@ def test_tts_clone_succeeds_with_consent(monkeypatch, tmp_path: Path) -> None:
 
     result = runner.invoke(
         cli.app,
-        ["tts", "clone", "--sample", str(sample), "--text", "hello", "--consent"],
+        [
+            "tts",
+            "clone",
+            "--sample",
+            str(sample),
+            "--reference-text",
+            "sample words",
+            "--text",
+            "hello",
+            "--consent",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -232,6 +242,7 @@ def test_tts_clone_succeeds_with_consent(monkeypatch, tmp_path: Path) -> None:
     assert request.clone_mime_type == "audio/wav"
     assert request.clone_raw_byte_size == 4
     assert request.clone_base64_size == 8
+    assert request.clone_reference_text == "sample words"
     assert request.consent_confirmed is True
 
 

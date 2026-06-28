@@ -468,6 +468,7 @@ def _tts_metadata(
         "operation": "tts",
         "output_format": request.output_format,
         "provider_id": provider_id,
+        "clone_reference_text": request.clone_reference_text,
         "source_text": request.text,
         "style_instruction": request.style_instruction,
         "tts_mode": request.mode.value,

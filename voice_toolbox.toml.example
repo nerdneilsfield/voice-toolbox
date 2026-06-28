@@ -67,6 +67,7 @@ capability = "asr.transcribe"
 # [providers.default_models]
 # tts_builtin = "s1"
 # tts_design = "s1-design"
+# tts_clone = "s1-clone"
 # asr = "fish-audio-asr"
 #
 # [[providers.models]]
@@ -79,6 +80,12 @@ capability = "asr.transcribe"
 # name = "Fish Audio Voice Design"
 # capability = "tts.design"
 # note = "uses Fish Audio model header s1"
+#
+# [[providers.models]]
+# id = "s1-clone"
+# name = "Fish Audio Direct Clone"
+# capability = "tts.clone"
+# note = "uses Fish Audio model header s1 with MessagePack references"
 #
 # [[providers.models]]
 # id = "fish-audio-asr"

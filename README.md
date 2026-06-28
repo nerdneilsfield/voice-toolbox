@@ -109,8 +109,8 @@ Fish Audio provider support:
 
 - `tts.builtin`: calls `POST /v1/tts` with Fish `reference_id` from `voice_id`.
 - `tts.design`: calls `POST /v1/voice-design`; optional preview text maps to `reference_text` and must be at most 150 chars.
+- `tts.clone`: calls `POST /v1/tts` with `application/msgpack` direct references; provide the uploaded sample transcript as clone reference text.
 - `asr.transcribe`: calls `POST /v1/asr` with multipart audio upload.
-- `tts.clone`: not enabled in v1 because Fish direct clone upload requires MessagePack/model workflows that are not yet represented by the shared provider contract.
 
 ## Markdown Cleanup Preview
 

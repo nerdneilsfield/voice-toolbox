@@ -34,7 +34,12 @@ ALLOWED_METADATA_KEYS = {
     "uploaded_file_name",
     "voice_id",
 }
-LENGTH_METADATA_KEYS = {"source_text", "style_instruction", "voice_description"}
+LENGTH_METADATA_KEYS = {
+    "clone_reference_text",
+    "source_text",
+    "style_instruction",
+    "voice_description",
+}
 SAFE_OPERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 

@@ -16,6 +16,8 @@ from types import TracebackType
 from typing import Any
 from uuid import uuid4
 
+import msgpack
+
 from voice_toolbox.artifacts import ArtifactStore
 from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
 from voice_toolbox.defaults import (
@@ -161,6 +163,24 @@ class FishAudioProvider:
                     raise ProviderError("fish_audio voice design reference_text exceeds 150 chars")
                 body["reference_text"] = request.text
             return {"model": _fish_api_model_id(model), "json": body}
+        if request.mode == TTSMode.CLONE:
+            self._validate_clone_request(request)
+            if request.clone_sample_path is None:
+                raise ProviderError("fish_audio clone mode requires clone sample path")
+            return {
+                "model": _fish_api_model_id(model),
+                "msgpack": {
+                    "text": request.text,
+                    "format": request.output_format,
+                    "normalize": True,
+                    "references": [
+                        {
+                            "audio": request.clone_sample_path.read_bytes(),
+                            "text": request.clone_reference_text,
+                        }
+                    ],
+                },
+            }
         raise UnsupportedCapability(
             f"fish_audio provider does not support TTS mode: {request.mode}"
         )
@@ -199,6 +219,14 @@ class FishAudioProvider:
                 model=body["model"],
             )
             audio = _extract_design_audio(response)
+        elif request.mode == TTSMode.CLONE:
+            response = self._post_msgpack(
+                "/v1/tts",
+                body["msgpack"],
+                timeout=TTS_TIMEOUT_SECONDS,
+                model=body["model"],
+            )
+            audio = response.content
         else:
             response = self._post_json(
                 "/v1/tts",
@@ -288,6 +316,21 @@ class FishAudioProvider:
             timeout=timeout,
         )
 
+    def _post_msgpack(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        timeout: float,
+        model: str,
+    ) -> FishHTTPResponse:
+        return self._post_with_errors(
+            path,
+            msgpack_body=body,
+            headers={"model": model},
+            timeout=timeout,
+        )
+
     def _post_multipart(
         self,
         path: str,
@@ -305,6 +348,7 @@ class FishAudioProvider:
         timeout: float,
         headers: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
+        msgpack_body: dict[str, Any] | None = None,
         files: dict[str, tuple[str, bytes, str]] | None = None,
         fields: dict[str, str] | None = None,
     ) -> FishHTTPResponse:
@@ -314,6 +358,7 @@ class FishAudioProvider:
                     path,
                     headers=headers or {},
                     json_body=json_body,
+                    msgpack_body=msgpack_body,
                     files=files,
                     fields=fields or {},
                     timeout=timeout,
@@ -340,8 +385,12 @@ class FishAudioProvider:
     def _validate_tts_request(self, request: TTSRequest) -> None:
         if request.output_format != "wav":
             raise ProviderError("fish_audio TTS output format must be wav")
-        if request.mode == TTSMode.CLONE:
-            raise UnsupportedCapability("fish_audio provider does not support clone uploads in v1")
+
+    def _validate_clone_request(self, request: TTSRequest) -> None:
+        if request.clone_sample_path is None or request.clone_mime_type is None:
+            raise ProviderError("fish_audio clone mode requires clone sample path and MIME type")
+        if not request.clone_reference_text:
+            raise ProviderError("fish_audio clone mode requires clone_reference_text")
 
     def _resolve_tts_model(self, request: TTSRequest) -> str:
         capability = TTS_MODE_CAPABILITIES[request.mode]
@@ -397,6 +446,7 @@ class FishHTTPClient:
         *,
         headers: Mapping[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
+        msgpack_body: dict[str, Any] | None = None,
         files: dict[str, tuple[str, bytes, str]] | None = None,
         fields: dict[str, str] | None = None,
         timeout: float,
@@ -408,6 +458,9 @@ class FishHTTPClient:
         if json_body is not None:
             data = json.dumps(json_body).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
+        elif msgpack_body is not None:
+            data = msgpack.packb(msgpack_body, use_bin_type=True)
+            request_headers["Content-Type"] = "application/msgpack"
         elif files is not None:
             data, content_type = _encode_multipart(fields or {}, files)
             request_headers["Content-Type"] = content_type
@@ -447,7 +500,7 @@ class _MissingCredentialsClient:
 
 
 def _fish_api_model_id(model: str) -> str:
-    if model == "s1-design":
+    if model in {"s1-design", "s1-clone"}:
         return "s1"
     return model
 
@@ -557,5 +610,6 @@ def _tts_metadata(
         "style_instruction": request.style_instruction,
         "tts_mode": request.mode.value,
         "voice_description": request.voice_description,
+        "clone_reference_text": request.clone_reference_text,
         "voice_id": request.voice_id,
     }

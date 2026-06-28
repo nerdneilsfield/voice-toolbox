@@ -52,6 +52,16 @@ rtk uv run --env-file .env voice-toolbox asr transcribe \
 
 Expected: transcript artifact and printed text.
 
-## Deferred
+## Direct Clone
 
-Fish Audio clone upload is not enabled in v1. Their direct audio clone path needs MessagePack/model workflows; this repo currently exposes clone through the shared `tts.clone` upload contract only.
+```bash
+rtk uv run --env-file .env voice-toolbox tts clone \
+  --provider fish-audio \
+  --model s1-clone \
+  --sample smoke-inputs/clone-sample.wav \
+  --reference-text "Transcript of the sample audio." \
+  --text "Target synthesis text." \
+  --consent
+```
+
+Expected: `/v1/tts` request encoded as `application/msgpack` with Fish `references[].audio` bytes and `references[].text`.

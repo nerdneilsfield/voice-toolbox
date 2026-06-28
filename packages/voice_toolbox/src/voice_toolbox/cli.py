@@ -125,6 +125,13 @@ def design(
 @tts_app.command()
 def clone(
     sample: Annotated[Path | None, typer.Option("--sample", help="Voice sample wav/mp3.")] = None,
+    reference_text: Annotated[
+        str | None,
+        typer.Option(
+            "--reference-text",
+            help="Transcript of clone sample; required by Fish Audio direct clone.",
+        ),
+    ] = None,
     text: OptionalTextOption = None,
     consent: Annotated[
         bool,
@@ -153,6 +160,7 @@ def clone(
             "mode": TTSMode.CLONE,
             "model": model,
             "style_instruction": style,
+            "clone_reference_text": reference_text,
             "clone_sample_path": sample,
             "clone_mime_type": mime_type,
             "clone_raw_byte_size": raw_byte_size,

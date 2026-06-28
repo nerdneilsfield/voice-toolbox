@@ -48,6 +48,12 @@ FISH_AUDIO_MODELS: list[ModelInfo] = [
         capability="tts.design",
         note="uses Fish Audio model header s1",
     ),
+    ModelInfo(
+        id="s1-clone",
+        name="Fish Audio Direct Clone",
+        capability="tts.clone",
+        note="uses Fish Audio model header s1 with MessagePack references",
+    ),
     ModelInfo(id="fish-audio-asr", name="Fish Audio ASR", capability="asr.transcribe"),
 ]
 
@@ -62,6 +68,7 @@ FISH_AUDIO_VOICES: list[VoiceInfo] = [
 DEFAULT_FISH_AUDIO_MODELS = ProviderDefaultModels(
     tts_builtin="s1",
     tts_design="s1-design",
+    tts_clone="s1-clone",
     asr="fish-audio-asr",
 )
 
