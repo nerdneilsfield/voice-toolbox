@@ -648,7 +648,7 @@ def _ensure_model_allowed(provider: Any, model_id: str | None, *, expected_capab
 
 def _log_operation(**metadata: object) -> None:
     sanitized = sanitize_log_metadata(metadata)
-    logger.bind(**sanitized).info("voice operation {}", sanitized)
+    logger.bind(**sanitized).info("voice operation")
 
 
 def _safe_artifact_payload(artifact: Artifact) -> dict[str, Any]:

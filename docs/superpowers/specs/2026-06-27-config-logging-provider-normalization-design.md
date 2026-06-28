@@ -833,6 +833,7 @@ Markdown cleanup is intentionally conservative:
 - Simple table separators are removed. The table-separator detection regex requires at least two columns.
 - HTML stripping uses this tag pattern: `</?[A-Za-z][A-Za-z0-9:-]*(?:\s+[^<>]*)?\s*/?>`. It strips tags with or without attributes, including `<br>` and `<img src="x">`, while preserving inner text around paired tags. Comparisons like `a < b 且 c > d` are not tags and remain unchanged because `<` is not followed by a tag name.
 - MiMo audio tags such as `(唱歌)`, `(叹气)`, `[breath]`, and `[laughter]` are preserved exactly.
+- Punctuation spacing cleanup is best-effort and intentionally biased toward preserving pronunciation-sensitive text. Markdown mode may leave some residual spaces, for example around numeric punctuation or punctuation without following whitespace, rather than risk changing version numbers, CJK phrasing, or code-like fragments.
 - Chinese punctuation and sentence content are not rewritten.
 
 Empty output:

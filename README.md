@@ -109,6 +109,10 @@ More real-provider checks live in [docs/smoke/mimo.md](docs/smoke/mimo.md).
 
 The API and web UI can preview Markdown cleanup before synthesis. In the web UI,
 set the text format to Markdown or Auto, then use `Preview cleaned text`.
+Cleanup is intentionally conservative: it removes common Markdown markup while
+preserving text that could affect TTS pronunciation, so it may leave some
+spacing around punctuation when that is safer than changing numbers, CJK text,
+or code-like fragments.
 
 Programmatic preview:
 

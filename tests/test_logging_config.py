@@ -8,6 +8,7 @@ from loguru import logger
 
 from voice_toolbox.config import ConsoleLoggingConfig, FileLoggingConfig, LoggingConfig
 from voice_toolbox.logging_config import InterceptHandler, configure_logging, sanitize_log_metadata
+from voice_toolbox_api.main import _log_operation
 
 
 def test_configure_logging_is_idempotent(tmp_path: Path) -> None:
@@ -90,6 +91,31 @@ def test_log_file_never_contains_raw_request_values(tmp_path: Path) -> None:
     assert "base64" not in text
     assert "tp-secret" not in text
     assert "request completed" in text
+
+
+def test_operation_log_message_does_not_duplicate_metadata_repr(tmp_path: Path) -> None:
+    path = tmp_path / "voice.log"
+    configure_logging(
+        LoggingConfig(
+            console=ConsoleLoggingConfig(enabled=False),
+            file=FileLoggingConfig(enabled=True, path=str(path), enqueue=False),
+        ),
+        config_path=None,
+    )
+
+    _log_operation(
+        operation="tts",
+        status="completed",
+        provider_id="mimo",
+        model="mimo-v2.5-tts",
+        artifact_id="abc123",
+        elapsed_ms=45,
+    )
+
+    text = path.read_text(encoding="utf-8")
+    assert "voice operation" in text
+    assert "{'operation'" not in text
+    assert "artifact_id" not in text
 
 
 def test_uvicorn_access_log_query_string_is_redacted(tmp_path: Path) -> None:
