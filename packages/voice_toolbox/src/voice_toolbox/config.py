@@ -68,7 +68,7 @@ def load_app_config(
     emit_warnings: bool = True,
 ) -> AppConfig:
     env = env_values if env_values is not None else load_env_values(env_path)
-    config_path = _discover_config_path(path, env)
+    config_path = _discover_config_path(path, env, include_cwd=env_path is None)
     if config_path is None:
         return _fallback_config(env)
     payload = _read_toml(config_path)
@@ -121,7 +121,12 @@ def preview_config_path(path: Path | None) -> str:
     return f"{parent}/{path.name}" if parent else path.name
 
 
-def _discover_config_path(path: Path | str | None, env: dict[str, str]) -> Path | None:
+def _discover_config_path(
+    path: Path | str | None,
+    env: dict[str, str],
+    *,
+    include_cwd: bool = True,
+) -> Path | None:
     if path is not None:
         candidate = Path(path)
         if not candidate.exists():
@@ -133,6 +138,8 @@ def _discover_config_path(path: Path | str | None, env: dict[str, str]) -> Path 
         if not candidate.exists():
             raise ConfigError(f"VOICE_TOOLBOX_CONFIG points to missing file: {candidate}")
         return candidate
+    if not include_cwd:
+        return None
     cwd_candidate = Path.cwd() / "voice_toolbox.toml"
     return cwd_candidate if cwd_candidate.exists() else None
 

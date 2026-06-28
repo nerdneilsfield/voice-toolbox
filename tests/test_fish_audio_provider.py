@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from typing import Any
+import urllib.request
 
 import msgpack
 import pytest
@@ -15,6 +17,7 @@ from voice_toolbox.providers.factory import build_provider_registry
 from voice_toolbox.providers.fish_audio import (
     FISH_DESIGN_REFERENCE_TEXT_MAX_CHARS,
     FishAudioProvider,
+    FishHTTPClient,
     FishHTTPResponse,
 )
 
@@ -110,9 +113,9 @@ def test_fish_voice_design_decodes_first_audio_candidate(tmp_path: Path) -> None
     artifact = provider.synthesize(request)
 
     assert artifact.path.read_bytes() == b"DESIGNED"
-    assert artifact.metadata["model"] == "s1"
+    assert artifact.metadata["model"] == "voice-design-1"
     assert client.calls[0]["path"] == "/v1/voice-design"
-    assert client.calls[0]["headers"] == {"model": "s1"}
+    assert client.calls[0]["headers"] == {"model": "voice-design-1"}
     assert client.calls[0]["json_body"] == {
         "instruction": "warm narrator",
         "reference_text": "short preview",
@@ -181,9 +184,50 @@ def test_fish_clone_tts_posts_msgpack_references_and_writes_audio(tmp_path: Path
         "normalize": True,
         "references": [{"audio": b"RIFF0000WAVEfmt ", "text": "sample transcript"}],
     }
-    packed, content_type = msgpack.packb(payload, use_bin_type=True), "application/msgpack"
-    assert msgpack.unpackb(packed, raw=False)["references"][0]["audio"] == b"RIFF0000WAVEfmt "
-    assert content_type == "application/msgpack"
+
+
+def test_fish_http_client_encodes_msgpack_with_binary_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"WAV"
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeResponse:
+        captured["data"] = request.data
+        captured["headers"] = dict(request.header_items())
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    client = FishHTTPClient(api_key="fish-key", base_url="https://api.fish.audio")
+
+    response = client.post(
+        "/v1/tts",
+        headers={"model": "s1"},
+        msgpack_body={"references": [{"audio": b"\x00\xff", "text": "sample"}]},
+        timeout=300.0,
+    )
+
+    assert response.content == b"WAV"
+    assert captured["url"] == "https://api.fish.audio/v1/tts"
+    assert captured["timeout"] == 300.0
+    assert captured["headers"]["Authorization"] == "Bearer fish-key"
+    assert captured["headers"]["Content-type"] == "application/msgpack"
+    unpacked = msgpack.unpackb(captured["data"], raw=False)
+    assert unpacked["references"][0]["audio"] == b"\x00\xff"
 
 
 def test_fish_clone_requires_reference_text(tmp_path: Path) -> None:
@@ -295,3 +339,44 @@ def test_build_provider_registry_creates_fish_audio_provider(tmp_path: Path) -> 
     provider = registry.get("fish-audio")
     assert isinstance(provider, FishAudioProvider)
     assert provider.id == "fish-audio"
+
+
+def test_fish_rate_limit_retry_reports_rate_limit(tmp_path: Path) -> None:
+    client = FakeFishClient([_response(b"", status_code=429), _response(b"", status_code=429)])
+    provider = FishAudioProvider(
+        config=make_default_fish_audio_provider_config(),
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+        sleep_func=lambda _: None,
+    )
+
+    with pytest.raises(ProviderError, match="rate limit"):
+        provider.synthesize(
+            TTSRequest(
+                provider_id="fish-audio",
+                mode=TTSMode.BUILTIN,
+                text="hello",
+                voice_id="e58b0d7efca34eb38d5c4985e378abcb",
+            )
+        )
+
+
+def test_fish_payment_required_has_billing_message(tmp_path: Path) -> None:
+    client = FakeFishClient(_response(b"", status_code=402))
+    provider = FishAudioProvider(
+        config=make_default_fish_audio_provider_config(),
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+    )
+
+    with pytest.raises(ProviderError, match="payment|required|credits"):
+        provider.synthesize(
+            TTSRequest(
+                provider_id="fish-audio",
+                mode=TTSMode.BUILTIN,
+                text="hello",
+                voice_id="e58b0d7efca34eb38d5c4985e378abcb",
+            )
+        )

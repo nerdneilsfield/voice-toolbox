@@ -3,11 +3,22 @@ from __future__ import annotations
 from pathlib import Path
 
 from voice_toolbox.config import load_app_config, load_env_values
+from voice_toolbox.defaults import DEFAULT_MIMO_BASE_URL
 from voice_toolbox.models import ProviderConfig
 
 
 def load_settings(env_path: Path | str | None = None) -> ProviderConfig:
     """Legacy single-provider compatibility wrapper; prefer load_app_config()."""
+
+    if env_path is not None:
+        env = load_env_values(env_path)
+        return ProviderConfig(
+            provider_id="mimo",
+            base_url=env.get("MIMO_BASE_URL") or DEFAULT_MIMO_BASE_URL,
+            api_key_env="MIMO_API_KEY",
+            api_host=env.get("VOICE_TOOLBOX_API_HOST") or env.get("API_HOST") or "127.0.0.1",
+            api_port=int(env.get("VOICE_TOOLBOX_API_PORT") or env.get("API_PORT") or "8000"),
+        )
 
     app_config = load_app_config(env_path=env_path)
     provider = app_config.providers[0]

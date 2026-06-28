@@ -38,13 +38,12 @@ from voice_toolbox.models import (
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES
 
-FISH_AUDIO_MODELS = make_default_fish_audio_provider_config().models
-FISH_AUDIO_VOICES = make_default_fish_audio_provider_config().voices
 GENERATION_TIMEOUT_SECONDS = 300.0
 TTS_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
 ASR_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
 RATE_LIMIT_BACKOFF_SECONDS = 0.25
 FISH_DESIGN_REFERENCE_TEXT_MAX_CHARS = 150
+FISH_VOICE_DESIGN_MODEL = "voice-design-1"
 
 
 @dataclass(frozen=True)
@@ -162,7 +161,7 @@ class FishAudioProvider:
                 if len(request.text) > FISH_DESIGN_REFERENCE_TEXT_MAX_CHARS:
                     raise ProviderError("fish_audio voice design reference_text exceeds 150 chars")
                 body["reference_text"] = request.text
-            return {"model": _fish_api_model_id(model), "json": body}
+            return {"model": FISH_VOICE_DESIGN_MODEL, "json": body}
         if request.mode == TTSMode.CLONE:
             self._validate_clone_request(request)
             if request.clone_sample_path is None:
@@ -370,6 +369,8 @@ class FishAudioProvider:
             if response.status_code == 429 and attempt == 0:
                 self._sleep_func(RATE_LIMIT_BACKOFF_SECONDS)
                 continue
+            if response.status_code == 429:
+                raise ProviderError("fish_audio API rate limit exceeded")
             if response.status_code >= 400:
                 raise ProviderError(_http_error_message(response))
             return response
@@ -592,6 +593,8 @@ def _json_response(response: FishHTTPResponse) -> Any:
 def _http_error_message(response: FishHTTPResponse) -> str:
     if response.status_code in {401, 403}:
         return "fish_audio API authentication failed"
+    if response.status_code == 402:
+        return "fish_audio API payment required or credits exhausted"
     return f"fish_audio API request failed with status {response.status_code}"
 
 

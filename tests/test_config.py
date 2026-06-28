@@ -334,6 +334,29 @@ def test_load_app_config_uses_explicit_env_path(tmp_path: Path) -> None:
     assert config.providers[0].base_url == "https://custom-env.example/v1"
 
 
+def test_explicit_env_path_does_not_read_cwd_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "voice_toolbox.toml").write_text(
+        """
+[[providers]]
+id = "mimo"
+type = "mimo"
+name = "MiMo"
+base_url = "https://toml.example/v1"
+api_key_env = "MIMO_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+    env_path = tmp_path / ".env.custom"
+    env_path.write_text("MIMO_BASE_URL=https://env-path.example/v1\n", encoding="utf-8")
+
+    config = load_app_config(env_path=env_path)
+
+    assert config.providers[0].base_url == "https://env-path.example/v1"
+
+
 def test_partial_model_fallback_does_not_add_absent_capabilities(tmp_path: Path) -> None:
     path = tmp_path / "voice_toolbox.toml"
     path.write_text(
