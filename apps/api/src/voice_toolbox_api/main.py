@@ -750,5 +750,11 @@ def _read_artifact_sidecar(root: Path, artifact_id: str) -> Artifact:
 
 def _artifact_path_for_sidecar(sidecar_path: Path, payload: dict[str, Any]) -> Path:
     mime_type = payload.get("mime_type")
-    suffix = ".txt" if mime_type == "text/plain; charset=utf-8" else ".wav"
+    suffix_by_mime = {
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/wav": ".wav",
+        "text/plain; charset=utf-8": ".txt",
+    }
+    suffix = suffix_by_mime.get(str(mime_type), ".wav")
     return sidecar_path.with_suffix(suffix)

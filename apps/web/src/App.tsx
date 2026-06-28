@@ -898,7 +898,7 @@ function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: Re
           <audio className="audio-player" controls src={artifact.download_url} />
           <div className="result-actions">
             <a className="download-link" href={artifact.download_url}>
-              Download WAV
+              Download {audioLabel(artifact.mime_type)}
             </a>
           </div>
           <p className="artifact-meta">
@@ -1029,6 +1029,16 @@ function formatBytes(bytes: number) {
   }
   const mib = bytes / (1024 * 1024);
   return `${mib.toFixed(2)} MiB`;
+}
+
+function audioLabel(mimeType: string) {
+  if (mimeType === "audio/mpeg" || mimeType === "audio/mp3") {
+    return "MP3";
+  }
+  if (mimeType === "audio/wav") {
+    return "WAV";
+  }
+  return "audio";
 }
 
 export default App;

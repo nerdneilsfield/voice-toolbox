@@ -416,3 +416,33 @@ api_key_env = "FISH_AUDIO_API_KEY"
         "asr.transcribe",
     }
     assert provider.default_voice == "e58b0d7efca34eb38d5c4985e378abcb"
+
+
+def test_openrouter_provider_fills_builtin_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "openrouter"
+type = "openrouter"
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_app_config(path)
+    provider = config.providers[0]
+
+    assert provider.type == "openrouter"
+    assert provider.default_models is not None
+    assert provider.default_models.tts_builtin == "openai/gpt-4o-mini-tts-2025-12-15"
+    assert provider.default_models.tts_design is None
+    assert provider.default_models.tts_clone is None
+    assert provider.default_models.asr == "openai/whisper-1"
+    assert {model.capability for model in provider.models} == {
+        "tts.builtin",
+        "asr.transcribe",
+    }
+    assert provider.default_voice == "alloy"

@@ -57,7 +57,7 @@ class ConfiguredProvider(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1)
-    type: Literal["mimo", "fish_audio"]
+    type: Literal["mimo", "fish_audio", "openrouter"]
     name: str = Field(min_length=1)
     base_url: str = Field(min_length=1)
     api_key_env: str = Field(min_length=1)

@@ -70,10 +70,14 @@ class ArtifactStore:
         provider_id: str,
         operation: str,
         audio: bytes,
+        mime_type: str = "audio/wav",
+        suffix: str = ".wav",
         metadata: dict[str, Any] | None = None,
     ) -> AudioArtifact:
         self._validate_operation_id(operation_id)
-        path = self._artifact_dir() / f"{operation_id}.wav"
+        if not suffix.startswith(".") or "/" in suffix:
+            raise ValueError("audio suffix must be a file extension")
+        path = self._artifact_dir() / f"{operation_id}{suffix}"
         self._ensure_sidecar_available(path)
         with path.open("xb") as audio_file:
             audio_file.write(audio)
@@ -83,7 +87,7 @@ class ArtifactStore:
             provider_id=provider_id,
             operation=operation,
             path=path,
-            mime_type="audio/wav",
+            mime_type=mime_type,
             metadata=redact_metadata(metadata or {}),
         )
         self._write_sidecar(artifact)

@@ -22,10 +22,13 @@ from voice_toolbox.defaults import (
     DEFAULT_FISH_AUDIO_MODELS,
     DEFAULT_MIMO_BASE_URL,
     DEFAULT_MIMO_MODELS,
+    DEFAULT_OPENROUTER_MODELS,
     FISH_AUDIO_MODELS,
     FISH_AUDIO_VOICES,
     MIMO_MODELS,
     MIMO_VOICES,
+    OPENROUTER_MODELS,
+    OPENROUTER_VOICES,
 )
 from voice_toolbox.models import ModelInfo
 
@@ -221,6 +224,13 @@ def _fill_provider_defaults(provider: dict[str, Any]) -> dict[str, Any]:
             default_models=DEFAULT_FISH_AUDIO_MODELS,
             models=FISH_AUDIO_MODELS,
             voices=FISH_AUDIO_VOICES,
+        )
+    if provider.get("type") == "openrouter":
+        return _fill_defaults_for_provider(
+            provider,
+            default_models=DEFAULT_OPENROUTER_MODELS,
+            models=OPENROUTER_MODELS,
+            voices=OPENROUTER_VOICES,
         )
     return dict(provider)
 

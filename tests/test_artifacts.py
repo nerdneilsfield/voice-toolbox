@@ -230,6 +230,27 @@ def test_artifact_store_write_audio_duplicate_id_preserves_original(tmp_path) ->
     assert first.path.with_suffix(".json").read_text(encoding="utf-8") == original_sidecar
 
 
+def test_artifact_store_write_audio_supports_mp3(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+
+    artifact = store.write_audio(
+        operation_id="op_mp3",
+        provider_id="openrouter",
+        operation="tts",
+        audio=b"mp3 audio",
+        mime_type="audio/mpeg",
+        suffix=".mp3",
+        metadata={"output_format": "mp3"},
+    )
+
+    assert artifact.path.name == "op_mp3.mp3"
+    assert artifact.path.read_bytes() == b"mp3 audio"
+    assert artifact.mime_type == "audio/mpeg"
+    assert '"mime_type": "audio/mpeg"' in artifact.path.with_suffix(".json").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_artifact_store_rejects_unsafe_operation_id_without_escape_file(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
 

@@ -638,6 +638,33 @@ def test_artifact_metadata_and_download_read_sidecar(tmp_path: Path) -> None:
     assert download.headers["content-type"].startswith("text/plain")
 
 
+def test_artifact_download_infers_mp3_path_from_audio_mpeg_sidecar(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    artifact_dir = tmp_path / "data" / "artifacts" / "20260101"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "op_mp3.mp3").write_bytes(b"MP3")
+    (artifact_dir / "op_mp3.json").write_text(
+        json.dumps(
+            {
+                "id": "op_mp3",
+                "kind": "audio",
+                "provider_id": "openrouter",
+                "operation": "tts",
+                "mime_type": "audio/mpeg",
+                "created_at": "2026-01-01T00:00:00Z",
+                "metadata": {"operation": "tts", "output_format": "mp3"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    download = client.get("/v1/artifacts/op_mp3/download")
+
+    assert download.status_code == 200
+    assert download.content == b"MP3"
+    assert download.headers["content-type"].startswith("audio/mpeg")
+
+
 def test_artifact_download_rejects_sidecar_path_outside_artifact_root(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
     secret = tmp_path / "secret.txt"

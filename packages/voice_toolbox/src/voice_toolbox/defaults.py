@@ -5,6 +5,7 @@ from voice_toolbox.models import ModelInfo, VoiceInfo
 
 DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
 DEFAULT_FISH_AUDIO_BASE_URL = "https://api.fish.audio"
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 MIMO_MODELS: list[ModelInfo] = [
     ModelInfo(id="mimo-v2.5-tts", name="MiMo TTS", capability="tts.builtin"),
@@ -72,6 +73,34 @@ DEFAULT_FISH_AUDIO_MODELS = ProviderDefaultModels(
     asr="fish-audio-asr",
 )
 
+OPENROUTER_MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="openai/gpt-4o-mini-tts-2025-12-15",
+        name="OpenAI GPT-4o Mini TTS",
+        capability="tts.builtin",
+        note="OpenRouter TTS endpoint; response_format mp3",
+    ),
+    ModelInfo(id="openai/whisper-1", name="OpenAI Whisper", capability="asr.transcribe"),
+]
+
+OPENROUTER_VOICES: list[VoiceInfo] = [
+    VoiceInfo(id="alloy", name="Alloy"),
+    VoiceInfo(id="ash", name="Ash"),
+    VoiceInfo(id="ballad", name="Ballad"),
+    VoiceInfo(id="coral", name="Coral"),
+    VoiceInfo(id="echo", name="Echo"),
+    VoiceInfo(id="fable", name="Fable"),
+    VoiceInfo(id="nova", name="Nova"),
+    VoiceInfo(id="onyx", name="Onyx"),
+    VoiceInfo(id="sage", name="Sage"),
+    VoiceInfo(id="shimmer", name="Shimmer"),
+]
+
+DEFAULT_OPENROUTER_MODELS = ProviderDefaultModels(
+    tts_builtin="openai/gpt-4o-mini-tts-2025-12-15",
+    asr="openai/whisper-1",
+)
+
 
 def make_default_mimo_provider_config(
     *,
@@ -110,4 +139,24 @@ def make_default_fish_audio_provider_config(
         default_models=DEFAULT_FISH_AUDIO_MODELS,
         models=[model.model_copy() for model in FISH_AUDIO_MODELS],
         voices=[voice.model_copy() for voice in FISH_AUDIO_VOICES],
+    )
+
+
+def make_default_openrouter_provider_config(
+    *,
+    provider_id: str = "openrouter",
+    name: str = "OpenRouter",
+    base_url: str = DEFAULT_OPENROUTER_BASE_URL,
+    api_key_env: str = "OPENROUTER_API_KEY",
+) -> ConfiguredProvider:
+    return ConfiguredProvider(
+        id=provider_id,
+        type="openrouter",
+        name=name,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        default_voice="alloy",
+        default_models=DEFAULT_OPENROUTER_MODELS,
+        models=[model.model_copy() for model in OPENROUTER_MODELS],
+        voices=[voice.model_copy() for voice in OPENROUTER_VOICES],
     )

@@ -96,3 +96,32 @@ capability = "asr.transcribe"
 # id = "e58b0d7efca34eb38d5c4985e378abcb"
 # name = "Fish Audio default reference"
 # note = "Replace with your own Fish Audio reference_id or model id."
+#
+# OpenRouter example:
+#
+# [[providers]]
+# id = "openrouter"
+# type = "openrouter"
+# name = "OpenRouter"
+# base_url = "https://openrouter.ai/api/v1"
+# api_key_env = "OPENROUTER_API_KEY"
+# default_voice = "alloy"
+#
+# [providers.default_models]
+# tts_builtin = "openai/gpt-4o-mini-tts-2025-12-15"
+# asr = "openai/whisper-1"
+#
+# [[providers.models]]
+# id = "openai/gpt-4o-mini-tts-2025-12-15"
+# name = "OpenAI GPT-4o Mini TTS"
+# capability = "tts.builtin"
+# note = "OpenRouter TTS endpoint; response_format mp3"
+#
+# [[providers.models]]
+# id = "openai/whisper-1"
+# name = "OpenAI Whisper"
+# capability = "asr.transcribe"
+#
+# [[providers.voices]]
+# id = "alloy"
+# name = "Alloy"
