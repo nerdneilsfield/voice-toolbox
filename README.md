@@ -10,8 +10,9 @@ Install Python dependencies with `uv`:
 rtk uv sync --extra dev
 ```
 
-Audio format conversion uses `pydub`; install `ffmpeg` on the host for mp3,
-m4a, flac, ogg, webm, and aac decoding/encoding.
+Audio format conversion uses `pydub`; Python 3.13+ also installs `audioop-lts`
+because the stdlib `audioop` module was removed. Install `ffmpeg` on the host
+for mp3, m4a, flac, ogg, webm, and aac decoding/encoding.
 
 Install frontend dependencies with `bun`:
 
