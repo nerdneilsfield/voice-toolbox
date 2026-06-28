@@ -702,7 +702,24 @@ textarea {
 .result-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
+}
+
+.download-format {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-strong);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.download-format select {
+  min-height: 38px;
+  padding: 6px 30px 6px 10px;
 }
 
 .download-link {

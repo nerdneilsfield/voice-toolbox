@@ -19,6 +19,7 @@ from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.fake import FakeProvider
 from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE, MIMO_VOICES
 from voice_toolbox.providers.registry import ProviderRegistry
+import voice_toolbox_api.main as api_main
 from voice_toolbox_api.main import create_app
 
 WAV_BYTES = b"RIFF\x00\x00\x00\x00WAVEfmt "
@@ -35,6 +36,7 @@ class RecordingMimoProvider(FakeProvider):
         self.asr_requests: list[ASRRequest] = []
         self.asr_uploaded_bytes: list[bytes] = []
         self.clone_sample_paths: list[Path] = []
+        self.clone_sample_bytes: list[bytes] = []
         self.clone_sample_exists_during_call: list[bool] = []
         self.asr_error: ProviderError | None = None
 
@@ -51,6 +53,7 @@ class RecordingMimoProvider(FakeProvider):
         if request.clone_sample_path is not None:
             self.clone_sample_paths.append(request.clone_sample_path)
             self.clone_sample_exists_during_call.append(request.clone_sample_path.exists())
+            self.clone_sample_bytes.append(request.clone_sample_path.read_bytes())
         return super().synthesize(request, artifact_metadata=artifact_metadata)
 
     def transcribe(self, request: ASRRequest):
@@ -369,6 +372,35 @@ def test_asr_empty_model_is_normalized_to_none(tmp_path: Path) -> None:
     assert provider.asr_requests[-1].model is None
 
 
+def test_asr_upload_converts_non_native_audio_before_provider(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client, provider = _client(tmp_path)
+
+    def fake_convert_audio_bytes(contents, *, source_format, target_format):
+        assert contents == b"M4A"
+        assert source_format == "m4a"
+        assert target_format == "wav"
+        return api_main.ConvertedAudio(
+            data=WAV_BYTES,
+            format="wav",
+            mime_type="audio/wav",
+            suffix=".wav",
+        )
+
+    monkeypatch.setattr(api_main, "convert_audio_bytes", fake_convert_audio_bytes)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.m4a", b"M4A", "audio/mp4")},
+    )
+
+    assert response.status_code == 200
+    assert provider.asr_requests[0].mime_type == "audio/wav"
+    assert provider.asr_uploaded_bytes == [WAV_BYTES]
+
+
 def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) -> None:
     client, provider = _client(tmp_path)
 
@@ -490,6 +522,37 @@ def test_clone_endpoint_normalizes_markdown(tmp_path: Path) -> None:
     assert (
         response.json()["artifact"]["metadata"]["normalization_normalizer_id"] == "markdown_basic"
     )
+
+
+def test_clone_upload_converts_non_native_audio_before_provider(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client, provider = _client(tmp_path)
+
+    def fake_convert_audio_bytes(contents, *, source_format, target_format):
+        assert contents == b"FLAC"
+        assert source_format == "flac"
+        assert target_format == "wav"
+        return api_main.ConvertedAudio(
+            data=WAV_BYTES,
+            format="wav",
+            mime_type="audio/wav",
+            suffix=".wav",
+        )
+
+    monkeypatch.setattr(api_main, "convert_audio_bytes", fake_convert_audio_bytes)
+
+    response = client.post(
+        "/v1/tts/clone",
+        data={"text": "hello", "consent_confirmed": "true"},
+        files={"sample": ("sample.flac", b"FLAC", "audio/flac")},
+    )
+
+    assert response.status_code == 200
+    assert provider.tts_requests[-1].clone_mime_type == "audio/wav"
+    assert provider.tts_requests[-1].clone_sample_path is not None
+    assert provider.clone_sample_bytes[-1] == WAV_BYTES
 
 
 def test_design_optimize_preview_empty_text_skips_normalization(tmp_path: Path) -> None:
@@ -689,6 +752,60 @@ def test_artifact_download_infers_mp3_path_from_audio_mpeg_sidecar(tmp_path: Pat
     assert download.status_code == 200
     assert download.content == b"MP3"
     assert download.headers["content-type"].startswith("audio/mpeg")
+
+
+def test_artifact_download_converts_audio_format(monkeypatch, tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    artifact_dir = tmp_path / "data" / "artifacts" / "20260101"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "op_audio.mp3").write_bytes(b"MP3")
+    (artifact_dir / "op_audio.json").write_text(
+        json.dumps(
+            {
+                "id": "op_audio",
+                "kind": "audio",
+                "provider_id": "openrouter",
+                "operation": "tts",
+                "mime_type": "audio/mpeg",
+                "created_at": "2026-01-01T00:00:00Z",
+                "metadata": {"operation": "tts", "output_format": "mp3"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_convert_audio_bytes(contents, *, source_format, target_format):
+        assert contents == b"MP3"
+        assert source_format == "mp3"
+        assert target_format == "wav"
+        return api_main.ConvertedAudio(
+            data=WAV_BYTES,
+            format="wav",
+            mime_type="audio/wav",
+            suffix=".wav",
+        )
+
+    monkeypatch.setattr(api_main, "convert_audio_bytes", fake_convert_audio_bytes)
+
+    download = client.get("/v1/artifacts/op_audio/download?format=wav")
+
+    assert download.status_code == 200
+    assert download.content == WAV_BYTES
+    assert download.headers["content-type"].startswith("audio/wav")
+    assert 'filename="op_audio.wav"' in download.headers["content-disposition"]
+
+
+def test_artifact_download_rejects_transcript_format_conversion(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    created = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.mp3", MP3_BYTES, "audio/mpeg")},
+    ).json()
+
+    response = client.get(f"/v1/artifacts/{created['artifact']['id']}/download?format=mp3")
+
+    assert response.status_code == 422
+    assert "audio" in response.json()["detail"]
 
 
 def test_artifact_download_rejects_sidecar_path_outside_artifact_root(tmp_path: Path) -> None:

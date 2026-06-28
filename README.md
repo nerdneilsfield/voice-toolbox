@@ -10,6 +10,9 @@ Install Python dependencies with `uv`:
 rtk uv sync --extra dev
 ```
 
+Audio format conversion uses `pydub`; install `ffmpeg` on the host for mp3,
+m4a, flac, ogg, webm, and aac decoding/encoding.
+
 Install frontend dependencies with `bun`:
 
 ```bash
@@ -98,6 +101,12 @@ rtk uv run --env-file .env voice-toolbox tts synthesize \
 MiMo and Fish Audio currently accept `wav` output through Voice Toolbox. OpenRouter
 TTS uses its OpenAI-compatible speech endpoint and stores browser-friendly MP3
 artifacts, so use `--format mp3` when targeting the OpenRouter provider.
+
+The API can convert generated audio on download with
+`/v1/artifacts/{id}/download?format=wav|mp3`. ASR and voice clone uploads accept
+common audio containers (`wav`, `mp3`, `m4a`, `flac`, `ogg`, `webm`, `aac`) and
+convert non-native inputs to a provider-compatible format before calling the
+provider.
 
 ASR:
 

@@ -23,6 +23,7 @@ type RequestState = "idle" | "loading" | "success" | "error";
 
 const INLINE_TAGS = ["(唱歌)", "(笑)", "(叹气)", "(停顿)", "[breath]", "[laughter]"];
 const BASE64_LIMIT_BYTES = 10 * 1024 * 1024;
+const AUDIO_ACCEPT = ".wav,.mp3,.flac,.m4a,.ogg,.webm,.aac,audio/*";
 
 function App() {
   const [tab, setTab] = useState<MainTab>("tts");
@@ -460,7 +461,7 @@ function App() {
               Audio file
               <input
                 type="file"
-                accept=".wav,.mp3,audio/wav,audio/mpeg,audio/mp3"
+                accept={AUDIO_ACCEPT}
                 onChange={(event) => setAsrFile(event.target.files?.[0] ?? null)}
               />
             </label>
@@ -793,14 +794,14 @@ function CloneControls({
         <span className="field-title">Clone sample</span>
         <input
           type="file"
-          accept=".wav,.mp3,audio/wav,audio/mpeg,audio/mp3"
+          accept={AUDIO_ACCEPT}
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           required
         />
       </label>
       <p className={overLimit ? "notice error compact" : "notice compact"}>
         Base64 payload limit is 10 MiB.{" "}
-        {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose wav or mp3."}
+        {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose an audio file."}
       </p>
       <section className="field">
         <div className="section-heading">
@@ -885,6 +886,10 @@ function ModelSummary({ models, selectedModel }: { models: ProviderModel[]; sele
 }
 
 function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: RequestState }) {
+  const [downloadFormat, setDownloadFormat] = useState<"source" | "wav" | "mp3">("source");
+  const downloadUrl = artifact ? downloadUrlForFormat(artifact.download_url, downloadFormat) : "";
+  const downloadLabel =
+    downloadFormat === "source" || !artifact ? audioLabel(artifact?.mime_type ?? "") : downloadFormat.toUpperCase();
   return (
     <aside className="result-panel">
       <div className="result-heading">
@@ -897,8 +902,19 @@ function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: Re
         <div className="artifact-block">
           <audio className="audio-player" controls src={artifact.download_url} />
           <div className="result-actions">
-            <a className="download-link" href={artifact.download_url}>
-              Download {audioLabel(artifact.mime_type)}
+            <label className="download-format">
+              <span>Download as</span>
+              <select
+                value={downloadFormat}
+                onChange={(event) => setDownloadFormat(event.target.value as typeof downloadFormat)}
+              >
+                <option value="source">Source</option>
+                <option value="wav">WAV</option>
+                <option value="mp3">MP3</option>
+              </select>
+            </label>
+            <a className="download-link" href={downloadUrl}>
+              Download {downloadLabel}
             </a>
           </div>
           <p className="artifact-meta">
@@ -1046,6 +1062,13 @@ function audioLabel(mimeType: string) {
     return "WAV";
   }
   return "audio";
+}
+
+function downloadUrlForFormat(url: string, format: "source" | "wav" | "mp3") {
+  if (format === "source") {
+    return url;
+  }
+  return `${url}?format=${encodeURIComponent(format)}`;
 }
 
 export default App;

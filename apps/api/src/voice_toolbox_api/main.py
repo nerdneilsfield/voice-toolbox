@@ -9,13 +9,26 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from loguru import logger
 from pydantic import ValidationError
 
+from voice_toolbox.audio_conversion import (
+    AudioConversionError,
+    AudioFormat,
+    ConvertedAudio,
+    DownloadAudioFormat,
+    convert_audio_bytes,
+    format_from_mime,
+    format_from_suffix,
+    mime_for_format,
+    normalize_mime_type,
+    suffix_for_format,
+    validate_mime_suffix_match,
+)
 from voice_toolbox.artifacts import SAFE_OPERATION_ID_PATTERN
 from voice_toolbox.config import (
     AppConfig,
@@ -46,14 +59,10 @@ from voice_toolbox.providers.registry import TTS_MODE_CAPABILITIES, ProviderRegi
 CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
 CORS_METHODS = ["GET", "POST"]
 CORS_HEADERS = ["Accept", "Content-Type"]
-SUPPORTED_UPLOAD_MIME_TYPES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3"}
 MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
 MAX_TEXT_INPUT_LENGTH = 200_000
-MIME_BY_SUFFIX = {
-    ".wav": "audio/wav",
-    ".mp3": "audio/mpeg",
-}
 SAFE_UPLOAD_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
+PROVIDER_NATIVE_UPLOAD_FORMATS = {"wav", "mp3"}
 
 
 def create_app(
@@ -318,17 +327,26 @@ def create_app(
         contents = _read_upload(file)
         mime_type = _normalize_mime_type(file.content_type)
         suffix = _suffix_for_upload(file.filename)
-        _validate_upload_signature(contents, mime_type, suffix)
+        source_format = _validate_upload_signature(contents, mime_type, suffix)
+        provider_audio = _convert_upload_for_provider(
+            contents,
+            source_format=source_format,
+            provider_id=provider_id,
+            operation="asr",
+        )
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir) / _safe_upload_filename(file.filename, suffix)
-            temp_path.write_bytes(contents)
+            temp_path = Path(temp_dir) / _safe_upload_filename(
+                file.filename,
+                provider_audio.suffix,
+            )
+            temp_path.write_bytes(provider_audio.data)
             request = _build_asr_request(
                 provider_id=provider_id,
                 model=model,
                 audio_path=temp_path,
-                mime_type=mime_type,
-                raw_byte_size=len(contents),
-                base64_size=_base64_size(contents),
+                mime_type=provider_audio.mime_type,
+                raw_byte_size=len(provider_audio.data),
+                base64_size=_base64_size(provider_audio.data),
                 language=language,
             )
             provider_registry = _registry_from_request(http_request)
@@ -364,12 +382,19 @@ def create_app(
         artifact = _read_artifact_sidecar(root, artifact_id)
         return _safe_artifact_payload(artifact)
 
-    @app.get("/v1/artifacts/{artifact_id}/download")
-    def artifact_download(artifact_id: str) -> FileResponse:
+    @app.get("/v1/artifacts/{artifact_id}/download", response_model=None)
+    def artifact_download(
+        artifact_id: str,
+        format: Annotated[Literal["source", "wav", "mp3"], Query()] = "source",
+    ) -> Response:
         artifact = _read_artifact_sidecar(root, artifact_id)
         path = artifact.path
         if not path.is_file():
             raise HTTPException(status_code=404, detail="artifact file not found")
+        if format != "source":
+            if artifact.kind.value != "audio":
+                raise HTTPException(status_code=422, detail="format conversion is only for audio")
+            return _converted_audio_response(artifact, target_format=format)
         return FileResponse(path, media_type=artifact.mime_type, filename=path.name)
 
     return app
@@ -569,10 +594,16 @@ def _run_clone_upload(
     contents = _read_upload(sample)
     mime_type = _normalize_mime_type(sample.content_type)
     suffix = _suffix_for_upload(sample.filename)
-    _validate_upload_signature(contents, mime_type, suffix)
+    source_format = _validate_upload_signature(contents, mime_type, suffix)
+    provider_audio = _convert_upload_for_provider(
+        contents,
+        source_format=source_format,
+        provider_id=provider_id,
+        operation="clone",
+    )
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir) / _safe_upload_filename(sample.filename, suffix)
-        temp_path.write_bytes(contents)
+        temp_path = Path(temp_dir) / _safe_upload_filename(sample.filename, provider_audio.suffix)
+        temp_path.write_bytes(provider_audio.data)
         prepared = _prepare_tts_or_422(
             raw_text=text,
             text_format=text_format,
@@ -583,9 +614,9 @@ def _run_clone_upload(
                 "style_instruction": style_instruction,
                 "clone_reference_text": clone_reference_text,
                 "clone_sample_path": temp_path,
-                "clone_mime_type": mime_type,
-                "clone_raw_byte_size": len(contents),
-                "clone_base64_size": _base64_size(contents),
+                "clone_mime_type": provider_audio.mime_type,
+                "clone_raw_byte_size": len(provider_audio.data),
+                "clone_base64_size": _base64_size(provider_audio.data),
                 "consent_confirmed": consent_confirmed,
             },
         )
@@ -685,37 +716,93 @@ def _read_upload(upload: UploadFile) -> bytes:
     return contents
 
 
-def _normalize_mime_type(mime_type: str | None) -> Literal["audio/wav", "audio/mpeg", "audio/mp3"]:
-    base_type = (mime_type or "").split(";", maxsplit=1)[0].strip().lower()
-    if base_type in {"audio/x-wav", "audio/wave"}:
-        normalized = "audio/wav"
-    elif base_type == "audio/mp3":
-        normalized = "audio/mpeg"
-    else:
-        normalized = base_type
-    if normalized not in SUPPORTED_UPLOAD_MIME_TYPES:
-        raise HTTPException(status_code=422, detail="audio MIME type must be wav or mp3")
-    return cast(Literal["audio/wav", "audio/mpeg", "audio/mp3"], normalized)
+def _normalize_mime_type(mime_type: str | None) -> str:
+    try:
+        return normalize_mime_type(mime_type)
+    except AudioConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _suffix_for_upload(filename: str | None) -> str:
     suffix = Path(filename or "").suffix.lower()
-    if suffix not in {".wav", ".mp3"}:
-        raise HTTPException(status_code=422, detail="audio file suffix must be .wav or .mp3")
+    try:
+        format_from_suffix(suffix)
+    except AudioConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return suffix
 
 
-def _validate_upload_signature(contents: bytes, mime_type: str, suffix: str) -> None:
-    expected_mime = MIME_BY_SUFFIX[suffix]
-    if mime_type != expected_mime:
-        raise HTTPException(status_code=422, detail="audio MIME type does not match file suffix")
-    if suffix == ".wav" and not (contents.startswith(b"RIFF") and contents[8:12] == b"WAVE"):
+def _validate_upload_signature(contents: bytes, mime_type: str, suffix: str) -> AudioFormat:
+    try:
+        audio_format = validate_mime_suffix_match(mime_type, suffix)
+    except AudioConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if audio_format == "wav" and not (contents.startswith(b"RIFF") and contents[8:12] == b"WAVE"):
         raise HTTPException(status_code=422, detail="wav upload must start with RIFF/WAVE header")
-    if suffix == ".mp3" and not (
+    if audio_format == "mp3" and not (
         contents.startswith(b"ID3")
         or (len(contents) >= 2 and contents[0] == 0xFF and contents[1] & 0xE0 == 0xE0)
     ):
         raise HTTPException(status_code=422, detail="mp3 upload must start with ID3 or frame sync")
+    return audio_format
+
+
+def _convert_upload_for_provider(
+    contents: bytes,
+    *,
+    source_format: AudioFormat,
+    provider_id: str,
+    operation: Literal["asr", "clone"],
+) -> ConvertedAudio:
+    del provider_id, operation
+    target_format: DownloadAudioFormat = (
+        cast(DownloadAudioFormat, source_format)
+        if source_format in PROVIDER_NATIVE_UPLOAD_FORMATS
+        else "wav"
+    )
+    try:
+        converted = convert_audio_bytes(
+            contents,
+            source_format=source_format,
+            target_format=target_format,
+        )
+    except AudioConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if (
+        len(converted.data) > MAX_UPLOAD_RAW_BYTES
+        or _base64_size(converted.data) > MAX_BASE64_AUDIO_SIZE
+    ):
+        raise HTTPException(status_code=413, detail="converted audio base64 payload exceeds 10 MiB")
+    return converted
+
+
+def _converted_audio_response(
+    artifact: Artifact,
+    *,
+    target_format: DownloadAudioFormat,
+) -> Response:
+    source_format = _audio_format_for_artifact(artifact)
+    try:
+        converted = convert_audio_bytes(
+            artifact.path.read_bytes(),
+            source_format=source_format,
+            target_format=target_format,
+        )
+    except AudioConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    filename = f"{artifact.id}{suffix_for_format(target_format)}"
+    return Response(
+        converted.data,
+        media_type=mime_for_format(target_format),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _audio_format_for_artifact(artifact: Artifact) -> AudioFormat:
+    try:
+        return format_from_mime(artifact.mime_type)
+    except AudioConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _safe_upload_filename(filename: str | None, suffix: str) -> str:
