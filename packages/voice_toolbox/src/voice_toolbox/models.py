@@ -8,6 +8,49 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TTSOutputFormat = Literal["wav", "mp3"]
+ProviderOptionType = Literal[
+    "boolean",
+    "integer",
+    "number",
+    "string",
+    "text",
+    "select",
+    "multiselect",
+]
+ProviderOptionScalar = bool | int | float | str
+ProviderOptionValue = ProviderOptionScalar | list[str] | None
+OPTION_KEY_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+SHARED_PROVIDER_OPTION_KEYS = {
+    "audio_path",
+    "base64_size",
+    "chunk_max_chars",
+    "chunk_overlap_ms",
+    "chunk_seconds",
+    "chunk_silence_ms",
+    "chunking_mode",
+    "clone_base64_size",
+    "clone_mime_type",
+    "clone_raw_byte_size",
+    "clone_reference_text",
+    "clone_sample_path",
+    "consent_confirmed",
+    "language",
+    "mime_type",
+    "model",
+    "optimize_text_preview",
+    "output_format",
+    "provider_id",
+    "provider_options",
+    "raw_byte_size",
+    "style_instruction",
+    "text",
+    "text_file",
+    "text_format",
+    "transcript_speakers",
+    "transcript_timestamps",
+    "voice_description",
+    "voice_id",
+}
 
 
 class TTSMode(StrEnum):
@@ -39,6 +82,119 @@ class ProviderConfig(BaseModel):
     api_port: int = 8000
 
 
+class TranscriptCapabilities(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timestamps: bool = False
+    speakers: bool = False
+    segments: bool = False
+
+
+class ProviderOptionChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str
+    label: str
+    description: str | None = None
+
+
+class _ProviderOptionValidationMixin:
+    key: str
+    capability: str
+    type: ProviderOptionType | None
+    default: ProviderOptionValue
+    choices: list[ProviderOptionChoice] | None
+    min_value: float | None
+    max_value: float | None
+    required: bool | None
+    enabled: bool | None
+
+    @model_validator(mode="after")
+    def validate_option_schema(self):
+        if self.key in SHARED_PROVIDER_OPTION_KEYS:
+            raise ValueError(f"provider option key {self.key!r} collides with shared field")
+        choices = self.choices or []
+        choice_values = {choice.value for choice in choices}
+        option_type = self.type
+        if option_type in {"select", "multiselect"} and not choices:
+            raise ValueError(f"{option_type} provider option requires choices")
+        if self.default is not None:
+            if self.required is True:
+                raise ValueError("required provider option cannot define a default")
+            if option_type == "select" and self.default not in choice_values:
+                raise ValueError("select default must be one of choices")
+            if option_type == "multiselect":
+                if not isinstance(self.default, list) or not all(
+                    isinstance(item, str) for item in self.default
+                ):
+                    raise ValueError("multiselect default must be a list of strings")
+                if any(item not in choice_values for item in self.default):
+                    raise ValueError("multiselect default must be one of choices")
+            if option_type in {"integer", "number"}:
+                if isinstance(self.default, bool) or not isinstance(self.default, int | float):
+                    raise ValueError(f"{option_type} default must be numeric")
+                numeric_default = float(self.default)
+                if self.min_value is not None and numeric_default < self.min_value:
+                    raise ValueError("numeric default is below min_value")
+                if self.max_value is not None and numeric_default > self.max_value:
+                    raise ValueError("numeric default is above max_value")
+        return self
+
+
+class ProviderOptionSpec(_ProviderOptionValidationMixin, BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(pattern=OPTION_KEY_PATTERN)
+    label: str
+    type: ProviderOptionType
+    capability: str
+    description: str | None = None
+    default: ProviderOptionValue = None
+    choices: list[ProviderOptionChoice] = Field(default_factory=list)
+    min_value: float | None = None
+    max_value: float | None = None
+    step: float | None = None
+    placeholder: str | None = None
+    required: bool = False
+    advanced: bool = True
+    provider_specific: bool = True
+    safe_metadata: bool = False
+    enabled: bool = True
+
+
+class ProviderOptionOverride(_ProviderOptionValidationMixin, BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(pattern=OPTION_KEY_PATTERN)
+    capability: str
+    label: str | None = None
+    type: ProviderOptionType | None = None
+    description: str | None = None
+    default: ProviderOptionValue = None
+    choices: list[ProviderOptionChoice] | None = None
+    min_value: float | None = None
+    max_value: float | None = None
+    step: float | None = None
+    placeholder: str | None = None
+    required: bool | None = None
+    advanced: bool | None = None
+    provider_specific: bool | None = None
+    safe_metadata: bool | None = None
+    enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_disabled_override(self) -> ProviderOptionOverride:
+        if self.enabled is False:
+            allowed = {"key", "capability", "enabled"}
+            extras = self.model_fields_set - allowed
+            if extras:
+                raise ValueError(
+                    "enabled=false provider option override may only set key, "
+                    "capability, and enabled"
+                )
+        return self
+
+
 class ModelInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -46,6 +202,23 @@ class ModelInfo(BaseModel):
     name: str
     capability: str | None = None
     note: str | None = None
+    options: list[ProviderOptionSpec | ProviderOptionOverride] = Field(default_factory=list)
+    transcript_capabilities: TranscriptCapabilities | None = None
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def parse_model_options_as_overrides(cls, value: object) -> object:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return value
+        parsed: list[ProviderOptionOverride | ProviderOptionSpec] = []
+        for item in value:
+            if isinstance(item, ProviderOptionOverride | ProviderOptionSpec):
+                parsed.append(item)
+            else:
+                parsed.append(ProviderOptionOverride.model_validate(item))
+        return parsed
 
 
 class VoiceInfo(BaseModel):
@@ -76,6 +249,7 @@ class TTSRequest(BaseModel):
     clone_base64_size: int | None = Field(default=None, ge=0)
     clone_reference_text: str | None = None
     consent_confirmed: bool = False
+    provider_options: dict[str, object] = Field(default_factory=dict)
 
     @field_validator(
         "provider_id",
@@ -132,6 +306,7 @@ class ASRRequest(BaseModel):
     raw_byte_size: int = Field(ge=0)
     base64_size: int = Field(ge=0)
     language: Literal["auto", "zh", "en"] = "auto"
+    provider_options: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("provider_id", "model", mode="after")
     @classmethod
@@ -173,3 +348,12 @@ class OperationResult(BaseModel):
     finished_at: datetime
     artifact_ids: list[str] = Field(default_factory=list)
     error_summary: str | None = None
+
+
+class ProviderAudioResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    audio: bytes
+    mime_type: str
+    suffix: str
+    model: str | None = None

@@ -11,12 +11,15 @@ from pydantic import ValidationError
 
 from voice_toolbox.config_models import (
     APIConfig,
+    ASRChunkingConfig,
+    ChunkingConfig,
     AppConfig,
     ConfiguredProvider,
     ConsoleLoggingConfig,
     FileLoggingConfig,
     LoggingConfig,
     ProviderDefaultModels,
+    TTSChunkingConfig,
 )
 from voice_toolbox.defaults import (
     DEFAULT_FISH_AUDIO_MODELS,
@@ -36,13 +39,16 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "APIConfig",
+    "ASRChunkingConfig",
     "AppConfig",
+    "ChunkingConfig",
     "ConfigError",
     "ConfiguredProvider",
     "ConsoleLoggingConfig",
     "FileLoggingConfig",
     "LoggingConfig",
     "ProviderDefaultModels",
+    "TTSChunkingConfig",
     "load_app_config",
     "load_env_values",
     "mask_api_key_preview",

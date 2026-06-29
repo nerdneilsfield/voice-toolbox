@@ -165,8 +165,14 @@ def create_app(
     @app.get("/v1/providers/{provider_id}/models")
     def models(provider_id: str, http_request: Request) -> dict[str, list[dict[str, Any]]]:
         provider_registry = _registry_from_request(http_request)
+        config = _config_from_request(http_request)
         provider = _get_provider(provider_registry, provider_id)
-        return {"models": [model.model_dump(mode="json") for model in provider.list_models()]}
+        return {
+            "models": _model_summaries(
+                provider.list_models(),
+                _configured_provider_for_id(config, provider_id),
+            )
+        }
 
     @app.post("/v1/normalize/text")
     def normalize_text(request: NormalizationRequest) -> dict[str, Any]:
@@ -500,7 +506,8 @@ def _provider_summary(
             "default_voice": None,
             "default_models": {},
             "capabilities": sorted(provider.capabilities()),
-            "models": [model.model_dump(mode="json") for model in provider.list_models()],
+            "options": [],
+            "models": _model_summaries(provider.list_models(), None),
             "voices": [voice.model_dump(mode="json") for voice in provider.list_voices()],
         }
 
@@ -521,9 +528,35 @@ def _provider_summary(
             else {}
         ),
         "capabilities": sorted(provider.capabilities()),
-        "models": [model.model_dump(mode="json") for model in provider.list_models()],
+        "options": [option.model_dump(mode="json") for option in provider_config.options],
+        "models": _model_summaries(provider.list_models(), provider_config),
         "voices": [voice.model_dump(mode="json") for voice in provider.list_voices()],
     }
+
+
+def _model_summaries(
+    models: list[Any],
+    provider_config: ConfiguredProvider | None,
+) -> list[dict[str, Any]]:
+    configured_by_id = (
+        {model.id: model for model in provider_config.models} if provider_config is not None else {}
+    )
+    summaries: list[dict[str, Any]] = []
+    for model in models:
+        payload = model.model_dump(mode="json")
+        configured = configured_by_id.get(model.id)
+        if configured is not None:
+            payload["options"] = [option.model_dump(mode="json") for option in configured.options]
+            payload["transcript_capabilities"] = (
+                configured.transcript_capabilities.model_dump(mode="json")
+                if configured.transcript_capabilities is not None
+                else None
+            )
+        else:
+            payload.setdefault("options", [])
+            payload.setdefault("transcript_capabilities", None)
+        summaries.append(payload)
+    return summaries
 
 
 def _get_provider(provider_registry: ProviderRegistry, provider_id: str) -> Any:

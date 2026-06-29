@@ -11,6 +11,7 @@ from voice_toolbox.config import (
     preview_config_path,
     replay_config_warnings,
 )
+from voice_toolbox.models import ProviderOptionOverride, ProviderOptionSpec
 
 
 def test_loads_builtin_default_without_toml(
@@ -446,3 +447,157 @@ api_key_env = "OPENROUTER_API_KEY"
         "asr.transcribe",
     }
     assert provider.default_voice == "alloy"
+
+
+def test_chunking_config_parses_and_validates_cross_field_rules(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[chunking.tts]
+mode = "force"
+max_chars = 1000
+max_chunks = 3
+max_text_file_bytes = 4096
+silence_ms = 250
+repeat_leading_audio_tags = false
+
+[chunking.asr]
+mode = "auto"
+target_seconds = 20
+overlap_ms = 900
+max_chunks = 4
+max_upload_mb = 10
+browser_upload = false
+session_ttl_seconds = 120
+dedupe_min_chars = 5
+dedupe_max_chars = 50
+
+[[providers]]
+id = "mimo-lite"
+type = "mimo"
+name = "MiMo Lite"
+base_url = "https://example.test/v1"
+api_key_env = "MIMO_LITE_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_app_config(path)
+
+    assert config.chunking.tts.mode == "force"
+    assert config.chunking.tts.max_chars == 1000
+    assert config.chunking.tts.repeat_leading_audio_tags is False
+    assert config.chunking.asr.browser_upload is False
+    assert config.chunking.asr.dedupe_min_chars == 5
+
+    bad_dedupe = path.with_name("bad-dedupe.toml")
+    bad_dedupe.write_text(
+        """
+[chunking.asr]
+dedupe_min_chars = 80
+dedupe_max_chars = 40
+
+[[providers]]
+id = "mimo-lite"
+type = "mimo"
+name = "MiMo Lite"
+base_url = "https://example.test/v1"
+api_key_env = "MIMO_LITE_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="dedupe_min_chars"):
+        load_app_config(bad_dedupe)
+
+    bad_overlap = path.with_name("bad-overlap.toml")
+    bad_overlap.write_text(
+        """
+[chunking.asr]
+target_seconds = 20
+overlap_ms = 10000
+
+[[providers]]
+id = "mimo-lite"
+type = "mimo"
+name = "MiMo Lite"
+base_url = "https://example.test/v1"
+api_key_env = "MIMO_LITE_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="overlap_ms"):
+        load_app_config(bad_overlap)
+
+
+def test_config_parses_provider_specs_and_model_overrides(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "tenant-mimo"
+type = "mimo"
+name = "Tenant MiMo"
+base_url = "https://example.test/v1"
+api_key_env = "TENANT_MIMO_KEY"
+
+[[providers.options]]
+key = "speed"
+label = "Speed"
+type = "number"
+capability = "tts.builtin"
+default = 1.0
+min_value = 0.5
+max_value = 2.0
+
+[[providers.models]]
+id = "custom-tts"
+name = "Custom TTS"
+capability = "tts.builtin"
+
+[[providers.models.options]]
+key = "speed"
+capability = "tts.builtin"
+max_value = 1.5
+
+[[providers.models]]
+id = "custom-asr"
+name = "Custom ASR"
+capability = "asr.transcribe"
+
+[providers.models.transcript_capabilities]
+timestamps = true
+speakers = false
+segments = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_app_config(path)
+    provider = config.providers[0]
+
+    assert provider.id == "tenant-mimo"
+    assert provider.type == "mimo"
+    assert isinstance(provider.options[0], ProviderOptionSpec)
+    assert isinstance(provider.models[0].options[0], ProviderOptionOverride)
+    assert provider.models[0].options[0].label is None
+    assert provider.models[0].options[0].max_value == 1.5
+    assert provider.models[1].transcript_capabilities is not None
+    assert provider.models[1].transcript_capabilities.timestamps is True
+
+
+def test_config_rejects_invalid_provider_type_even_when_id_matches(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "mimo"
+type = "not_mimo"
+name = "Bad"
+base_url = "https://example.test/v1"
+api_key_env = "BAD_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="mimo|fish_audio|openrouter"):
+        load_app_config(path)

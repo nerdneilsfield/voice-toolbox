@@ -6,7 +6,9 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from voice_toolbox.models import ModelInfo, VoiceInfo
+from voice_toolbox.models import ModelInfo, ProviderOptionSpec, VoiceInfo
+
+ChunkingMode = Literal["off", "auto", "force"]
 
 
 class APIConfig(BaseModel):
@@ -44,6 +46,46 @@ class LoggingConfig(BaseModel):
     file: FileLoggingConfig = Field(default_factory=FileLoggingConfig)
 
 
+class TTSChunkingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: ChunkingMode = "auto"
+    max_chars: int = Field(default=1500, ge=200, le=8000)
+    max_chunks: int = Field(default=40, ge=1, le=200)
+    max_text_file_bytes: int = Field(default=2_000_000, ge=1024, le=20_000_000)
+    silence_ms: int = Field(default=120, ge=0, le=3000)
+    repeat_leading_audio_tags: bool = True
+
+
+class ASRChunkingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: ChunkingMode = "auto"
+    target_seconds: int = Field(default=90, ge=10, le=600)
+    overlap_ms: int = Field(default=1200, ge=0, le=10000)
+    max_chunks: int = Field(default=80, ge=1, le=500)
+    max_upload_mb: int = Field(default=250, ge=1, le=2048)
+    browser_upload: bool = True
+    session_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    dedupe_min_chars: int = Field(default=8, ge=1, le=100)
+    dedupe_max_chars: int = Field(default=200, ge=20, le=2000)
+
+    @model_validator(mode="after")
+    def validate_asr_chunking_bounds(self) -> ASRChunkingConfig:
+        if self.dedupe_min_chars > self.dedupe_max_chars:
+            raise ValueError("dedupe_min_chars must be <= dedupe_max_chars")
+        if self.overlap_ms >= self.target_seconds * 1000 / 2:
+            raise ValueError("overlap_ms must be less than half target_seconds")
+        return self
+
+
+class ChunkingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tts: TTSChunkingConfig = Field(default_factory=TTSChunkingConfig)
+    asr: ASRChunkingConfig = Field(default_factory=ASRChunkingConfig)
+
+
 class ProviderDefaultModels(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -65,6 +107,7 @@ class ConfiguredProvider(BaseModel):
     default_models: ProviderDefaultModels | None = None
     models: list[ModelInfo] = Field(default_factory=list)
     voices: list[VoiceInfo] = Field(default_factory=list)
+    options: list[ProviderOptionSpec] = Field(default_factory=list)
 
     @field_validator("base_url")
     @classmethod
@@ -85,6 +128,7 @@ class AppConfig(BaseModel):
     config_path: Path | None = None
     api: APIConfig = Field(default_factory=APIConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     providers: list[ConfiguredProvider]
 
     @model_validator(mode="after")
@@ -106,6 +150,21 @@ def validate_configured_provider(provider: ConfiguredProvider) -> None:
         raise ValueError(f"provider {provider.id} has duplicate voice ids")
     if provider.default_voice is not None and provider.default_voice not in voice_ids:
         raise ValueError(f"provider {provider.id} default_voice is not configured")
+    provider_option_ids = [(option.capability, option.key) for option in provider.options]
+    if len(provider_option_ids) != len(set(provider_option_ids)):
+        raise ValueError(f"provider {provider.id} has duplicate provider option keys")
+    for model in provider.models:
+        for option in model.options:
+            if model.capability is not None and option.capability != model.capability:
+                raise ValueError(
+                    f"provider {provider.id} model {model.id} option {option.key} has capability "
+                    f"{option.capability}, expected {model.capability}"
+                )
+        option_ids = [(option.capability, option.key) for option in model.options]
+        if len(option_ids) != len(set(option_ids)):
+            raise ValueError(
+                f"provider {provider.id} model {model.id} has duplicate provider option keys"
+            )
     expected = {
         "tts_builtin": "tts.builtin",
         "tts_design": "tts.design",

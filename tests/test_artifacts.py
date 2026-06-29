@@ -134,6 +134,51 @@ def test_redact_metadata_preserves_normalization_metadata_without_raw_text() -> 
     }
 
 
+def test_redact_metadata_preserves_provider_chunking_source_and_transcript_metadata() -> None:
+    metadata = redact_metadata(
+        {
+            "provider_options": {"prompt": "secret"},
+            "provider_option_keys": ["format", "prompt"],
+            "provider_option_safe_values": {"format": "mp3", "speed": 1.1},
+            "source_kind": "file",
+            "uploaded_text_file_name_hash": "abcdef123456",
+            "uploaded_text_file_suffix": ".md",
+            "uploaded_text_file_size_bytes": 42,
+            "source_text_raw_char_count": 40,
+            "source_file_name_hash": "123456abcdef",
+            "source_file_suffix": ".wav",
+            "chunking_enabled": True,
+            "chunking_operation": "tts",
+            "chunking_mode": "auto",
+            "chunking_strategy": "text",
+            "chunking_chunk_count": 2,
+            "chunking_max_chars": 1000,
+            "chunking_silence_ms": 120,
+            "chunking_text_lengths": [900, 200],
+            "chunking_repeated_leading_audio_tags": True,
+            "chunking_target_seconds": 90,
+            "chunking_overlap_ms": 1200,
+            "chunking_audio_durations_ms": [90000, 45000],
+            "chunking_transcript_lengths": [100, 80],
+            "chunking_dedupe_removed_chars": 12,
+            "transcript_has_timestamps": True,
+            "transcript_has_speakers": False,
+            "transcript_segment_count": 3,
+            "transcript_download_formats": ["txt", "srt"],
+        }
+    )
+
+    assert "provider_options" not in metadata
+    assert metadata["provider_option_keys"] == ["format", "prompt"]
+    assert metadata["provider_option_safe_values"] == {"format": "mp3", "speed": 1.1}
+    assert metadata["source_kind"] == "file"
+    assert metadata["uploaded_text_file_name_hash"] == "abcdef123456"
+    assert metadata["chunking_chunk_count"] == 2
+    assert metadata["chunking_text_lengths"] == [900, 200]
+    assert metadata["transcript_has_timestamps"] is True
+    assert metadata["transcript_download_formats"] == ["txt", "srt"]
+
+
 def test_redact_metadata_maps_prompt_fields_to_lengths() -> None:
     metadata = redact_metadata(
         {
