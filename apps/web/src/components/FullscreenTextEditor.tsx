@@ -1,4 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
+import { useI18n } from "../i18n";
 
 type FullscreenTextEditorProps = {
   title: string;
@@ -7,6 +8,7 @@ type FullscreenTextEditorProps = {
 };
 
 export function FullscreenTextEditor({ title, value, onApply }: FullscreenTextEditorProps) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(value);
 
@@ -47,8 +49,8 @@ export function FullscreenTextEditor({ title, value, onApply }: FullscreenTextEd
         className="expand-link"
         type="button"
         onClick={() => setOpen(true)}
-        title="Expand"
-        aria-label="Expand editor"
+        title={t("fullscreen.expand")}
+        aria-label={t("fullscreen.expandAria")}
       >
         ↗
       </button>
@@ -58,7 +60,7 @@ export function FullscreenTextEditor({ title, value, onApply }: FullscreenTextEd
             <header className="fullscreen-editor__header">
               <h2 id="fullscreen-title">{title}</h2>
               <button className="btn btn-secondary" type="button" onClick={() => setOpen(false)}>
-                Cancel
+                {t("fullscreen.cancel")}
               </button>
             </header>
             <textarea
@@ -69,9 +71,9 @@ export function FullscreenTextEditor({ title, value, onApply }: FullscreenTextEd
               autoFocus
             />
             <footer className="fullscreen-editor__footer">
-              <span>{draft.length} chars</span>
+              <span>{t("common.chars", { count: draft.length })}</span>
               <button className="btn btn-primary" type="button" onClick={apply}>
-                Apply
+                {t("fullscreen.apply")}
               </button>
             </footer>
           </section>

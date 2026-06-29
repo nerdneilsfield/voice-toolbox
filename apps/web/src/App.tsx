@@ -1,7 +1,10 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { AdvancedSettings } from "./components/AdvancedSettings";
 import { FullscreenTextEditor } from "./components/FullscreenTextEditor";
+import { LanguageSwitcher } from "./components/LanguageSwitcher";
+import { ThemeToggle } from "./components/ThemeToggle";
 import { useProviderCatalog } from "./hooks/useProviderCatalog";
+import { useI18n } from "./i18n";
 import { selectDefaultVoice, selectModelForCapability } from "./lib/providerSelection";
 import {
   Artifact,
@@ -28,6 +31,7 @@ const BASE64_LIMIT_BYTES = 10 * 1024 * 1024;
 const AUDIO_ACCEPT = ".wav,.mp3,.flac,.m4a,.ogg,.webm,.aac,audio/*";
 
 function App() {
+  const { t } = useI18n();
   const [tab, setTab] = useState<MainTab>("tts");
   const [ttsMode, setTtsMode] = useState<TtsMode>("builtin");
   const {
@@ -94,9 +98,9 @@ function App() {
       })
       .catch((err) => {
         if (!historyMountedRef.current) return;
-        setHistoryError(err instanceof Error ? err.message : "Failed to load history");
+        setHistoryError(err instanceof Error ? err.message : t("errors.failedToLoadHistory"));
       });
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void refreshHistory();
@@ -221,7 +225,7 @@ function App() {
       setCleanedPreview(result.text);
       setPreviewState("success");
     } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : "Text preview failed");
+      setPreviewError(err instanceof Error ? err.message : t("errors.textPreviewFailed"));
       setPreviewState("error");
     }
   }
@@ -255,17 +259,17 @@ function App() {
       setTtsState("success");
       void refreshHistory();
     } catch (err) {
-      setTtsError(err instanceof Error ? err.message : "TTS request failed");
+      setTtsError(err instanceof Error ? err.message : t("errors.ttsRequestFailed"));
       setTtsState("error");
     }
   }
 
   async function submitClone() {
     if (!cloneFile) {
-      throw new Error("Clone sample file is required");
+      throw new Error(t("errors.cloneSampleRequired"));
     }
     if (!cloneConsent) {
-      throw new Error("Consent confirmation is required for voice clone");
+      throw new Error(t("errors.cloneConsentRequired"));
     }
     const body = new FormData();
     body.set("provider_id", selectedProviderId);
@@ -282,7 +286,7 @@ function App() {
   async function submitAsr(event: FormEvent) {
     event.preventDefault();
     if (!asrFile) {
-      setAsrError("ASR audio file is required");
+      setAsrError(t("errors.asrAudioRequired"));
       setAsrState("error");
       return;
     }
@@ -299,13 +303,13 @@ function App() {
       setAsrArtifact(result.artifact);
       const transcriptResponse = await fetch(result.artifact.download_url);
       if (!transcriptResponse.ok) {
-        throw new Error(`Transcript download failed with status ${transcriptResponse.status}`);
+        throw new Error(t("errors.transcriptDownloadFailed", { status: transcriptResponse.status }));
       }
       setTranscript(await transcriptResponse.text());
       setAsrState("success");
       void refreshHistory();
     } catch (err) {
-      setAsrError(err instanceof Error ? err.message : "ASR request failed");
+      setAsrError(err instanceof Error ? err.message : t("errors.asrRequestFailed"));
       setAsrState("error");
     }
   }
@@ -329,13 +333,13 @@ function App() {
       // would throw on the non-JSON response.
       const response = await fetch(artifact.download_url);
       if (!response.ok) {
-        throw new Error(`Transcript download failed with status ${response.status}`);
+        throw new Error(t("errors.transcriptDownloadFailed", { status: response.status }));
       }
       setTranscript(await response.text());
       setAsrState("success");
     } catch (err) {
       setTranscript("");
-      setAsrError(err instanceof Error ? err.message : "Failed to load transcript");
+      setAsrError(err instanceof Error ? err.message : t("errors.failedToLoadTranscript"));
       setAsrState("error");
     }
   }
@@ -347,18 +351,18 @@ function App() {
           <div className="brand-mark">V</div>
           <div>
             <h1 className="brand-title">Voice Toolbox</h1>
-            <p className="brand-subtitle">TTS / ASR provider workbench</p>
+            <p className="brand-subtitle">{t("brand.subtitle")}</p>
           </div>
         </div>
         <div className="provider-strip" aria-live="polite">
           <label>
             <select
               className="select-input"
-              aria-label="Provider"
+              aria-label={t("provider.selectLabel")}
               value={selectedProviderId}
               onChange={(event) => setSelectedProviderId(event.target.value)}
             >
-              {providers.length === 0 ? <option value="">No providers</option> : null}
+              {providers.length === 0 ? <option value="">{t("provider.noProviders")}</option> : null}
               {providers.map((provider) => (
                 <option key={provider.id} value={provider.id}>
                   {provider.name}
@@ -367,6 +371,10 @@ function App() {
             </select>
           </label>
           <KeyStatus provider={selectedProvider} loading={providersLoading} />
+        </div>
+        <div className="topbar-controls">
+          <LanguageSwitcher />
+          <ThemeToggle />
         </div>
       </header>
 
@@ -385,9 +393,7 @@ function App() {
 
         {tab === "tts" ? (
           <form className="canvas" onSubmit={submitTts}>
-            {!activeTtsSupported ? (
-              <div className="notice error compact">Selected provider does not support this TTS mode.</div>
-            ) : null}
+            {!activeTtsSupported ? <div className="notice error compact">{t("tts.unsupportedMode")}</div> : null}
 
             <TextTools
               textFormat={textFormat}
@@ -414,7 +420,7 @@ function App() {
                 />
                 <div className="card">
                   <AdvancedSettings
-                    label="Advanced"
+                    label={t("tts.advanced")}
                     models={providerModels("tts.builtin")}
                     selectedModel={builtinModel}
                     onModelChange={setBuiltinModel}
@@ -435,7 +441,7 @@ function App() {
                 />
                 <div className="card">
                   <AdvancedSettings
-                    label="Advanced"
+                    label={t("tts.advanced")}
                     models={providerModels("tts.design")}
                     selectedModel={designModel}
                     onModelChange={setDesignModel}
@@ -462,7 +468,7 @@ function App() {
                 />
                 <div className="card">
                   <AdvancedSettings
-                    label="Advanced"
+                    label={t("tts.advanced")}
                     models={providerModels("tts.clone")}
                     selectedModel={cloneModel}
                     onModelChange={setCloneModel}
@@ -488,10 +494,10 @@ function App() {
                 {ttsState === "loading" ? (
                   <>
                     <span className="spinner" aria-hidden="true" />
-                    Generating...
+                    {t("tts.generating")}
                   </>
                 ) : (
-                  "Generate voice"
+                  t("tts.generateVoice")
                 )}
               </button>
             </div>
@@ -501,10 +507,10 @@ function App() {
           <form className="canvas" onSubmit={submitAsr}>
             <div className="card">
               <div className="card-header">
-                <span className="card-label">Audio</span>
+                <span className="card-label">{t("asr.audio")}</span>
               </div>
               <label className="field">
-                <span className="field-title">Audio file</span>
+                <span className="field-title">{t("asr.audioFile")}</span>
                 <input
                   type="file"
                   accept={AUDIO_ACCEPT}
@@ -513,17 +519,17 @@ function App() {
                 />
               </label>
               <label className="field">
-                <span className="field-title">Language</span>
+                <span className="field-title">{t("asr.language")}</span>
                 <select value={asrLanguage} onChange={(event) => setAsrLanguage(event.target.value)}>
-                  <option value="auto">auto</option>
-                  <option value="zh">zh</option>
-                  <option value="en">en</option>
+                  <option value="auto">{t("asr.languageOption.auto")}</option>
+                  <option value="zh">{t("asr.languageOption.zh")}</option>
+                  <option value="en">{t("asr.languageOption.en")}</option>
                 </select>
               </label>
             </div>
             <div className="card">
               <AdvancedSettings
-                label="Advanced"
+                label={t("tts.advanced")}
                 models={providerModels("asr.transcribe")}
                 selectedModel={asrModel}
                 onModelChange={setAsrModel}
@@ -535,9 +541,7 @@ function App() {
                 <span className="format-pill">{asrLanguage.toUpperCase()}</span>
               </div>
               {asrError ? <div className="notice error compact">{asrError}</div> : null}
-              {!asrSupported ? (
-                <div className="notice error compact">Selected provider does not support ASR.</div>
-              ) : null}
+              {!asrSupported ? <div className="notice error compact">{t("asr.unsupported")}</div> : null}
               <button
                 className="primary-action"
                 type="submit"
@@ -546,10 +550,10 @@ function App() {
                 {asrState === "loading" ? (
                   <>
                     <span className="spinner" aria-hidden="true" />
-                    Transcribing...
+                    {t("asr.transcribing")}
                   </>
                 ) : (
-                  "Transcribe"
+                  t("asr.transcribe")
                 )}
               </button>
             </div>
@@ -561,7 +565,7 @@ function App() {
 
         <aside className="output-panel">
           <div role="status" aria-live="polite" className="sr-only">
-            {history.length} history items
+            {t("common.historyItems", { count: history.length })}
           </div>
           {historyError ? <div className="notice error compact">{historyError}</div> : null}
           <HistoryPanel artifacts={history} providers={providers} onSelect={selectHistoryItem} />
@@ -571,10 +575,10 @@ function App() {
   );
 }
 
-const TTS_MODES: { id: TtsMode; label: string; icon: string }[] = [
-  { id: "builtin", label: "Built-in", icon: "🔊" },
-  { id: "design", label: "Design", icon: "✨" },
-  { id: "clone", label: "Clone", icon: "🎙️" },
+const TTS_MODES: { id: TtsMode; icon: string }[] = [
+  { id: "builtin", icon: "🔊" },
+  { id: "design", icon: "✨" },
+  { id: "clone", icon: "🎙️" },
 ];
 
 function Sidebar({
@@ -590,10 +594,11 @@ function Sidebar({
   onTabChange: (tab: MainTab) => void;
   supportsCapability: (capability: string) => boolean;
 }) {
+  const { t } = useI18n();
   return (
-    <nav className="sidebar" aria-label="Toolbox sections">
+    <nav className="sidebar" aria-label={t("nav.ariaSections")}>
       <div>
-        <div className="sidebar-section">TTS</div>
+        <div className="sidebar-section">{t("nav.ttsSection")}</div>
         {TTS_MODES.map((mode) => {
           const supported = supportsCapability(ttsCapability(mode.id));
           return (
@@ -610,13 +615,13 @@ function Sidebar({
               }}
             >
               <span>{mode.icon}</span>
-              <span>{mode.label}</span>
+              <span>{t(`tts.mode.${mode.id}` as const)}</span>
             </button>
           );
         })}
       </div>
       <div>
-        <div className="sidebar-section">ASR</div>
+        <div className="sidebar-section">{t("nav.asrSection")}</div>
         <button
           className={["nav-item", tab === "asr" ? "active" : ""].filter(Boolean).join(" ")}
           type="button"
@@ -624,7 +629,7 @@ function Sidebar({
           onClick={() => onTabChange("asr")}
         >
           <span>📝</span>
-          <span>Transcribe</span>
+          <span>{t("nav.transcribe")}</span>
         </button>
       </div>
     </nav>
@@ -632,28 +637,36 @@ function Sidebar({
 }
 
 function KeyStatus({ provider, loading }: { provider: Provider | null; loading: boolean }) {
+  const { t } = useI18n();
   if (loading) {
-    return <span className="status-badge">Key status loading</span>;
+    return <span className="status-badge">{t("keyStatus.loading")}</span>;
   }
   if (!provider || provider.has_api_key === undefined) {
-    return <span className="status-badge">Key status unavailable</span>;
+    return <span className="status-badge">{t("keyStatus.unavailable")}</span>;
   }
   if (provider.has_api_key) {
-    return <span className="status-badge ok">API key configured</span>;
+    return <span className="status-badge ok">{t("keyStatus.configured")}</span>;
   }
-  return <span className="status-badge warn">API key missing</span>;
+  return <span className="status-badge warn">{t("keyStatus.missing")}</span>;
 }
 
 function ProviderDetails({ provider }: { provider: Provider | null }) {
+  const { t } = useI18n();
   if (!provider) {
     return null;
   }
   return (
-    <section className="provider-details" aria-label="Provider status">
-      <StatusItem label="Env" value={provider.api_key_env ?? "n/a"} />
-      <StatusItem label="Key" value={provider.api_key_preview ?? (provider.has_api_key ? "configured" : "missing")} />
-      <StatusItem label="Base URL" value={provider.base_url ?? "n/a"} />
-      <StatusItem label="Config" value={provider.config_path_preview ?? "n/a"} />
+    <section className="provider-details" aria-label={t("providerDetails.statusAria")}>
+      <StatusItem label={t("providerDetails.env")} value={provider.api_key_env ?? t("providerDetails.na")} />
+      <StatusItem
+        label={t("providerDetails.key")}
+        value={
+          provider.api_key_preview ??
+          (provider.has_api_key ? t("providerDetails.configured") : t("providerDetails.missing"))
+        }
+      />
+      <StatusItem label={t("providerDetails.baseUrl")} value={provider.base_url ?? t("providerDetails.na")} />
+      <StatusItem label={t("providerDetails.config")} value={provider.config_path_preview ?? t("providerDetails.na")} />
     </section>
   );
 }
@@ -682,22 +695,23 @@ function TextTools({
   cleanedPreview: string;
   onPreview: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <section className="card">
       <div className="card-header">
-        <span className="card-label">Text format</span>
+        <span className="card-label">{t("tts.textFormat")}</span>
         <div className="card-actions">
           <select
             className="select-input"
             value={textFormat}
             onChange={(event) => setTextFormat(event.target.value as TextFormat)}
           >
-            <option value="plain">plain</option>
-            <option value="markdown">markdown</option>
-            <option value="auto">auto</option>
+            <option value="plain">{t("tts.textFormatOption.plain")}</option>
+            <option value="markdown">{t("tts.textFormatOption.markdown")}</option>
+            <option value="auto">{t("tts.textFormatOption.auto")}</option>
           </select>
           <button className="btn btn-primary" type="button" onClick={onPreview} disabled={previewState === "loading"}>
-            {previewState === "loading" ? "Previewing..." : "Preview"}
+            {previewState === "loading" ? t("tts.previewing") : t("tts.preview")}
           </button>
         </div>
       </div>
@@ -730,6 +744,7 @@ function BuiltinControls({
   insertTag: (tag: string) => void;
   textAreaRef: MutableRefObject<HTMLTextAreaElement | null>;
 }) {
+  const { t } = useI18n();
   const [customTag, setCustomTag] = useState("");
   const selectedVoice = voices.find((voice) => voice.id === voiceId);
   function submitCustomTag() {
@@ -746,7 +761,7 @@ function BuiltinControls({
     <>
       <div className="card">
         <div className="card-header">
-          <span className="card-label">Voice</span>
+          <span className="card-label">{t("tts.voice")}</span>
         </div>
         <label className="field">
           <select
@@ -763,17 +778,23 @@ function BuiltinControls({
           {selectedVoice?.note ? <span className="field-hint">{selectedVoice.note}</span> : null}
         </label>
         <label className="field">
-          <span className="field-title">Style prompt</span>
+          <span className="field-title">{t("tts.stylePrompt")}</span>
           <input
             value={style}
             onChange={(event) => setStyle(event.target.value)}
-            placeholder="Delivery, emotion, pacing, persona"
+            placeholder={t("tts.stylePlaceholder")}
           />
         </label>
       </div>
 
       <div className="card">
-        <CardHeader label="Script" count={text.length} title="Script" value={text} onApply={setText} />
+        <CardHeader
+          label={t("tts.script")}
+          count={text.length}
+          title={t("tts.script")}
+          value={text}
+          onApply={setText}
+        />
         <textarea
           className="script-input"
           ref={textAreaRef}
@@ -798,7 +819,7 @@ function BuiltinControls({
                 submitCustomTag();
               }
             }}
-            placeholder="+ tag"
+            placeholder={t("tts.customTagPlaceholder")}
           />
         </div>
       </div>
@@ -821,13 +842,14 @@ function DesignControls({
   optimizePreview: boolean;
   setOptimizePreview: (value: boolean) => void;
 }) {
+  const { t } = useI18n();
   return (
     <>
       <div className="card">
         <CardHeader
-          label="Voice description"
+          label={t("tts.voiceDescription")}
           count={description.length}
-          title="Voice description"
+          title={t("tts.voiceDescription")}
           value={description}
           onApply={setDescription}
           extra={
@@ -837,7 +859,7 @@ function DesignControls({
                 checked={optimizePreview}
                 onChange={(event) => setOptimizePreview(event.target.checked)}
               />
-              <span>Auto-optimize</span>
+              <span>{t("tts.autoOptimize")}</span>
             </label>
           }
         />
@@ -846,16 +868,16 @@ function DesignControls({
           value={description}
           rows={6}
           onChange={(event) => setDescription(event.target.value)}
-          placeholder="Describe timbre, age, accent, energy, pace, and scene"
+          placeholder={t("tts.voiceDescriptionPlaceholder")}
           required
         />
       </div>
       <div className="card">
         <CardHeader
-          label="Script"
+          label={t("tts.script")}
           count={text.length}
           optional={optimizePreview}
-          title="Script"
+          title={t("tts.script")}
           value={text}
           onApply={setText}
         />
@@ -864,7 +886,7 @@ function DesignControls({
           value={text}
           rows={5}
           onChange={(event) => setText(event.target.value)}
-          placeholder="Preview text for generated voice"
+          placeholder={t("tts.previewTextPlaceholder")}
           required={!optimizePreview}
         />
       </div>
@@ -899,14 +921,15 @@ function CloneControls({
   base64Size: number;
   overLimit: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <>
       <div className="card">
         <div className="card-header">
-          <span className="card-label">Reference audio</span>
+          <span className="card-label">{t("tts.referenceAudio")}</span>
         </div>
         <label className="field">
-          <span className="field-title">Clone sample</span>
+          <span className="field-title">{t("tts.cloneSample")}</span>
           <input
             type="file"
             accept={AUDIO_ACCEPT}
@@ -915,16 +938,16 @@ function CloneControls({
           />
         </label>
         <p className={overLimit ? "notice error compact" : "notice compact"}>
-          Base64 payload limit is 10 MiB.{" "}
-          {file ? `Estimated base64 size: ${formatBytes(base64Size)}.` : "Choose an audio file."}
+          {t("clone.base64Limit")}{" "}
+          {file ? t("clone.estimatedSize", { size: formatBytes(base64Size) }) : t("clone.chooseFile")}
         </p>
       </div>
       <div className="card">
         <CardHeader
-          label="Sample transcript"
+          label={t("tts.sampleTranscript")}
           count={referenceText.length}
           optional
-          title="Sample transcript"
+          title={t("tts.sampleTranscript")}
           value={referenceText}
           onApply={setReferenceText}
         />
@@ -933,11 +956,17 @@ function CloneControls({
           value={referenceText}
           rows={3}
           onChange={(event) => setReferenceText(event.target.value)}
-          placeholder="Transcript of the uploaded sample. Required by Fish Audio direct clone."
+          placeholder={t("tts.sampleTranscriptPlaceholder")}
         />
       </div>
       <div className="card">
-        <CardHeader label="Script" count={text.length} title="Script" value={text} onApply={setText} />
+        <CardHeader
+          label={t("tts.script")}
+          count={text.length}
+          title={t("tts.script")}
+          value={text}
+          onApply={setText}
+        />
         <textarea
           className="script-input"
           value={text}
@@ -948,20 +977,20 @@ function CloneControls({
       </div>
       <div className="card">
         <div className="card-header">
-          <span className="card-label">Style & consent</span>
+          <span className="card-label">{t("tts.styleConsent")}</span>
         </div>
         <div className="two-col-fields">
           <label className="field">
-            <span className="field-title">Style prompt</span>
+            <span className="field-title">{t("tts.stylePrompt")}</span>
             <input
               value={style}
               onChange={(event) => setStyle(event.target.value)}
-              placeholder="Natural-language delivery, emotion, pacing, or persona"
+              placeholder={t("tts.stylePromptPlaceholder")}
             />
           </label>
           <label className="checkbox-line consent-checkbox">
             <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />
-            <span>I have permission to use this voice sample for synthesis.</span>
+            <span>{t("tts.consentText")}</span>
           </label>
         </div>
       </div>
@@ -986,15 +1015,16 @@ function CardHeader({
   onApply: (value: string) => void;
   extra?: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div className="card-header">
       <span className="card-label">{label}</span>
       <div className="card-actions">
         {extra}
         {optional ? (
-          <span className="char-count">Optional</span>
+          <span className="char-count">{t("tts.optional")}</span>
         ) : count !== undefined ? (
-          <span className="char-count">{count} chars</span>
+          <span className="char-count">{t("common.chars", { count })}</span>
         ) : null}
         <FullscreenTextEditor title={title} value={value} onApply={onApply} />
       </div>
@@ -1003,24 +1033,28 @@ function CardHeader({
 }
 
 function ModelSummary({ models, selectedModel }: { models: ProviderModel[]; selectedModel: string | null }) {
+  const { t } = useI18n();
   const model = models.find((item) => item.id === selectedModel);
   if (!model) {
     return (
       <span className="meta-label">
-        <span>Model</span>
-        <span>None</span>
+        <span>{t("tts.model")}</span>
+        <span>{t("tts.modelNone")}</span>
       </span>
     );
   }
   return (
     <span className="meta-label">
-      <span>Model</span>
+      <span>{t("tts.model")}</span>
       <span>{model.name || model.id}</span>
     </span>
   );
 }
 
+const FORMATS: DownloadFormat[] = ["source", "wav", "mp3", "pcm", "m4a", "aac", "flac", "ogg", "webm"];
+
 function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: RequestState }) {
+  const { t } = useI18n();
   const [downloadFormat, setDownloadFormat] = useState<DownloadFormat>("source");
   const downloadUrl = artifact ? downloadUrlForFormat(artifact.download_url, downloadFormat) : "";
   const downloadLabel =
@@ -1028,34 +1062,30 @@ function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: Re
   return (
     <aside className="result-panel">
       <div className="result-heading">
-        <span className="card-label">Output</span>
+        <span className="card-label">{t("result.output")}</span>
         {artifact ? <span className="format-pill">{audioLabel(artifact.mime_type)}</span> : null}
       </div>
-      {state === "idle" ? <EmptyState title="Ready for audio" /> : null}
+      {state === "idle" ? <EmptyState title={t("result.readyForAudio")} /> : null}
       {state === "loading" ? <LoadingState lines={3} /> : null}
       {artifact ? (
         <div className="artifact-block">
           <audio className="audio-player" controls src={artifact.download_url} />
           <div className="result-actions">
             <label className="download-format">
-              <span>Download as</span>
+              <span>{t("result.downloadAs")}</span>
               <select
                 value={downloadFormat}
                 onChange={(event) => setDownloadFormat(event.target.value as DownloadFormat)}
               >
-                <option value="source">Source</option>
-                <option value="wav">WAV</option>
-                <option value="mp3">MP3</option>
-                <option value="pcm">PCM</option>
-                <option value="m4a">M4A</option>
-                <option value="aac">AAC</option>
-                <option value="flac">FLAC</option>
-                <option value="ogg">OGG</option>
-                <option value="webm">WEBM</option>
+                {FORMATS.map((format) => (
+                  <option key={format} value={format}>
+                    {format === "source" ? t("formats.source") : t(`formats.${format}` as const)}
+                  </option>
+                ))}
               </select>
             </label>
             <a className="download-link" href={downloadUrl}>
-              Download {downloadLabel}
+              {t("result.download", { label: downloadLabel })}
             </a>
           </div>
           <p className="artifact-meta">
@@ -1076,6 +1106,7 @@ function TranscriptPanel({
   transcript: string;
   state: RequestState;
 }) {
+  const { t } = useI18n();
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   async function copyTranscript() {
     if (!transcript.trim()) {
@@ -1094,21 +1125,25 @@ function TranscriptPanel({
   return (
     <aside className="result-panel">
       <div className="result-heading">
-        <span className="card-label">Transcript</span>
-        {artifact ? <span className="format-pill">{transcript.length} chars</span> : null}
+        <span className="card-label">{t("result.transcript")}</span>
+        {artifact ? <span className="format-pill">{t("common.chars", { count: transcript.length })}</span> : null}
       </div>
-      {state === "idle" ? <EmptyState title="Ready for transcript" /> : null}
+      {state === "idle" ? <EmptyState title={t("result.readyForTranscript")} /> : null}
       {state === "loading" ? <LoadingState lines={4} /> : null}
       {artifact ? (
         <div className="artifact-block">
           <div className="transcript-toolbar">
             <button type="button" onClick={copyTranscript} disabled={!transcript.trim()}>
-              {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
+              {copyState === "copied"
+                ? t("result.copied")
+                : copyState === "failed"
+                  ? t("result.copyFailed")
+                  : t("result.copy")}
             </button>
           </div>
-          <pre className="transcript-viewer">{transcript || "Transcript artifact returned."}</pre>
+          <pre className="transcript-viewer">{transcript || t("result.emptyTranscript")}</pre>
           <a className="download-link" href={artifact.download_url}>
-            Download transcript
+            {t("result.downloadTranscript")}
           </a>
         </div>
       ) : null}
@@ -1132,8 +1167,9 @@ function EmptyState({ title }: { title: string }) {
 }
 
 function LoadingState({ lines }: { lines: number }) {
+  const { t } = useI18n();
   return (
-    <div className="loading-state" aria-label="Loading">
+    <div className="loading-state" aria-label={t("common.loading")}>
       {Array.from({ length: lines }).map((_, index) => (
         <span key={index} />
       ))}
@@ -1239,6 +1275,7 @@ function HistoryPanel({
   providers: Provider[];
   onSelect: (artifact: Artifact) => void;
 }) {
+  const { t } = useI18n();
   const providerNames = useMemo(() => {
     const map = new Map<string, string>();
     providers.forEach((provider) => map.set(provider.id, provider.name));
@@ -1248,20 +1285,21 @@ function HistoryPanel({
   return (
     <div className="card">
       <div className="card-header">
-        <span className="card-label">History</span>
-        <span className="char-count">last {artifacts.length}</span>
+        <span className="card-label">{t("history.title")}</span>
+        <span className="char-count">{t("history.last", { count: artifacts.length })}</span>
       </div>
       <div className="history-list">
         {artifacts.length === 0 ? (
-          <p className="char-count">No history yet.</p>
+          <p className="char-count">{t("history.empty")}</p>
         ) : (
           artifacts.map((artifact) => {
             const model = typeof artifact.metadata?.model === "string" ? artifact.metadata.model : null;
+            const title = formatHistoryTitle(artifact, t);
             return (
               <div key={artifact.id} className="history-item">
                 <div className="history-meta">
                   <div className="history-title-row">
-                    <span className="history-title">{formatHistoryTitle(artifact)}</span>
+                    <span className="history-title">{title}</span>
                   </div>
                   <span className="history-subtitle">
                     {providerNames.get(artifact.provider_id) ?? artifact.provider_id}
@@ -1273,10 +1311,10 @@ function HistoryPanel({
                 <button
                   className="btn btn-ghost"
                   type="button"
-                  aria-label={`Load ${formatHistoryTitle(artifact)}`}
+                  aria-label={t("history.loadAria", { title })}
                   onClick={() => onSelect(artifact)}
                 >
-                  {artifact.kind === "audio" ? "Play" : "View"}
+                  {artifact.kind === "audio" ? t("history.play") : t("history.view")}
                 </button>
               </div>
             );
@@ -1287,16 +1325,21 @@ function HistoryPanel({
   );
 }
 
-function formatHistoryTitle(artifact: Artifact): string {
+function formatHistoryTitle(
+  artifact: Artifact,
+  t: (key: import("./i18n").TranslationKey, values?: Record<string, string | number>) => string,
+): string {
   const op = artifact.operation ?? "unknown";
   const kind = artifact.kind ?? "unknown";
   if (op === "tts" && kind === "audio") {
     const mode = String(artifact.metadata?.tts_mode ?? "unknown");
-    const label = mode === "builtin" ? "Built-in" : mode === "design" ? "Design" : mode === "clone" ? "Clone" : mode;
-    return `TTS • ${label}`;
+    if (mode === "builtin") return t("history.titleTtsBuiltin");
+    if (mode === "design") return t("history.titleTtsDesign");
+    if (mode === "clone") return t("history.titleTtsClone");
+    return t("history.titleUnknown", { op, kind });
   }
-  if (op === "asr" || kind === "transcript") return "ASR • Transcribe";
-  return `${op} • ${kind}`;
+  if (op === "asr" || kind === "transcript") return t("history.titleAsr");
+  return t("history.titleUnknown", { op, kind });
 }
 
 function formatHistoryTime(iso: string): string {
