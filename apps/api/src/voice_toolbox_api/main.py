@@ -42,7 +42,6 @@ from voice_toolbox.chunking.models import TextSource
 from voice_toolbox.chunking.options import (
     build_provider_option_metadata,
     merge_provider_options,
-    normalize_provider_options,
     parse_provider_options_json,
     validate_provider_options,
 )
@@ -51,6 +50,7 @@ from voice_toolbox.chunking.sessions import (
     ASRChunkSessionError,
     ASRChunkSessionMetadata,
     ASRChunkSessionStore,
+    provider_options_fingerprint,
 )
 from voice_toolbox.chunking.text import (
     TextSourceError,
@@ -677,7 +677,7 @@ def create_app(
         store = _asr_chunk_session_store(http_request)
         try:
             session = store.load(session_id)
-            _reject_mismatched_session_finish(
+            finish_provider_options = _reject_mismatched_session_finish(
                 session,
                 provider_id=provider_id,
                 model=(model or "").strip() or None if model is not None else None,
@@ -686,6 +686,7 @@ def create_app(
                 transcript_speakers=transcript_speakers,
                 provider_options=provider_options,
             )
+            session = session.model_copy(update={"provider_options": finish_provider_options})
             chunks = store.finish_chunks(session_id)
         except ASRChunkSessionError as exc:
             raise _chunk_session_http_error(exc) from exc
@@ -1455,7 +1456,7 @@ def _reject_mismatched_session_finish(
     transcript_timestamps: bool | None,
     transcript_speakers: bool | None,
     provider_options: str | None,
-) -> None:
+) -> dict[str, object]:
     if provider_id is not None and provider_id != session.provider_id:
         raise ASRChunkSessionError("provider_id does not match chunk session", status_code=409)
     if model is not None and model != session.model:
@@ -1473,18 +1474,24 @@ def _reject_mismatched_session_finish(
             status_code=409,
         )
     if provider_options is None:
-        return
+        if session.provider_options:
+            return session.provider_options
+        if session.provider_options_hash:
+            raise ASRChunkSessionError(
+                "provider_options are required to finish this chunk session",
+                status_code=409,
+            )
+        return {}
     try:
         submitted = parse_provider_options_json(provider_options)
     except ValueError as exc:
         raise ASRChunkSessionError(str(exc)) from exc
-    if normalize_provider_options(submitted) != normalize_provider_options(
-        session.provider_options
-    ):
+    if provider_options_fingerprint(submitted) != session.provider_options_hash:
         raise ASRChunkSessionError(
             "provider_options do not match chunk session",
             status_code=409,
         )
+    return submitted
 
 
 def _run_asr_chunk_session_finish(

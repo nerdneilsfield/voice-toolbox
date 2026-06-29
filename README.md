@@ -134,10 +134,11 @@ artifacts, so use `--format mp3` when targeting the OpenRouter provider.
 The API can convert generated audio on download with
 `/v1/artifacts/{id}/download?format=wav|mp3|pcm|m4a|aac|flac|ogg|webm`.
 Converted download names use `YYYYMMDD-HHMMSS-<hash>.<ext>` instead of exposing
-internal operation IDs. Raw `pcm` is 24 kHz mono int16 little-endian. ASR and
-voice clone uploads accept common audio inputs (`wav`, `mp3`, `pcm`, `m4a`,
+internal operation IDs. Raw `pcm` is 24 kHz mono int16 little-endian. API and web
+ASR/voice-clone uploads accept common audio inputs (`wav`, `mp3`, `pcm`, `m4a`,
 `flac`, `ogg`, `webm`, `aac`) and convert non-native inputs to a
-provider-compatible format before calling the provider. `audio/L16` uploads must
+provider-compatible format before calling the provider. CLI ASR and voice-clone
+commands currently accept `wav` and `mp3` paths only. `audio/L16` uploads must
 include `rate=24000; channels=1`; other L16 rates are rejected instead of being
 silently reinterpreted.
 
@@ -171,7 +172,7 @@ Fish Audio provider support:
 
 OpenRouter provider support:
 
-- `tts.builtin`: calls `POST /api/v1/audio/speech`; OpenRouter supports `mp3` or `pcm`, so artifacts are stored as `.mp3`. Style prompts are sent as OpenAI provider instructions.
+- `tts.builtin`: calls `POST /api/v1/audio/speech`; Voice Toolbox v1 requests `mp3` from OpenRouter and stores `.mp3` artifacts. OpenRouter `pcm` output is not exposed yet. Style prompts are sent as OpenAI provider instructions.
 - `asr.transcribe`: calls `POST /api/v1/audio/transcriptions` with base64 `input_audio`.
 - `tts.design` and `tts.clone`: not enabled because OpenRouter docs only define the standard TTS endpoint.
 
@@ -225,8 +226,9 @@ Browser chunk session rules:
 - Missing or expired sessions return 404.
 - Duplicate chunk indexes return 409.
 - Finish-time provider/model/language/transcript option mismatches return 409.
-- `provider_options` values are kept in memory for the active session only; raw
-  values are not written to session metadata JSON.
+- Raw `provider_options` values are not written to session metadata JSON. A
+  fingerprint is stored instead; clients resend `provider_options` on finish so a
+  process restart can still complete the session without exposing raw values.
 
 ## Transcript Downloads
 

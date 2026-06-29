@@ -4,6 +4,7 @@ export const en = {
 
   "provider.selectLabel": "Provider",
   "provider.noProviders": "No providers",
+  "providerOptions.summary": "Provider options",
 
   "keyStatus.loading": "Key status loading",
   "keyStatus.unavailable": "Key status unavailable",
@@ -73,7 +74,7 @@ export const en = {
   "asr.chunkOverlapMs": "Overlap ms",
   "asr.uploadStrategy": "Upload strategy",
   "asr.uploadStrategy.auto": "auto",
-  "asr.uploadStrategy.browser": "browser chunks",
+  "asr.uploadStrategy.browser": "prefer browser chunks",
   "asr.uploadStrategy.backend": "backend upload",
   "asr.timestamps": "Timestamps",
   "asr.speakers": "Speakers",
@@ -168,6 +169,7 @@ export const zh: Record<keyof typeof en, string> = {
 
   "provider.selectLabel": "提供方",
   "provider.noProviders": "无提供方",
+  "providerOptions.summary": "提供方选项",
 
   "keyStatus.loading": "密钥状态加载中",
   "keyStatus.unavailable": "密钥状态不可用",
@@ -237,7 +239,7 @@ export const zh: Record<keyof typeof en, string> = {
   "asr.chunkOverlapMs": "重叠毫秒",
   "asr.uploadStrategy": "上传策略",
   "asr.uploadStrategy.auto": "自动",
-  "asr.uploadStrategy.browser": "浏览器分片",
+  "asr.uploadStrategy.browser": "优先浏览器分片",
   "asr.uploadStrategy.backend": "后端上传",
   "asr.timestamps": "时间戳",
   "asr.speakers": "说话人",

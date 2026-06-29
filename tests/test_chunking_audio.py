@@ -257,8 +257,14 @@ def test_asr_chunk_session_store_validates_uploads_and_privacy(tmp_path: Path) -
     assert session.source_file_suffix == ".wav"
     assert "private" not in store.metadata_path(session.session_id).read_text(encoding="utf-8")
     assert "speech.wav" not in store.metadata_path(session.session_id).read_text(encoding="utf-8")
-    assert "secret" not in store.metadata_path(session.session_id).read_text(encoding="utf-8")
+    metadata_json = store.metadata_path(session.session_id).read_text(encoding="utf-8")
+    assert "secret" not in metadata_json
+    assert "provider_options_hash" in metadata_json
     assert store.load(session.session_id).provider_options == {"hint": "secret"}
+    reloaded_store = ASRChunkSessionStore(tmp_path, ttl_seconds=3600, max_upload_mb=1)
+    reloaded = reloaded_store.load(session.session_id)
+    assert reloaded.provider_options == {}
+    assert reloaded.provider_options_hash == session.provider_options_hash
 
     with pytest.raises(ASRChunkSessionError, match="chunk_index"):
         store.write_chunk(

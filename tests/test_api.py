@@ -904,8 +904,16 @@ def test_asr_chunk_session_finish_mismatch_coverage_and_success(tmp_path: Path) 
     assert mismatch.status_code == 409
     assert provider.asr_requests == []
 
+    client.app.state.asr_chunk_sessions._provider_options_by_session.clear()
+    missing_options_after_restart = client.post(f"/v1/asr/chunk-sessions/{session_id}/finish")
+    assert missing_options_after_restart.status_code == 409
+    assert "provider_options" in missing_options_after_restart.text
+
     provider.asr_payloads = [TranscriptPayload(text="hello "), TranscriptPayload(text="world")]
-    finished = client.post(f"/v1/asr/chunk-sessions/{session_id}/finish")
+    finished = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/finish",
+        data={"provider_options": json.dumps({"hint": "secret"})},
+    )
     assert finished.status_code == 200, finished.text
     repeated = client.post(f"/v1/asr/chunk-sessions/{session_id}/finish")
     assert repeated.status_code == 404

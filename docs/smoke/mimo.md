@@ -325,7 +325,7 @@ Record:
 
 ## Disabled Future Check: TTS MP3 Output
 
-Do not run as a release gate for v1. This is expected to fail today because CLI validation accepts only `wav`.
+Do not run as a release gate for v1. This is expected to fail today because the MiMo provider currently enforces `wav` output.
 
 Enable this check only when MiMo `mp3` TTS output is confirmed and implementation support lands.
 

@@ -28,6 +28,20 @@ describe("browser audio chunk helpers", () => {
       "Browser chunking currently requires WAV input.",
     );
   });
+
+  it("throws for non-PCM WAV input so callers can fallback to backend upload", async () => {
+    const wav = makeWavFile("float.wav", {
+      sampleRate: 1000,
+      channels: 1,
+      bitsPerSample: 32,
+      frames: 100,
+      audioFormat: 3,
+    });
+
+    await expect(sliceWavFile(wav, { targetSeconds: 30, overlapMs: 1000 })).rejects.toThrow(
+      "Browser chunking currently supports PCM WAV input only.",
+    );
+  });
 });
 
 function makeWavFile(
@@ -37,11 +51,13 @@ function makeWavFile(
     channels,
     bitsPerSample,
     frames,
+    audioFormat = 1,
   }: {
     sampleRate: number;
     channels: number;
     bitsPerSample: number;
     frames: number;
+    audioFormat?: number;
   },
 ) {
   const bytesPerSample = bitsPerSample / 8;
@@ -55,7 +71,7 @@ function makeWavFile(
   writeAscii(view, 8, "WAVE");
   writeAscii(view, 12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
+  view.setUint16(20, audioFormat, true);
   view.setUint16(22, channels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, byteRate, true);

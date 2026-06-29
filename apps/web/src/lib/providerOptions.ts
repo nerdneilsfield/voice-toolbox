@@ -82,7 +82,15 @@ export function validateOptionValues(values: ProviderOptionValues, specs: Provid
     ) {
       errors.push(`${key} must be one of the configured choices`);
     }
-    if ((spec.type === "integer" || spec.type === "number") && typeof value === "number") {
+    if (spec.type === "integer" || spec.type === "number") {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        errors.push(`${key} must be a finite number`);
+        continue;
+      }
+      if (spec.type === "integer" && !Number.isInteger(value)) {
+        errors.push(`${key} must be an integer`);
+        continue;
+      }
       if (spec.min_value !== null && spec.min_value !== undefined && value < spec.min_value) {
         errors.push(`${key} is below minimum`);
       }

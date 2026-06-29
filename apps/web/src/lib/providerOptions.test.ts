@@ -96,4 +96,11 @@ describe("provider option helpers", () => {
     ]);
     expect(validateOptionValues({ tags: ["bad"] }, specs)).toEqual(["tags must be one of the configured choices"]);
   });
+
+  it("rejects non-finite numeric values before JSON submit", () => {
+    const specs = optionsForCapability(provider, provider.models[0], "tts.builtin");
+
+    expect(validateOptionValues({ speed: Number.NaN }, specs)).toEqual(["speed must be a finite number"]);
+    expect(validateOptionValues({ speed: Number.POSITIVE_INFINITY }, specs)).toEqual(["speed must be a finite number"]);
+  });
 });

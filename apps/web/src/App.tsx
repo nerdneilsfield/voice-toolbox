@@ -105,6 +105,7 @@ function App() {
   const [transcript, setTranscript] = useState("");
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const asrCancelRequestedRef = useRef(false);
+  const asrAbortControllerRef = useRef<AbortController | null>(null);
   const [modelProviderId, setModelProviderId] = useState("");
   const [voiceProviderId, setVoiceProviderId] = useState("");
   const [history, setHistory] = useState<Artifact[]>([]);
@@ -309,7 +310,8 @@ function App() {
     setPreviewState("loading");
     setCleanedPreview("");
     try {
-      const result = await normalizeText({ content: activeScriptText(), input_format: textFormat });
+      const content = ttsTextFile ? await ttsTextFile.text() : activeScriptText();
+      const result = await normalizeText({ content, input_format: textFormat });
       setCleanedPreview(result.text);
       setPreviewState("success");
     } catch (err) {
@@ -412,6 +414,8 @@ function App() {
   async function submitAsrWithChunking(file: File, providerOptions: Record<string, unknown>) {
     if (shouldUseBrowserAsrChunks(file, asrChunkingMode, asrUploadStrategy)) {
       let sessionId: string | null = null;
+      const abortController = new AbortController();
+      asrAbortControllerRef.current = abortController;
       try {
         setAsrProgress(t("asr.chunkPreparing"));
         const { chunks, sourceDurationMs } = await sliceWavFile(file, {
@@ -429,6 +433,7 @@ function App() {
           transcriptTimestamps: asrTranscriptTimestamps,
           transcriptSpeakers: asrTranscriptSpeakers,
           providerOptions,
+          signal: abortController.signal,
         });
         sessionId = session.session_id;
         setAsrChunkSessionId(sessionId);
@@ -443,6 +448,7 @@ function App() {
             chunkIndex: index,
             offsetMs: chunk.offsetMs,
             durationMs: chunk.durationMs,
+            signal: abortController.signal,
           });
         }
         throwIfAsrCanceled();
@@ -452,10 +458,10 @@ function App() {
           providerId: selectedProviderId,
           model: asrModel,
           language: asrLanguage,
-          sourceDurationMs,
           transcriptTimestamps: asrTranscriptTimestamps,
           transcriptSpeakers: asrTranscriptSpeakers,
           providerOptions,
+          signal: abortController.signal,
         });
       } catch (err) {
         if (sessionId) {
@@ -463,7 +469,7 @@ function App() {
         }
         setAsrChunkSessionId(null);
         if (asrCancelRequestedRef.current) {
-          throw err;
+          throw new Error(t("asr.chunkUploadCanceled"), { cause: err });
         }
         setAsrProgress(
           t("asr.browserChunkFallback", {
@@ -472,6 +478,9 @@ function App() {
         );
         return transcribe(buildAsrBackendForm(file, providerOptions));
       } finally {
+        if (asrAbortControllerRef.current === abortController) {
+          asrAbortControllerRef.current = null;
+        }
         setAsrChunkSessionId(null);
       }
     }
@@ -512,6 +521,7 @@ function App() {
 
   async function cancelAsrChunks() {
     asrCancelRequestedRef.current = true;
+    asrAbortControllerRef.current?.abort();
     setAsrProgress(t("asr.chunkCanceling"));
     if (asrChunkSessionId) {
       await safeDeleteAsrSession(asrChunkSessionId);
@@ -676,6 +686,7 @@ function App() {
                       specs={builtinOptionSpecs}
                       values={activeTtsOptions}
                       onChange={(values) => updateOptionValues("tts.builtin", values)}
+                      summaryLabel={t("providerOptions.summary")}
                     />
                   </AdvancedSettings>
                 </div>
@@ -703,6 +714,7 @@ function App() {
                       specs={designOptionSpecs}
                       values={activeTtsOptions}
                       onChange={(values) => updateOptionValues("tts.design", values)}
+                      summaryLabel={t("providerOptions.summary")}
                     />
                   </AdvancedSettings>
                 </div>
@@ -736,6 +748,7 @@ function App() {
                       specs={cloneOptionSpecs}
                       values={cloneOptionValues()}
                       onChange={(values) => updateOptionValues("tts.clone", values)}
+                      summaryLabel={t("providerOptions.summary")}
                     />
                   </AdvancedSettings>
                 </div>
@@ -748,7 +761,6 @@ function App() {
                   models={selectedProvider?.models ?? []}
                   selectedModel={activeTtsModel(ttsMode, builtinModel, designModel, cloneModel)}
                 />
-                <span className="format-pill">{expectedTtsOutputLabel(selectedProvider)}</span>
               </div>
               {ttsError ? <div className="notice error compact">{ttsError}</div> : null}
               <button
@@ -848,6 +860,7 @@ function App() {
                   specs={asrOptionSpecs}
                   values={asrOptions}
                   onChange={(values) => updateOptionValues("asr.transcribe", values)}
+                  summaryLabel={t("providerOptions.summary")}
                 />
               </AdvancedSettings>
             </div>
@@ -1527,12 +1540,27 @@ function TranscriptPanel({
   const [downloadFormat, setDownloadFormat] = useState<TranscriptDownloadFormat>("txt");
   const [downloadTimestamps, setDownloadTimestamps] = useState(false);
   const [downloadSpeakers, setDownloadSpeakers] = useState(false);
+  const hasTimestamps = metadataBoolean(artifact?.metadata, "transcript_has_timestamps");
+  const hasSpeakers = metadataBoolean(artifact?.metadata, "transcript_has_speakers");
+  const effectiveDownloadFormat =
+    !hasTimestamps && (downloadFormat === "srt" || downloadFormat === "vtt") ? "txt" : downloadFormat;
   const transcriptUrl = artifact
-    ? transcriptDownloadUrl(artifact.id, downloadFormat, {
-        timestamps: downloadTimestamps,
-        speakers: downloadSpeakers,
+    ? transcriptDownloadUrl(artifact.id, effectiveDownloadFormat, {
+        timestamps: downloadTimestamps && hasTimestamps,
+        speakers: downloadSpeakers && hasSpeakers,
       })
     : "";
+  useEffect(() => {
+    if (!hasTimestamps && (downloadFormat === "srt" || downloadFormat === "vtt")) {
+      setDownloadFormat("txt");
+    }
+    if (!hasTimestamps) {
+      setDownloadTimestamps(false);
+    }
+    if (!hasSpeakers) {
+      setDownloadSpeakers(false);
+    }
+  }, [downloadFormat, hasSpeakers, hasTimestamps]);
   async function copyTranscript() {
     if (!transcript.trim()) {
       return;
@@ -1568,33 +1596,37 @@ function TranscriptPanel({
             <label className="download-format">
               <span>{t("result.downloadAs")}</span>
               <select
-                value={downloadFormat}
+                value={effectiveDownloadFormat}
                 onChange={(event) => setDownloadFormat(event.target.value as TranscriptDownloadFormat)}
               >
                 <option value="txt">{t("transcriptFormat.txt")}</option>
-                <option value="srt">{t("transcriptFormat.srt")}</option>
-                <option value="vtt">{t("transcriptFormat.vtt")}</option>
+                {hasTimestamps ? <option value="srt">{t("transcriptFormat.srt")}</option> : null}
+                {hasTimestamps ? <option value="vtt">{t("transcriptFormat.vtt")}</option> : null}
                 <option value="json">{t("transcriptFormat.json")}</option>
               </select>
             </label>
             {downloadFormat === "txt" ? (
               <>
-                <label className="checkbox-line compact-line">
-                  <input
-                    type="checkbox"
-                    checked={downloadTimestamps}
-                    onChange={(event) => setDownloadTimestamps(event.target.checked)}
-                  />
-                  <span>{t("asr.timestamps")}</span>
-                </label>
-                <label className="checkbox-line compact-line">
-                  <input
-                    type="checkbox"
-                    checked={downloadSpeakers}
-                    onChange={(event) => setDownloadSpeakers(event.target.checked)}
-                  />
-                  <span>{t("asr.speakers")}</span>
-                </label>
+                {hasTimestamps ? (
+                  <label className="checkbox-line compact-line">
+                    <input
+                      type="checkbox"
+                      checked={downloadTimestamps}
+                      onChange={(event) => setDownloadTimestamps(event.target.checked)}
+                    />
+                    <span>{t("asr.timestamps")}</span>
+                  </label>
+                ) : null}
+                {hasSpeakers ? (
+                  <label className="checkbox-line compact-line">
+                    <input
+                      type="checkbox"
+                      checked={downloadSpeakers}
+                      onChange={(event) => setDownloadSpeakers(event.target.checked)}
+                    />
+                    <span>{t("asr.speakers")}</span>
+                  </label>
+                ) : null}
               </>
             ) : null}
           </div>
@@ -1700,10 +1732,6 @@ function formatBytes(bytes: number) {
   return `${mib.toFixed(2)} MiB`;
 }
 
-function expectedTtsOutputLabel(provider: Provider | null | undefined) {
-  return provider?.type === "openrouter" || provider?.id === "openrouter" ? "MP3" : "WAV";
-}
-
 function audioLabel(mimeType: string) {
   if (mimeType === "audio/mpeg" || mimeType === "audio/mp3") {
     return "MP3";
@@ -1730,6 +1758,10 @@ function audioLabel(mimeType: string) {
     return "WEBM";
   }
   return "audio";
+}
+
+function metadataBoolean(metadata: Record<string, unknown> | null | undefined, key: string) {
+  return metadata?.[key] === true;
 }
 
 function downloadUrlForFormat(url: string, format: DownloadFormat) {

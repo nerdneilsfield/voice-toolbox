@@ -8,9 +8,10 @@ type ProviderOptionsPanelProps = {
   values: ProviderOptionValues;
   onChange(values: ProviderOptionValues): void;
   disabled?: boolean;
+  summaryLabel?: string;
 };
 
-export function ProviderOptionsPanel({ specs, values, onChange, disabled }: ProviderOptionsPanelProps) {
+export function ProviderOptionsPanel({ specs, values, onChange, disabled, summaryLabel }: ProviderOptionsPanelProps) {
   if (specs.length === 0) {
     return null;
   }
@@ -29,7 +30,7 @@ export function ProviderOptionsPanel({ specs, values, onChange, disabled }: Prov
       ))}
       {advanced.length > 0 ? (
         <details className="provider-option-details">
-          <summary>Provider options</summary>
+          <summary>{summaryLabel ?? "Provider options"}</summary>
           <div className="provider-option-grid">
             {advanced.map((spec) => (
               <ProviderOptionField

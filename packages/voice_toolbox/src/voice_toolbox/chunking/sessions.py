@@ -6,12 +6,14 @@ import secrets
 import shutil
 from datetime import UTC, datetime, timedelta
 from hashlib import sha1
+from hashlib import sha256
 from pathlib import Path, PureWindowsPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from voice_toolbox.audio_conversion import AudioConversionError, format_from_suffix
+from voice_toolbox.chunking.options import normalize_provider_options
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,96}$")
 
@@ -55,6 +57,7 @@ class ASRChunkSessionMetadata(BaseModel):
     transcript_timestamps: bool = False
     transcript_speakers: bool = False
     provider_options: dict[str, object] = Field(default_factory=dict)
+    provider_options_hash: str | None = None
     option_metadata: dict[str, object] = Field(default_factory=dict)
     uploaded_bytes: int = Field(default=0, ge=0)
     max_upload_bytes: int = Field(gt=0)
@@ -123,6 +126,7 @@ class ASRChunkSessionStore:
             transcript_timestamps=transcript_timestamps,
             transcript_speakers=transcript_speakers,
             provider_options={},
+            provider_options_hash=provider_options_fingerprint(provider_options),
             option_metadata=dict(option_metadata),
             max_upload_bytes=self.max_upload_bytes,
         )
@@ -303,6 +307,17 @@ class ASRChunkSessionStore:
 
 def generate_session_id() -> str:
     return secrets.token_urlsafe(32)
+
+
+def provider_options_fingerprint(provider_options: dict[str, object]) -> str | None:
+    if not provider_options:
+        return None
+    encoded = json.dumps(
+        normalize_provider_options(provider_options),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 def _source_file_privacy_fields(filename: str | None) -> tuple[str | None, str]:

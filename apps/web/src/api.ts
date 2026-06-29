@@ -153,6 +153,7 @@ export type ASRChunkSessionCreate = {
   transcriptTimestamps?: boolean;
   transcriptSpeakers?: boolean;
   providerOptions?: Record<string, unknown>;
+  signal?: AbortSignal;
 };
 
 export type ASRChunkSession = {
@@ -170,6 +171,7 @@ export type ASRChunkUpload = {
   chunkIndex: number;
   offsetMs: number;
   durationMs: number;
+  signal?: AbortSignal;
 };
 
 export type ASRChunkUploadResponse = {
@@ -183,10 +185,10 @@ export type ASRChunkFinish = {
   providerId?: string | null;
   model?: string | null;
   language?: string | null;
-  sourceDurationMs: number;
   transcriptTimestamps?: boolean;
   transcriptSpeakers?: boolean;
   providerOptions?: Record<string, unknown>;
+  signal?: AbortSignal;
 };
 
 export async function getProviders(): Promise<Provider[]> {
@@ -255,7 +257,7 @@ export function createAsrChunkSession(form: ASRChunkSessionCreate): Promise<ASRC
   appendOptional(body, "model", form.model);
   appendOptional(body, "source_file_name", form.sourceFileName);
   appendProviderOptions(body, form.providerOptions);
-  return requestForm("/v1/asr/chunk-sessions", body);
+  return requestForm("/v1/asr/chunk-sessions", body, form.signal);
 }
 
 export function uploadAsrChunk(form: ASRChunkUpload): Promise<ASRChunkUploadResponse> {
@@ -264,12 +266,11 @@ export function uploadAsrChunk(form: ASRChunkUpload): Promise<ASRChunkUploadResp
   body.set("chunk_index", String(form.chunkIndex));
   body.set("offset_ms", String(form.offsetMs));
   body.set("duration_ms", String(form.durationMs));
-  return requestForm(`/v1/asr/chunk-sessions/${encodeURIComponent(form.sessionId)}/chunks`, body);
+  return requestForm(`/v1/asr/chunk-sessions/${encodeURIComponent(form.sessionId)}/chunks`, body, form.signal);
 }
 
 export function finishAsrChunkSession(form: ASRChunkFinish): Promise<OperationResponse> {
   const body = new FormData();
-  body.set("source_duration_ms", String(form.sourceDurationMs));
   appendOptional(body, "provider_id", form.providerId);
   appendOptional(body, "model", form.model);
   appendOptional(body, "language", form.language);
@@ -280,12 +281,13 @@ export function finishAsrChunkSession(form: ASRChunkFinish): Promise<OperationRe
     body.set("transcript_speakers", String(form.transcriptSpeakers));
   }
   appendProviderOptions(body, form.providerOptions);
-  return requestForm(`/v1/asr/chunk-sessions/${encodeURIComponent(form.sessionId)}/finish`, body);
+  return requestForm(`/v1/asr/chunk-sessions/${encodeURIComponent(form.sessionId)}/finish`, body, form.signal);
 }
 
-export async function deleteAsrChunkSession(sessionId: string): Promise<void> {
+export async function deleteAsrChunkSession(sessionId: string, signal?: AbortSignal): Promise<void> {
   await requestJson<{ deleted: boolean }>(`/v1/asr/chunk-sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
+    signal,
   });
 }
 
@@ -325,10 +327,11 @@ async function requestJsonWithBody<TResponse, TBody extends Record<string, unkno
   return parseResponse<TResponse>(response);
 }
 
-async function requestForm<T>(url: string, body: FormData): Promise<T> {
+async function requestForm<T>(url: string, body: FormData, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
     body,
+    signal,
   });
   return parseResponse<T>(response);
 }

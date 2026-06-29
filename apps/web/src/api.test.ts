@@ -119,7 +119,6 @@ describe("api client", () => {
       providerId: "mimo",
       model: "mimo-v2.5-asr",
       language: "auto",
-      sourceDurationMs: 125000,
       transcriptTimestamps: true,
       providerOptions: { domain: "medical" },
     });
@@ -127,7 +126,7 @@ describe("api client", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/v1/asr/chunk-sessions/session-1/finish");
     const body = init?.body as FormData;
-    expect(body.get("source_duration_ms")).toBe("125000");
+    expect(body.get("source_duration_ms")).toBeNull();
     expect(body.get("provider_options")).toBe(JSON.stringify({ domain: "medical" }));
     expect(body.get("transcript_timestamps")).toBe("true");
   });

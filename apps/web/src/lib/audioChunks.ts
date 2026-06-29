@@ -96,13 +96,27 @@ function parseWav(buffer: ArrayBuffer): ParsedWav {
   if (!fmt || !dataOffset || !dataSize || !fmt.byteRate || !fmt.blockAlign) {
     throw new Error("Invalid WAV file.");
   }
+  const channels = fmt.channels ?? 1;
+  const sampleRate = fmt.sampleRate ?? 24000;
+  const bitsPerSample = fmt.bitsPerSample ?? 16;
+  const blockAlign = fmt.blockAlign;
+  const byteRate = fmt.byteRate;
+  if (fmt.audioFormat !== 1) {
+    throw new Error("Browser chunking currently supports PCM WAV input only.");
+  }
+  if (channels <= 0 || sampleRate <= 0 || bitsPerSample <= 0 || bitsPerSample % 8 !== 0) {
+    throw new Error("Invalid PCM WAV file.");
+  }
+  if (blockAlign !== channels * (bitsPerSample / 8) || byteRate !== sampleRate * blockAlign) {
+    throw new Error("Invalid PCM WAV file.");
+  }
   return {
-    audioFormat: fmt.audioFormat ?? 1,
-    channels: fmt.channels ?? 1,
-    sampleRate: fmt.sampleRate ?? 24000,
-    byteRate: fmt.byteRate,
-    blockAlign: fmt.blockAlign,
-    bitsPerSample: fmt.bitsPerSample ?? 16,
+    audioFormat: fmt.audioFormat,
+    channels,
+    sampleRate,
+    byteRate,
+    blockAlign,
+    bitsPerSample,
     dataOffset,
     dataSize,
     durationMs: (dataSize / fmt.byteRate) * 1000,
