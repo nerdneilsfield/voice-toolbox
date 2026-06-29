@@ -564,7 +564,7 @@ function App() {
             {history.length} history items
           </div>
           {historyError ? <div className="notice error compact">{historyError}</div> : null}
-          <HistoryPanel artifacts={history} onSelect={selectHistoryItem} />
+          <HistoryPanel artifacts={history} providers={providers} onSelect={selectHistoryItem} />
         </aside>
       </div>
     </main>
@@ -749,7 +749,6 @@ function BuiltinControls({
           <span className="card-label">Voice</span>
         </div>
         <label className="field">
-          <span className="field-title">Voice</span>
           <select
             value={voiceId}
             onChange={(event) => setVoiceId(event.target.value)}
@@ -951,18 +950,20 @@ function CloneControls({
         <div className="card-header">
           <span className="card-label">Style & consent</span>
         </div>
-        <label className="field">
-          <span className="field-title">Style prompt</span>
-          <input
-            value={style}
-            onChange={(event) => setStyle(event.target.value)}
-            placeholder="Natural-language delivery, emotion, pacing, or persona"
-          />
-        </label>
-        <label className="checkbox-line">
-          <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />I
-          have permission to use this voice sample for synthesis.
-        </label>
+        <div className="two-col-fields">
+          <label className="field">
+            <span className="field-title">Style prompt</span>
+            <input
+              value={style}
+              onChange={(event) => setStyle(event.target.value)}
+              placeholder="Natural-language delivery, emotion, pacing, or persona"
+            />
+          </label>
+          <label className="checkbox-line consent-checkbox">
+            <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />
+            <span>I have permission to use this voice sample for synthesis.</span>
+          </label>
+        </div>
       </div>
     </>
   );
@@ -1027,7 +1028,7 @@ function ResultPanel({ artifact, state }: { artifact: Artifact | null; state: Re
   return (
     <aside className="result-panel">
       <div className="result-heading">
-        <h2>Output</h2>
+        <span className="card-label">Output</span>
         {artifact ? <span className="format-pill">{audioLabel(artifact.mime_type)}</span> : null}
       </div>
       {state === "idle" ? <EmptyState title="Ready for audio" /> : null}
@@ -1093,7 +1094,7 @@ function TranscriptPanel({
   return (
     <aside className="result-panel">
       <div className="result-heading">
-        <h2>Transcript</h2>
+        <span className="card-label">Transcript</span>
         {artifact ? <span className="format-pill">{transcript.length} chars</span> : null}
       </div>
       {state === "idle" ? <EmptyState title="Ready for transcript" /> : null}
@@ -1229,7 +1230,21 @@ function downloadUrlForFormat(url: string, format: DownloadFormat) {
   return `${url}?format=${encodeURIComponent(format)}`;
 }
 
-function HistoryPanel({ artifacts, onSelect }: { artifacts: Artifact[]; onSelect: (artifact: Artifact) => void }) {
+function HistoryPanel({
+  artifacts,
+  providers,
+  onSelect,
+}: {
+  artifacts: Artifact[];
+  providers: Provider[];
+  onSelect: (artifact: Artifact) => void;
+}) {
+  const providerNames = useMemo(() => {
+    const map = new Map<string, string>();
+    providers.forEach((provider) => map.set(provider.id, provider.name));
+    return map;
+  }, [providers]);
+
   return (
     <div className="card">
       <div className="card-header">
@@ -1240,22 +1255,32 @@ function HistoryPanel({ artifacts, onSelect }: { artifacts: Artifact[]; onSelect
         {artifacts.length === 0 ? (
           <p className="char-count">No history yet.</p>
         ) : (
-          artifacts.map((artifact) => (
-            <div key={artifact.id} className="history-item">
-              <div className="history-meta">
-                <span className="history-title">{formatHistoryTitle(artifact)}</span>
-                <span className="history-time">{formatHistoryTime(artifact.created_at)}</span>
+          artifacts.map((artifact) => {
+            const model = typeof artifact.metadata?.model === "string" ? artifact.metadata.model : null;
+            return (
+              <div key={artifact.id} className="history-item">
+                <div className="history-meta">
+                  <div className="history-title-row">
+                    <span className="history-title">{formatHistoryTitle(artifact)}</span>
+                  </div>
+                  <span className="history-subtitle">
+                    {providerNames.get(artifact.provider_id) ?? artifact.provider_id}
+                    {model ? ` • ${model}` : null}
+                  </span>
+                  {artifact.preview ? <span className="history-preview">{artifact.preview}</span> : null}
+                  <span className="history-time">{formatHistoryTime(artifact.created_at)}</span>
+                </div>
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  aria-label={`Load ${formatHistoryTitle(artifact)}`}
+                  onClick={() => onSelect(artifact)}
+                >
+                  {artifact.kind === "audio" ? "Play" : "View"}
+                </button>
               </div>
-              <button
-                className="btn btn-ghost"
-                type="button"
-                aria-label={`Load ${formatHistoryTitle(artifact)}`}
-                onClick={() => onSelect(artifact)}
-              >
-                {artifact.kind === "audio" ? "Play" : "View"}
-              </button>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

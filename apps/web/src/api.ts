@@ -44,6 +44,7 @@ export type Artifact = {
   created_at: string;
   metadata: Record<string, unknown>;
   download_url: string;
+  preview?: string;
 };
 
 export type Operation = {
