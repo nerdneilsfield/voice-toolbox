@@ -1048,6 +1048,42 @@ button:focus-visible,
   margin-top: 12px;
 }
 
+.provider-options {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.provider-option-details {
+  display: grid;
+  gap: 12px;
+}
+
+.provider-option-details summary {
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.provider-option-grid,
+.chunking-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.provider-option-field select[multiple] {
+  min-height: 96px;
+}
+
+.compact-line {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
 /* ==========================================================================
    Topbar controls: language + theme
    ========================================================================== */

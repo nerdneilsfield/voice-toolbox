@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 import type { ProviderModel } from "../api";
 
@@ -7,9 +8,17 @@ type AdvancedSettingsProps = {
   selectedModel: string | null;
   onModelChange(modelId: string): void;
   disabled?: boolean;
+  children?: ReactNode;
 };
 
-export function AdvancedSettings({ label, models, selectedModel, onModelChange, disabled }: AdvancedSettingsProps) {
+export function AdvancedSettings({
+  label,
+  models,
+  selectedModel,
+  onModelChange,
+  disabled,
+  children,
+}: AdvancedSettingsProps) {
   const { t } = useI18n();
   const hasModels = models.length > 0;
   return (
@@ -42,6 +51,7 @@ export function AdvancedSettings({ label, models, selectedModel, onModelChange, 
           ))}
         </select>
       </label>
+      {children}
     </details>
   );
 }

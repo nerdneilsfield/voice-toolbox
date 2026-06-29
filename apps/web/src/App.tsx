@@ -2,29 +2,45 @@ import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState
 import { AdvancedSettings } from "./components/AdvancedSettings";
 import { FullscreenTextEditor } from "./components/FullscreenTextEditor";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
+import { ProviderOptionsPanel } from "./components/ProviderOptionsPanel";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { useProviderCatalog } from "./hooks/useProviderCatalog";
 import { useI18n } from "./i18n";
+import { sliceWavFile } from "./lib/audioChunks";
 import { selectDefaultVoice, selectModelForCapability } from "./lib/providerSelection";
 import {
+  ProviderOptionValues,
+  defaultOptionValues,
+  optionsForCapability,
+  sanitizeOptionValues,
+  selectedModel,
+  validateOptionValues,
+} from "./lib/providerOptions";
+import {
   Artifact,
+  ChunkingMode,
   Provider,
   ProviderModel,
   TextFormat,
   Voice,
   cloneVoice,
+  createAsrChunkSession,
   designVoice,
+  finishAsrChunkSession,
   getArtifacts,
   getVoices,
   normalizeText,
   synthesizeBuiltin,
   transcribe,
+  transcriptDownloadUrl,
+  uploadAsrChunk,
 } from "./api";
 
 type MainTab = "tts" | "asr";
 type TtsMode = "builtin" | "design" | "clone";
 type RequestState = "idle" | "loading" | "success" | "error";
 type DownloadFormat = "source" | "wav" | "mp3" | "pcm" | "m4a" | "aac" | "flac" | "ogg" | "webm";
+type TranscriptDownloadFormat = "txt" | "srt" | "vtt" | "json";
 
 const INLINE_TAGS = ["(唱歌)", "(笑)", "(叹气)", "(停顿)", "[breath]", "[laughter]"];
 const BASE64_LIMIT_BYTES = 10 * 1024 * 1024;
@@ -51,6 +67,10 @@ function App() {
   const [cloneModel, setCloneModel] = useState<string | null>(null);
   const [asrModel, setAsrModel] = useState<string | null>(null);
   const [textFormat, setTextFormat] = useState<TextFormat>("plain");
+  const [ttsTextFile, setTtsTextFile] = useState<File | null>(null);
+  const [ttsChunkingMode, setTtsChunkingMode] = useState<ChunkingMode>("auto");
+  const [ttsChunkMaxChars, setTtsChunkMaxChars] = useState(1500);
+  const [ttsChunkSilenceMs, setTtsChunkSilenceMs] = useState(120);
   const [cleanedPreview, setCleanedPreview] = useState("");
   const [previewState, setPreviewState] = useState<RequestState>("idle");
   const [previewError, setPreviewError] = useState("");
@@ -66,6 +86,11 @@ function App() {
   const [cloneConsent, setCloneConsent] = useState(false);
   const [asrFile, setAsrFile] = useState<File | null>(null);
   const [asrLanguage, setAsrLanguage] = useState("auto");
+  const [asrChunkingMode, setAsrChunkingMode] = useState<ChunkingMode>("auto");
+  const [asrChunkSeconds, setAsrChunkSeconds] = useState(90);
+  const [asrChunkOverlapMs, setAsrChunkOverlapMs] = useState(1200);
+  const [asrTranscriptTimestamps, setAsrTranscriptTimestamps] = useState(false);
+  const [asrTranscriptSpeakers, setAsrTranscriptSpeakers] = useState(false);
   const [ttsState, setTtsState] = useState<RequestState>("idle");
   const [asrState, setAsrState] = useState<RequestState>("idle");
   const [ttsError, setTtsError] = useState("");
@@ -79,6 +104,7 @@ function App() {
   const [history, setHistory] = useState<Artifact[]>([]);
   const [historyError, setHistoryError] = useState("");
   const historyMountedRef = useRef(true);
+  const [providerOptionValues, setProviderOptionValues] = useState<Record<string, ProviderOptionValues>>({});
 
   useEffect(() => {
     historyMountedRef.current = true;
@@ -177,6 +203,34 @@ function App() {
   const activeTtsCapability = ttsCapability(ttsMode);
   const activeTtsSupported = supportsCapability(activeTtsCapability);
   const asrSupported = supportsCapability("asr.transcribe");
+  const builtinOptionSpecs = optionsForCapability(
+    selectedProvider,
+    selectedModel(selectedProvider, builtinModel),
+    "tts.builtin",
+  );
+  const designOptionSpecs = optionsForCapability(
+    selectedProvider,
+    selectedModel(selectedProvider, designModel),
+    "tts.design",
+  );
+  const cloneOptionSpecs = optionsForCapability(
+    selectedProvider,
+    selectedModel(selectedProvider, cloneModel),
+    "tts.clone",
+  );
+  const asrOptionSpecs = optionsForCapability(
+    selectedProvider,
+    selectedModel(selectedProvider, asrModel),
+    "asr.transcribe",
+  );
+  const activeTtsOptionSpecs =
+    ttsMode === "builtin" ? builtinOptionSpecs : ttsMode === "design" ? designOptionSpecs : cloneOptionSpecs;
+  const activeTtsOptions = optionValues(providerOptionValues, optionStateKey(selectedProviderId, activeTtsCapability));
+  const asrOptions = optionValues(providerOptionValues, optionStateKey(selectedProviderId, "asr.transcribe"));
+  const activeAsrModel = selectedModel(selectedProvider, asrModel);
+  const asrTranscriptCapabilities = activeAsrModel?.transcript_capabilities;
+  const supportsTimestamps = Boolean(asrTranscriptCapabilities?.timestamps);
+  const supportsSpeakers = Boolean(asrTranscriptCapabilities?.speakers);
 
   useEffect(() => {
     if (!selectedProvider || activeTtsSupported) {
@@ -189,6 +243,34 @@ function App() {
       setTtsMode(fallbackMode);
     }
   }, [activeTtsSupported, selectedProvider, ttsMode]);
+
+  useEffect(() => {
+    const updates: Record<string, ProviderOptionValues> = {};
+    const pairs: [string, typeof builtinOptionSpecs][] = [
+      [optionStateKey(selectedProviderId, "tts.builtin"), builtinOptionSpecs],
+      [optionStateKey(selectedProviderId, "tts.design"), designOptionSpecs],
+      [optionStateKey(selectedProviderId, "tts.clone"), cloneOptionSpecs],
+      [optionStateKey(selectedProviderId, "asr.transcribe"), asrOptionSpecs],
+    ];
+    for (const [key, specs] of pairs) {
+      const current = providerOptionValues[key] ?? {};
+      const defaults = defaultOptionValues(specs);
+      updates[key] = sanitizeOptionValues({ ...defaults, ...current }, specs);
+    }
+    setProviderOptionValues((current) => ({ ...current, ...updates }));
+    // Defaults should refresh when provider/model/schema changes. Existing
+    // values are preserved only while still allowed by current schema.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProviderId, builtinModel, designModel, cloneModel, asrModel]);
+
+  useEffect(() => {
+    if (!supportsTimestamps) {
+      setAsrTranscriptTimestamps(false);
+    }
+    if (!supportsSpeakers) {
+      setAsrTranscriptSpeakers(false);
+    }
+  }, [supportsTimestamps, supportsSpeakers]);
 
   function insertTag(tag: string) {
     const target = textAreaRef.current;
@@ -235,24 +317,32 @@ function App() {
     setTtsError("");
     setTtsState("loading");
     try {
+      const providerOptions = sanitizedOptionsOrThrow(activeTtsOptions, activeTtsOptionSpecs);
       const result =
         ttsMode === "builtin"
           ? await synthesizeBuiltin({
               providerId: selectedProviderId,
               text: builtinText,
+              textFile: ttsTextFile,
               textFormat,
               voiceId,
               styleInstruction: builtinStyle,
               model: builtinModel ?? undefined,
+              chunkingMode: ttsChunkingMode,
+              chunkMaxChars: ttsChunkMaxChars,
+              chunkSilenceMs: ttsChunkSilenceMs,
+              providerOptions,
             })
           : ttsMode === "design"
             ? await designVoice({
                 providerId: selectedProviderId,
                 voiceDescription: designDescription,
                 text: designText,
+                textFile: ttsTextFile,
                 textFormat,
                 optimizeTextPreview: optimizePreview,
                 model: designModel ?? undefined,
+                providerOptions,
               })
             : await submitClone();
       setTtsArtifact(result.artifact);
@@ -280,7 +370,91 @@ function App() {
     appendFormValue(body, "style_instruction", cloneStyle);
     appendFormValue(body, "clone_reference_text", cloneReferenceText);
     appendFormValue(body, "model", cloneModel);
+    body.set("chunking_mode", ttsChunkingMode);
+    body.set("chunk_max_chars", String(ttsChunkMaxChars));
+    body.set("chunk_silence_ms", String(ttsChunkSilenceMs));
+    if (ttsTextFile) {
+      body.set("text_file", ttsTextFile);
+    }
+    const providerOptions = sanitizedOptionsOrThrow(cloneOptionValues(), cloneOptionSpecs);
+    if (Object.keys(providerOptions).length > 0) {
+      body.set("provider_options", JSON.stringify(providerOptions));
+    }
     return cloneVoice(body);
+  }
+
+  function cloneOptionValues() {
+    return optionValues(providerOptionValues, optionStateKey(selectedProviderId, "tts.clone"));
+  }
+
+  function updateOptionValues(capability: string, values: ProviderOptionValues) {
+    setProviderOptionValues((current) => ({
+      ...current,
+      [optionStateKey(selectedProviderId, capability)]: values,
+    }));
+  }
+
+  function sanitizedOptionsOrThrow(values: ProviderOptionValues, specs: typeof activeTtsOptionSpecs) {
+    const sanitized = sanitizeOptionValues(values, specs);
+    const errors = validateOptionValues(sanitized, specs);
+    if (errors.length > 0) {
+      throw new Error(errors.join("; "));
+    }
+    return sanitized as Record<string, unknown>;
+  }
+
+  async function submitAsrWithChunking(file: File, providerOptions: Record<string, unknown>) {
+    if (shouldUseBrowserAsrChunks(file, asrChunkingMode)) {
+      const { chunks, sourceDurationMs } = await sliceWavFile(file, {
+        targetSeconds: asrChunkSeconds,
+        overlapMs: asrChunkOverlapMs,
+      });
+      const session = await createAsrChunkSession({
+        providerId: selectedProviderId,
+        model: asrModel,
+        language: asrLanguage,
+        sourceDurationMs,
+        totalChunks: chunks.length,
+        sourceFileName: file.name,
+        transcriptTimestamps: asrTranscriptTimestamps,
+        transcriptSpeakers: asrTranscriptSpeakers,
+        providerOptions,
+      });
+      for (let index = 0; index < chunks.length; index += 1) {
+        const chunk = chunks[index];
+        await uploadAsrChunk({
+          sessionId: session.session_id,
+          file: chunk.blob,
+          fileName: chunk.fileName,
+          chunkIndex: index,
+          offsetMs: chunk.offsetMs,
+          durationMs: chunk.durationMs,
+        });
+      }
+      return finishAsrChunkSession({
+        sessionId: session.session_id,
+        providerId: selectedProviderId,
+        model: asrModel,
+        language: asrLanguage,
+        transcriptTimestamps: asrTranscriptTimestamps,
+        transcriptSpeakers: asrTranscriptSpeakers,
+        providerOptions,
+      });
+    }
+    const body = new FormData();
+    body.set("provider_id", selectedProviderId);
+    body.set("language", asrLanguage);
+    body.set("file", file);
+    body.set("chunking_mode", asrChunkingMode);
+    body.set("chunk_seconds", String(asrChunkSeconds));
+    body.set("chunk_overlap_ms", String(asrChunkOverlapMs));
+    body.set("transcript_timestamps", String(asrTranscriptTimestamps));
+    body.set("transcript_speakers", String(asrTranscriptSpeakers));
+    appendFormValue(body, "model", asrModel);
+    if (Object.keys(providerOptions).length > 0) {
+      body.set("provider_options", JSON.stringify(providerOptions));
+    }
+    return transcribe(body);
   }
 
   async function submitAsr(event: FormEvent) {
@@ -294,12 +468,8 @@ function App() {
     setAsrState("loading");
     setTranscript("");
     try {
-      const body = new FormData();
-      body.set("provider_id", selectedProviderId);
-      body.set("language", asrLanguage);
-      body.set("file", asrFile);
-      appendFormValue(body, "model", asrModel);
-      const result = await transcribe(body);
+      const providerOptions = sanitizedOptionsOrThrow(asrOptions, asrOptionSpecs);
+      const result = await submitAsrWithChunking(asrFile, providerOptions);
       setAsrArtifact(result.artifact);
       const transcriptResponse = await fetch(result.artifact.download_url);
       if (!transcriptResponse.ok) {
@@ -398,6 +568,14 @@ function App() {
             <TextTools
               textFormat={textFormat}
               setTextFormat={setTextFormat}
+              textFile={ttsTextFile}
+              setTextFile={setTtsTextFile}
+              chunkingMode={ttsChunkingMode}
+              setChunkingMode={setTtsChunkingMode}
+              chunkMaxChars={ttsChunkMaxChars}
+              setChunkMaxChars={setTtsChunkMaxChars}
+              chunkSilenceMs={ttsChunkSilenceMs}
+              setChunkSilenceMs={setTtsChunkSilenceMs}
               previewState={previewState}
               previewError={previewError}
               cleanedPreview={cleanedPreview}
@@ -424,7 +602,13 @@ function App() {
                     models={providerModels("tts.builtin")}
                     selectedModel={builtinModel}
                     onModelChange={setBuiltinModel}
-                  />
+                  >
+                    <ProviderOptionsPanel
+                      specs={builtinOptionSpecs}
+                      values={activeTtsOptions}
+                      onChange={(values) => updateOptionValues("tts.builtin", values)}
+                    />
+                  </AdvancedSettings>
                 </div>
               </>
             ) : null}
@@ -445,7 +629,13 @@ function App() {
                     models={providerModels("tts.design")}
                     selectedModel={designModel}
                     onModelChange={setDesignModel}
-                  />
+                  >
+                    <ProviderOptionsPanel
+                      specs={designOptionSpecs}
+                      values={activeTtsOptions}
+                      onChange={(values) => updateOptionValues("tts.design", values)}
+                    />
+                  </AdvancedSettings>
                 </div>
               </>
             ) : null}
@@ -472,7 +662,13 @@ function App() {
                     models={providerModels("tts.clone")}
                     selectedModel={cloneModel}
                     onModelChange={setCloneModel}
-                  />
+                  >
+                    <ProviderOptionsPanel
+                      specs={cloneOptionSpecs}
+                      values={cloneOptionValues()}
+                      onChange={(values) => updateOptionValues("tts.clone", values)}
+                    />
+                  </AdvancedSettings>
                 </div>
               </>
             ) : null}
@@ -526,6 +722,36 @@ function App() {
                   <option value="en">{t("asr.languageOption.en")}</option>
                 </select>
               </label>
+              <ChunkingControls
+                mode={asrChunkingMode}
+                setMode={setAsrChunkingMode}
+                primaryLabel={t("asr.chunkSeconds")}
+                primaryValue={asrChunkSeconds}
+                setPrimaryValue={setAsrChunkSeconds}
+                secondaryLabel={t("asr.chunkOverlapMs")}
+                secondaryValue={asrChunkOverlapMs}
+                setSecondaryValue={setAsrChunkOverlapMs}
+              />
+              <div className="two-col-fields">
+                <label className="checkbox-line">
+                  <input
+                    type="checkbox"
+                    checked={asrTranscriptTimestamps}
+                    onChange={(event) => setAsrTranscriptTimestamps(event.target.checked)}
+                    disabled={!supportsTimestamps}
+                  />
+                  <span>{t("asr.timestamps")}</span>
+                </label>
+                <label className="checkbox-line">
+                  <input
+                    type="checkbox"
+                    checked={asrTranscriptSpeakers}
+                    onChange={(event) => setAsrTranscriptSpeakers(event.target.checked)}
+                    disabled={!supportsSpeakers}
+                  />
+                  <span>{t("asr.speakers")}</span>
+                </label>
+              </div>
             </div>
             <div className="card">
               <AdvancedSettings
@@ -533,7 +759,13 @@ function App() {
                 models={providerModels("asr.transcribe")}
                 selectedModel={asrModel}
                 onModelChange={setAsrModel}
-              />
+              >
+                <ProviderOptionsPanel
+                  specs={asrOptionSpecs}
+                  values={asrOptions}
+                  onChange={(values) => updateOptionValues("asr.transcribe", values)}
+                />
+              </AdvancedSettings>
             </div>
             <div className="card">
               <div className="card-header">
@@ -683,6 +915,14 @@ function StatusItem({ label, value }: { label: string; value: string }) {
 function TextTools({
   textFormat,
   setTextFormat,
+  textFile,
+  setTextFile,
+  chunkingMode,
+  setChunkingMode,
+  chunkMaxChars,
+  setChunkMaxChars,
+  chunkSilenceMs,
+  setChunkSilenceMs,
   previewState,
   previewError,
   cleanedPreview,
@@ -690,6 +930,14 @@ function TextTools({
 }: {
   textFormat: TextFormat;
   setTextFormat: (value: TextFormat) => void;
+  textFile: File | null;
+  setTextFile: (value: File | null) => void;
+  chunkingMode: ChunkingMode;
+  setChunkingMode: (value: ChunkingMode) => void;
+  chunkMaxChars: number;
+  setChunkMaxChars: (value: number) => void;
+  chunkSilenceMs: number;
+  setChunkSilenceMs: (value: number) => void;
   previewState: RequestState;
   previewError: string;
   cleanedPreview: string;
@@ -715,9 +963,82 @@ function TextTools({
           </button>
         </div>
       </div>
+      <div className="two-col-fields">
+        <label className="field">
+          <span className="field-title">{t("tts.textFile")}</span>
+          <input
+            type="file"
+            accept=".txt,.md,.markdown,text/plain,text/markdown"
+            onChange={(event) => setTextFile(event.target.files?.[0] ?? null)}
+          />
+          {textFile ? <span className="field-hint">{textFile.name}</span> : null}
+        </label>
+        <ChunkingControls
+          mode={chunkingMode}
+          setMode={setChunkingMode}
+          primaryLabel={t("tts.chunkMaxChars")}
+          primaryValue={chunkMaxChars}
+          setPrimaryValue={setChunkMaxChars}
+          secondaryLabel={t("tts.chunkSilenceMs")}
+          secondaryValue={chunkSilenceMs}
+          setSecondaryValue={setChunkSilenceMs}
+        />
+      </div>
       {previewError ? <div className="notice error compact">{previewError}</div> : null}
       {cleanedPreview ? <pre className="cleaned-preview">{cleanedPreview}</pre> : null}
     </section>
+  );
+}
+
+function ChunkingControls({
+  mode,
+  setMode,
+  primaryLabel,
+  primaryValue,
+  setPrimaryValue,
+  secondaryLabel,
+  secondaryValue,
+  setSecondaryValue,
+}: {
+  mode: ChunkingMode;
+  setMode: (value: ChunkingMode) => void;
+  primaryLabel: string;
+  primaryValue: number;
+  setPrimaryValue: (value: number) => void;
+  secondaryLabel: string;
+  secondaryValue: number;
+  setSecondaryValue: (value: number) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="chunking-controls">
+      <label className="field">
+        <span className="field-title">{t("chunking.mode")}</span>
+        <select value={mode} onChange={(event) => setMode(event.target.value as ChunkingMode)}>
+          <option value="off">{t("chunking.off")}</option>
+          <option value="auto">{t("chunking.auto")}</option>
+          <option value="force">{t("chunking.force")}</option>
+        </select>
+      </label>
+      <label className="field">
+        <span className="field-title">{primaryLabel}</span>
+        <input
+          type="number"
+          min={1}
+          value={primaryValue}
+          onChange={(event) => setPrimaryValue(Number(event.target.value))}
+        />
+      </label>
+      <label className="field">
+        <span className="field-title">{secondaryLabel}</span>
+        <input
+          type="number"
+          min={0}
+          value={secondaryValue}
+          onChange={(event) => setSecondaryValue(Number(event.target.value))}
+        />
+      </label>
+    </div>
   );
 }
 
@@ -1111,6 +1432,15 @@ function TranscriptPanel({
 }) {
   const { t } = useI18n();
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [downloadFormat, setDownloadFormat] = useState<TranscriptDownloadFormat>("txt");
+  const [downloadTimestamps, setDownloadTimestamps] = useState(false);
+  const [downloadSpeakers, setDownloadSpeakers] = useState(false);
+  const transcriptUrl = artifact
+    ? transcriptDownloadUrl(artifact.id, downloadFormat, {
+        timestamps: downloadTimestamps,
+        speakers: downloadSpeakers,
+      })
+    : "";
   async function copyTranscript() {
     if (!transcript.trim()) {
       return;
@@ -1143,9 +1473,41 @@ function TranscriptPanel({
                   ? t("result.copyFailed")
                   : t("result.copy")}
             </button>
+            <label className="download-format">
+              <span>{t("result.downloadAs")}</span>
+              <select
+                value={downloadFormat}
+                onChange={(event) => setDownloadFormat(event.target.value as TranscriptDownloadFormat)}
+              >
+                <option value="txt">{t("transcriptFormat.txt")}</option>
+                <option value="srt">{t("transcriptFormat.srt")}</option>
+                <option value="vtt">{t("transcriptFormat.vtt")}</option>
+                <option value="json">{t("transcriptFormat.json")}</option>
+              </select>
+            </label>
+            {downloadFormat === "txt" ? (
+              <>
+                <label className="checkbox-line compact-line">
+                  <input
+                    type="checkbox"
+                    checked={downloadTimestamps}
+                    onChange={(event) => setDownloadTimestamps(event.target.checked)}
+                  />
+                  <span>{t("asr.timestamps")}</span>
+                </label>
+                <label className="checkbox-line compact-line">
+                  <input
+                    type="checkbox"
+                    checked={downloadSpeakers}
+                    onChange={(event) => setDownloadSpeakers(event.target.checked)}
+                  />
+                  <span>{t("asr.speakers")}</span>
+                </label>
+              </>
+            ) : null}
           </div>
           <pre className="transcript-viewer">{transcript || t("result.emptyTranscript")}</pre>
-          <a className="download-link" href={artifact.download_url}>
+          <a className="download-link" href={transcriptUrl}>
             {t("result.downloadTranscript")}
           </a>
         </div>
@@ -1210,6 +1572,22 @@ function appendFormValue(body: FormData, key: string, value?: string | null) {
   if (trimmed) {
     body.set(key, trimmed);
   }
+}
+
+function optionStateKey(providerId: string, capability: string) {
+  return `${providerId}:${capability}`;
+}
+
+function optionValues(values: Record<string, ProviderOptionValues>, key: string) {
+  return values[key] ?? {};
+}
+
+function shouldUseBrowserAsrChunks(file: File, mode: ChunkingMode) {
+  if (mode === "off") {
+    return false;
+  }
+  const isWav = file.type === "audio/wav" || file.type === "audio/x-wav" || /\.wav$/i.test(file.name);
+  return isWav && (mode === "force" || file.size > BASE64_LIMIT_BYTES);
 }
 
 function shortId(id: string) {
