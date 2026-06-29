@@ -31,6 +31,12 @@ from voice_toolbox.audio_conversion import (
     validate_mime_suffix_match,
 )
 from voice_toolbox.artifacts import SAFE_OPERATION_ID_PATTERN
+from voice_toolbox.chunking.models import TextSource
+from voice_toolbox.chunking.text import (
+    TextSourceError,
+    infer_text_format_from_upload,
+    resolve_text_source,
+)
 from voice_toolbox.config import (
     AppConfig,
     ConfiguredProvider,
@@ -597,18 +603,69 @@ def _build_asr_request(**kwargs: Any) -> ASRRequest:
 
 def _prepare_tts_or_422(
     *,
-    raw_text: str | None,
-    text_format: Literal["plain", "markdown", "auto"],
+    raw_text: str | TextSource | None,
+    text_format: Literal["plain", "markdown", "auto"] | None,
     fields: dict[str, object],
 ) -> PreparedTTSRequest:
-    if raw_text is not None and len(raw_text) > MAX_TEXT_INPUT_LENGTH:
+    text_length = len(raw_text.text) if isinstance(raw_text, TextSource) and raw_text.text else (
+        len(raw_text) if isinstance(raw_text, str) else 0
+    )
+    if text_length > MAX_TEXT_INPUT_LENGTH:
         raise HTTPException(status_code=413, detail="text exceeds 200000 characters")
     try:
-        return prepare_tts_request(raw_text, text_format, fields)
+        return prepare_tts_request(raw_text, text_format or "plain", fields)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_safe_validation_errors(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _read_text_source(
+    *,
+    text: str | None,
+    text_file: UploadFile | None,
+    text_format: Literal["plain", "markdown", "auto"] | None,
+    config: AppConfig,
+    mode: TTSMode | None = None,
+    optimize_text_preview: bool = False,
+) -> TextSource:
+    try:
+        return resolve_text_source(
+            text=text,
+            text_file=text_file,
+            text_format=text_format,
+            max_text_file_bytes=config.chunking.tts.max_text_file_bytes,
+            mode=mode,
+            optimize_text_preview=optimize_text_preview,
+        )
+    except TextSourceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+def _infer_text_format_from_upload(upload: UploadFile) -> Literal["plain", "markdown"]:
+    try:
+        return infer_text_format_from_upload(upload.filename, upload.content_type)
+    except TextSourceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+def _prepare_tts_source(
+    *,
+    text: str | None,
+    text_file: UploadFile | None,
+    text_format: Literal["plain", "markdown", "auto"] | None,
+    config: AppConfig,
+    mode: TTSMode | None = None,
+    optimize_text_preview: bool = False,
+) -> TextSource:
+    return _read_text_source(
+        text=text,
+        text_file=text_file,
+        text_format=text_format,
+        config=config,
+        mode=mode,
+        optimize_text_preview=optimize_text_preview,
+    )
 
 
 def _design_raw_text(text: str | None, *, optimize_text_preview: bool) -> str | None:
@@ -722,8 +779,9 @@ def _run_tts(
     mode_metadata = {
         **prepared.artifact_metadata,
         "tts_mode": prepared.request.mode.value,
-        "source_text_preview": _preview_text(prepared.request.text),
     }
+    if prepared.artifact_metadata.get("source_kind") != "file":
+        mode_metadata["source_text_preview"] = _preview_text(prepared.request.text)
     try:
         artifact = provider.synthesize(
             prepared.request,
