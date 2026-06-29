@@ -83,7 +83,7 @@ p {
 .app-shell {
   width: min(1280px, calc(100vw - 48px));
   margin: 0 auto;
-  padding: 24px 24px 48px;
+  padding: 24px 40px 48px;
 }
 
 .topbar {
@@ -606,7 +606,7 @@ p {
 @media (max-width: 819px) {
   .app-shell {
     width: min(100vw - 20px, 1280px);
-    padding: 14px 16px 24px;
+    padding: 14px 24px 24px;
   }
 
   .topbar {
