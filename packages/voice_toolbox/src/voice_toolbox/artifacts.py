@@ -37,6 +37,7 @@ ALLOWED_METADATA_KEYS = {
 LENGTH_METADATA_KEYS = {
     "clone_reference_text",
     "source_text",
+    "source_text_preview",
     "style_instruction",
     "voice_description",
 }

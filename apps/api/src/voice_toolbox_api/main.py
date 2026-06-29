@@ -413,7 +413,15 @@ def create_app(
                 logger.warning("skipping unreadable artifact sidecar: {} - {}", sidecar_path, exc)
                 continue
         artifacts.sort(key=lambda artifact: artifact.created_at, reverse=True)
-        return {"artifacts": [_safe_artifact_payload(artifact) for artifact in artifacts[:limit]]}
+        return {
+            "artifacts": [
+                {
+                    **_safe_artifact_payload(artifact),
+                    "preview": _artifact_preview(artifact),
+                }
+                for artifact in artifacts[:limit]
+            ]
+        }
 
     @app.get("/v1/artifacts/{artifact_id}")
     def artifact_metadata(artifact_id: str) -> dict[str, Any]:
@@ -681,6 +689,7 @@ def _run_tts(
     mode_metadata = {
         **prepared.artifact_metadata,
         "tts_mode": prepared.request.mode.value,
+        "source_text_preview": _preview_text(prepared.request.text),
     }
     try:
         artifact = provider.synthesize(
@@ -940,3 +949,24 @@ def _artifact_path_for_sidecar(sidecar_path: Path, payload: dict[str, Any]) -> P
     }
     suffix = suffix_by_mime.get(str(mime_type), ".wav")
     return sidecar_path.with_suffix(suffix)
+
+
+def _preview_text(text: str | None, max_length: int = 80) -> str:
+    if not text:
+        return ""
+    normalized = text.replace("\n", " ").replace("\r", " ").strip()
+    if len(normalized) <= max_length:
+        return normalized
+    return f"{normalized[:max_length].rstrip()}…"
+
+
+def _artifact_preview(artifact: Artifact) -> str:
+    if artifact.kind.value == "transcript":
+        try:
+            text = artifact.path.read_text(encoding="utf-8")
+            return _preview_text(text)
+        except OSError:
+            return ""
+    if isinstance(artifact.metadata, dict):
+        return _preview_text(artifact.metadata.get("source_text_preview"))
+    return ""
