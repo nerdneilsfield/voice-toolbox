@@ -70,6 +70,7 @@ Add global chunking config to `AppConfig`:
 mode = "auto"          # "off" | "auto" | "force"
 max_chars = 1500
 max_chunks = 40
+max_text_file_bytes = 2000000
 silence_ms = 120
 repeat_leading_audio_tags = true
 
@@ -94,6 +95,7 @@ class TTSChunkingConfig(BaseModel):
     mode: ChunkingMode = "auto"
     max_chars: int = Field(default=1500, ge=200, le=8000)
     max_chunks: int = Field(default=40, ge=1, le=200)
+    max_text_file_bytes: int = Field(default=2_000_000, ge=1024, le=20_000_000)
     silence_ms: int = Field(default=120, ge=0, le=3000)
     repeat_leading_audio_tags: bool = True
 
@@ -126,6 +128,13 @@ Config validation:
 
 - `chunking.asr.dedupe_min_chars <= chunking.asr.dedupe_max_chars`.
 - `chunking.asr.overlap_ms < chunking.asr.target_seconds * 1000 / 2`.
+
+Config attachment points:
+
+- `AppConfig` owns `chunking: ChunkingConfig`.
+- `ConfiguredProvider` owns provider-level `options: list[ProviderOptionSpec]`.
+- `ModelInfo` owns model-level `options: list[ProviderOptionSpec | ProviderOptionOverride]` and optional `transcript_capabilities`.
+- Provider summaries expose provider-level options; model summaries expose model-level options and transcript capabilities.
 
 ## Provider and Model-Specific Options
 
@@ -166,14 +175,34 @@ class ProviderOptionSpec(BaseModel):
     provider_specific: bool = True
     safe_metadata: bool = False
     enabled: bool = True
+
+class ProviderOptionOverride(BaseModel):
+    key: str
+    capability: str
+    label: str | None = None
+    type: ProviderOptionType | None = None
+    description: str | None = None
+    default: bool | int | float | str | list[str] | None = None
+    choices: list[ProviderOptionChoice] | None = None
+    min_value: float | None = None
+    max_value: float | None = None
+    step: float | None = None
+    placeholder: str | None = None
+    required: bool | None = None
+    advanced: bool | None = None
+    provider_specific: bool | None = None
+    safe_metadata: bool | None = None
+    enabled: bool | None = None
 ```
 
 Option attachment points:
 
 - Provider-level options apply to every model with the matching capability.
 - Model-level options override or extend provider-level options.
-- If the same option key appears at both levels, merge specs per field: start with the provider-level spec, then overwrite only fields explicitly set by the model-level spec. This lets a model narrow `max_value` without restating label, description, or choices.
-- "Explicitly set" means present in the raw config object or present in Pydantic `model_fields_set` / `model_dump(exclude_unset=True)`. Pydantic default values produced during parsing do not count as model-level overrides.
+- Provider-level entries are complete `ProviderOptionSpec` objects.
+- Model-level entries may be complete `ProviderOptionSpec` objects or partial `ProviderOptionOverride` objects.
+- If the same option key appears at both levels, merge specs per field: start with the provider-level spec, then overwrite only non-`None` fields from the model-level override. This lets a model narrow `max_value` without restating label, description, or choices.
+- Implementations should parse model-level raw dicts into `ProviderOptionOverride` before building the final `ProviderOptionSpec`; do not require `label` or `type` when `enabled=false`.
 - A model-level option with the same key and `enabled=false` removes that provider-level option for the model. This is terminal: inherited `required`, `default`, and other fields are ignored, the option is hidden in the UI, and submitted values for that key are rejected.
 - When `enabled=false`, the model-level entry may contain only `key`, `capability`, and `enabled`. Any other explicitly set field is a config validation error.
 - For model-level options, `capability` must match the model's capability. It is accepted for schema uniformity but ignored for routing once attached to the model.
@@ -193,6 +222,16 @@ class TTSRequest(BaseModel):
 class ASRRequest(BaseModel):
     ...
     provider_options: dict[str, object] = Field(default_factory=dict)
+```
+
+Non-persisting provider result types:
+
+```python
+class ProviderAudioResult(BaseModel):
+    audio: bytes
+    mime_type: str
+    suffix: str
+    model: str | None = None
 ```
 
 Rules:
@@ -277,8 +316,9 @@ Rules:
 - Accepted suffixes: `.txt`, `.md`, `.markdown`.
 - Accepted MIME types: `text/plain`, `text/markdown`, `text/x-markdown`, `application/octet-stream` when suffix is valid.
 - File bytes are decoded as UTF-8 with optional BOM. Invalid UTF-8 returns 422.
+- Text files are streamed or read with a hard limit of `chunking.tts.max_text_file_bytes` before decoding. Oversized text files return 413.
 - Binary-looking text files are rejected if they contain NUL bytes.
-- Uploaded text filename may be stored only as redacted basename metadata; file contents are never stored in sidecars or logs.
+- Uploaded text filenames may not be stored raw. Sidecars may store only suffix and `uploaded_text_file_name_hash = sha256(basename).hexdigest()[:12]`. File contents are never stored in sidecars or logs.
 
 Text format inference:
 
@@ -291,7 +331,7 @@ Text format inference:
 New safe metadata:
 
 - `source_kind`: `"inline"` or `"file"`
-- `uploaded_text_file_name`
+- `uploaded_text_file_name_hash`
 - `uploaded_text_file_suffix`
 - `uploaded_text_file_size_bytes`
 - `source_text_raw_char_count`: decoded source text length before normalization
@@ -307,7 +347,7 @@ Modes:
 
 - `off`: require a single provider call. If normalized text exceeds `max_chars`, return 422.
 - `auto`: single call if normalized text length is `<= max_chars`; otherwise chunk.
-- `force`: chunk even if text is short.
+- `force`: route through the chunking planner even if text is short. It may still produce a single chunk when there is no safe split point or text length is under `max_chars`.
 
 Scope:
 
@@ -342,7 +382,7 @@ Audio tag propagation:
 
 Provider requests:
 
-- Each chunk is sent as a normal `TTSRequest`.
+- Each chunk uses the normal `TTSRequest` shape, but it must go through an internal non-persisting provider call path. The chunk call returns audio bytes / mime metadata, not a visible artifact.
 - `style_instruction`, `voice_id`, `voice_description`, `clone_*`, `model`, provider ID, and validated `provider_options` are copied to each chunk request.
 - Provider options are copied unchanged to every chunk request. Options that must vary per chunk, such as random seeds or per-call request IDs, must not be exposed as provider options in v1; defer them until a future per-chunk option mechanism exists.
 - Voice design never enters the chunked path in v1.
@@ -350,17 +390,17 @@ Provider requests:
 
 Audio merge:
 
-- Decode each returned chunk artifact through `pydub`.
+- Decode each returned chunk audio buffer through `pydub`.
 - Concatenate in chunk order.
 - Insert `silence_ms` silence between chunks.
 - Export the final artifact in the requested TTS output format.
-- Delete temporary chunk artifacts and provider chunk files after final artifact creation.
+- Delete temporary chunk buffers/files after final artifact creation.
 - If a provider returns a format that cannot be decoded, fail the operation with 502 and no final artifact.
 
 Artifact behavior:
 
 - The visible artifact is one final `audio` artifact.
-- Chunk artifacts are temporary implementation details.
+- Chunk provider outputs are temporary implementation details and must not be inserted into the visible artifact store or history.
 - Final sidecar metadata stores counts and lengths only:
   - `chunking_enabled`
   - `chunking_operation`
@@ -389,7 +429,7 @@ Modes:
 
 Backend upload handling:
 
-- ASR uses a new temp-file save path instead of `_read_upload()` so large source uploads do not have to fit the provider 10 MiB base64 limit.
+- ASR uses a new temp-file save path for all modes, including `off`, instead of `_read_upload()` so large source uploads do not have to fit the provider 10 MiB base64 limit or memory.
 - Enforce `chunking.asr.max_upload_mb` on raw uploaded bytes while streaming to temp file.
 - Reuse existing MIME/suffix validation.
 - Decode audio with `pydub` from the temp source file.
@@ -409,14 +449,15 @@ Browser chunk session handling:
   - `total_chunks` must be `<= max_chunks`.
   - Each uploaded chunk must pass MIME/suffix/signature validation.
   - Each provider-ready chunk must satisfy provider raw/base64 limits.
-- Browser-provided `offset_ms` and `duration_ms` are treated as a client plan, not truth. The backend decodes each chunk, records actual duration, and uses actual decoded duration for transcript timestamp offsets when available. If client offsets are non-monotonic or differ from decoded duration by more than 1000 ms, return 422.
-- Session creation may include `source_duration_ms`. If present, finish cross-checks the union of chunk offsets/durations against it. A gap or overrun larger than 1500 ms returns 422. If omitted, v1 cannot prove whole-source coverage and relies on monotonic offset/duration checks.
+- Browser-provided `offset_ms` is the chunk start offset and is used for transcript timestamp adjustment after validation. Offsets must be non-negative and strictly increasing by chunk index, while overlap is represented by `offset[i + 1] < offset[i] + duration[i]`.
+- Browser-provided `duration_ms` is treated as a client plan, not truth. The backend decodes each chunk, records actual duration, and rejects the chunk if client duration differs from decoded duration by more than 1000 ms.
+- `source_duration_ms` is required for browser chunk sessions. Finish cross-checks the union of chunk offsets/durations against it. A gap or overrun larger than 1500 ms returns 422.
 - Session state is stored under a private temp directory, not `data/artifacts`.
-- Session state contains only safe metadata and temp chunk paths.
+- Session state contains only safe metadata and temp chunk paths. Raw `source_file_name` is never stored; state may store `source_file_name_hash = sha256(basename).hexdigest()[:12]` and suffix.
 - A session expires after `session_ttl_seconds`.
 - `finish` fails if any chunk is missing.
 - Abandoned sessions are cleaned on startup and opportunistically during new session creation, chunk upload, finish, delete, and session lookup.
-- Each session's disk usage is bounded by `chunking.asr.max_upload_mb`; worst-case temporary leak before cleanup is roughly `active_or_expired_session_count * max_upload_mb`.
+- Each session's disk usage is bounded by `chunking.asr.max_upload_mb`; chunk upload must stream to disk with cumulative session byte accounting before accepting the chunk. Worst-case temporary leak before cleanup is roughly `active_or_expired_session_count * max_upload_mb`.
 - V1 does not run a periodic background cleanup task. If temp directory growth is observed in long-lived deployments, add a periodic cleanup task in a follow-up.
 
 Chunk planning:
@@ -432,7 +473,7 @@ Chunk planning:
 
 Provider requests:
 
-- Each chunk is sent as a normal `ASRRequest`.
+- Each chunk uses the normal `ASRRequest` shape, but it must go through an internal non-persisting provider call path. The chunk call returns a `TranscriptPayload`, not a visible transcript artifact.
 - `provider_id`, `model`, `language`, and validated `provider_options` are copied to every chunk request.
 - Provider options are copied unchanged to every chunk request. Options that must vary per chunk are out of scope for v1.
 - Per-chunk temp files are unlinked after the provider call completes.
@@ -484,20 +525,20 @@ When chunking ASR with timestamped segments:
 - Subtract the deduped overlap only from transcript text, not from segment timestamps.
 - Keep speaker labels as returned by provider.
 - Do not attempt cross-chunk speaker diarization reconciliation in v1.
-- `transcript_has_timestamps` is true if at least one chunk returned timestamped segments and those segments were successfully merged.
-- `transcript_has_speakers` is true if at least one merged segment has a speaker label.
+- `transcript_has_timestamps` is true only if the final rendered transcript can be fully represented by timestamped segments. If any non-empty merged text span lacks timestamps, the flag is false and SRT/VTT are disabled.
+- `transcript_has_speakers` is true only if every non-empty merged segment has a speaker label. Partial speaker labels remain available in JSON, but speaker-prefixed TXT variants are disabled when the flag is false.
 - Download renderers that require timestamps still return 422 when the final `transcript_has_timestamps` flag is false.
 
 Transcript merge:
 
 Without timestamps, v1 uses deterministic text overlap deduplication:
 
-1. Normalize whitespace for matching only:
+1. Build a normalized view for matching while preserving an index map back to original transcript text:
    - Collapse ASCII whitespace to one space.
    - Preserve CJK characters and punctuation order.
 2. For each next transcript, find the longest suffix of the accumulated transcript that equals a prefix of the next transcript.
 3. Search match lengths from `min(dedupe_max_chars, len(tail), len(next))` down to `dedupe_min_chars`.
-4. If a match exists, append only the non-overlapping suffix from the next transcript.
+4. If a match exists, use the normalized-to-original index map to append only the non-overlapping suffix from the original next transcript.
 5. If no match exists, append `\n` plus the next transcript.
 
 Defaults are `dedupe_min_chars=8` and `dedupe_max_chars=200`. The minimum avoids deleting tiny repeated particles; the maximum bounds CPU work and avoids matching across unrelated long sections. This is intentionally conservative. It removes exact repeated overlap text but does not attempt fuzzy semantic merging.
@@ -643,8 +684,8 @@ POST /v1/asr/chunk-sessions
   language
   total_chunks
   chunk_seconds
-  overlap_ms
-  source_duration_ms?
+  chunk_overlap_ms
+  source_duration_ms
   transcript_timestamps?
   transcript_speakers?
   provider_options?
@@ -672,12 +713,12 @@ Session creation returns:
   "session_id": "...",
   "expires_at": "...",
   "max_chunks": 80,
-  "browser_slice_formats": ["wav", "mp3", "m4a", "aac", "ogg", "webm"],
+  "browser_slice_formats": ["wav"],
   "backend_accept_formats": ["wav", "mp3", "m4a", "aac", "flac", "ogg", "webm"]
 }
 ```
 
-`browser_slice_formats` is the subset the frontend should offer for browser-side chunking. `backend_accept_formats` is the broader upload set accepted by backend whole-file upload and fallback paths.
+`browser_slice_formats` is the subset the frontend should upload after browser-side slicing. V1 uses WAV output because Web Audio can decode many input formats but browsers do not provide built-in encoders for mp3/m4a/aac/ogg/webm consistently. Input files may be any browser-decodable file from `backend_accept_formats`; the browser decodes them and uploads WAV chunks. If browser decode fails, fall back to backend whole-file upload.
 
 Chunk upload returns safe progress only:
 
@@ -755,6 +796,8 @@ ASR command adds:
 ```
 
 CLI output prints final artifact only, plus chunk count when chunking occurred.
+
+Provider-specific `provider_options` are API/frontend-only in v1. CLI support for arbitrary provider option JSON is deferred.
 
 Transcript download CLI may add later; v1 can document HTTP download URLs for `txt`, `srt`, `vtt`, and `json`.
 
@@ -843,10 +886,12 @@ apps/web/src/provider-options/
 Allowed new metadata keys:
 
 - `source_kind`
-- `uploaded_text_file_name`
+- `uploaded_text_file_name_hash`
 - `uploaded_text_file_suffix`
 - `uploaded_text_file_size_bytes`
 - `source_text_raw_char_count`
+- `source_file_name_hash`
+- `source_file_suffix`
 - `provider_option_keys`
 - `provider_option_safe_values`
 - `chunking_enabled`
@@ -864,7 +909,7 @@ Allowed new metadata keys:
 - `chunking_transcript_lengths`
 - `chunking_dedupe_removed_chars`
 
-Forbidden everywhere except temp files and provider requests:
+Forbidden everywhere except temp files, provider requests, final transcript artifact files, sibling transcript payload files, and explicit transcript download responses:
 
 - Raw uploaded text
 - Normalized text
@@ -881,6 +926,7 @@ This applies to sidecars, application logs, Uvicorn/FastAPI logs, provider adapt
 - TTS `text` and `text_file` both present: 422
 - TTS no text source and not design optimized preview: 422
 - Unsupported text file suffix: 422
+- Text file exceeds `chunking.tts.max_text_file_bytes`: 413
 - Invalid UTF-8 text file: 422
 - Normalized text empty: 422
 - Voice design with `chunking_mode=force`: 422
@@ -893,7 +939,9 @@ This applies to sidecars, application logs, Uvicorn/FastAPI logs, provider adapt
 - ASR browser chunk session finish with mismatched transcript/provider options: 409
 - ASR browser chunk session finish with missing chunks: 422
 - ASR browser chunk offset/duration inconsistent with decoded audio: 422
+- ASR browser chunk session missing `source_duration_ms`: 422
 - ASR browser chunk source coverage gap with `source_duration_ms`: 422
+- ASR browser chunk session cumulative upload exceeds `max_upload_mb`: 413
 - ASR chunk count exceeds max: 422
 - Unknown provider option key: 422
 - Provider option key for another capability: 422
@@ -928,7 +976,7 @@ Backend tests:
 - Leading audio tags can be repeated on later chunks.
 - TTS auto mode sends one provider call for short text.
 - TTS auto mode sends multiple provider calls for long text.
-- TTS force mode chunks short text.
+- TTS force mode runs the chunk planner for short text and may still produce one chunk.
 - TTS off mode rejects text over max chars.
 - TTS design mode never chunks and rejects `chunking_mode=force`.
 - TTS design mode rejects text/file longer than the single-call `max_chars`.
@@ -980,7 +1028,8 @@ Backend tests:
 - Browser chunk finish rejects missing chunks.
 - Browser chunk finish rejects mismatched resent `provider_options`.
 - Browser chunk upload rejects non-monotonic or materially wrong `offset_ms` / `duration_ms`.
-- Browser chunk finish rejects source coverage gaps when `source_duration_ms` is supplied.
+- Browser chunk session requires `source_duration_ms`.
+- Browser chunk finish rejects source coverage gaps.
 - Browser chunk finish passes stored `provider_options` to provider chunk calls.
 - Browser chunk finish produces the same operation response shape as whole-file ASR.
 - Browser chunk temp files are removed on success, cancel, and expiry cleanup.
@@ -1041,3 +1090,11 @@ Suggested API helpers:
 - `_finish_asr_chunk_session(...)`
 
 Existing provider adapters should not gain chunking logic.
+
+Provider internal call seam:
+
+- Add internal adapter methods or service helpers that can perform one provider call without writing to `ArtifactStore`:
+  - `synthesize_bytes(request: TTSRequest) -> ProviderAudioResult`
+  - `transcribe_payload(request: ASRRequest) -> TranscriptPayload`
+- Public `synthesize()` / `transcribe()` may delegate to these helpers and then persist the final artifact.
+- Chunking must call the non-persisting helpers and persist only the final merged artifact.
