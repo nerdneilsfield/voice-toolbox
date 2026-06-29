@@ -6,7 +6,7 @@ import secrets
 import shutil
 from datetime import UTC, datetime, timedelta
 from hashlib import sha1
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -72,6 +72,7 @@ class ASRChunkSessionStore:
         self.root = Path(root)
         self.ttl_seconds = ttl_seconds
         self.max_upload_bytes = max_upload_mb * 1024 * 1024
+        self._provider_options_by_session: dict[str, dict[str, object]] = {}
         self.session_root.mkdir(parents=True, exist_ok=True)
         self.session_root.chmod(0o700)
 
@@ -121,12 +122,13 @@ class ASRChunkSessionStore:
             source_file_suffix=source_suffix,
             transcript_timestamps=transcript_timestamps,
             transcript_speakers=transcript_speakers,
-            provider_options=dict(provider_options),
+            provider_options={},
             option_metadata=dict(option_metadata),
             max_upload_bytes=self.max_upload_bytes,
         )
+        self._provider_options_by_session[session_id] = dict(provider_options)
         self._write_metadata(metadata)
-        return metadata
+        return metadata.model_copy(update={"provider_options": dict(provider_options)})
 
     def load(
         self,
@@ -140,9 +142,12 @@ class ASRChunkSessionStore:
         if not path.is_file():
             raise ASRChunkSessionError("chunk session not found", status_code=404)
         try:
-            return ASRChunkSessionMetadata.model_validate_json(path.read_text(encoding="utf-8"))
+            metadata = ASRChunkSessionMetadata.model_validate_json(path.read_text(encoding="utf-8"))
         except (OSError, ValidationError) as exc:
             raise ASRChunkSessionError("chunk session metadata is invalid") from exc
+        return metadata.model_copy(
+            update={"provider_options": dict(self._provider_options_by_session.get(session_id, {}))}
+        )
 
     def write_chunk(
         self,
@@ -154,15 +159,25 @@ class ASRChunkSessionStore:
         duration_ms: int,
         mime_type: Literal["audio/wav"],
         suffix: Literal[".wav"],
+        max_raw_bytes: int | None = None,
+        max_base64_bytes: int | None = None,
         now: datetime | None = None,
     ) -> ASRChunkSessionMetadata:
         metadata = self.load(session_id, now=now)
         if chunk_index < 0 or chunk_index >= metadata.total_chunks:
             raise ASRChunkSessionError("chunk_index out of bounds")
         if chunk_index in metadata.chunks:
-            raise ASRChunkSessionError("duplicate chunk_index")
+            raise ASRChunkSessionError("duplicate chunk_index", status_code=409)
         if not data:
             raise ASRChunkSessionError("chunk file is empty")
+        base64_size = _base64_size(len(data))
+        if (max_raw_bytes is not None and len(data) > max_raw_bytes) or (
+            max_base64_bytes is not None and base64_size > max_base64_bytes
+        ):
+            raise ASRChunkSessionError(
+                "audio chunk exceeds provider payload limit",
+                status_code=413,
+            )
         if metadata.uploaded_bytes + len(data) > metadata.max_upload_bytes:
             raise ASRChunkSessionError("session upload quota exceeded", status_code=413)
         self._validate_chunk_timing(
@@ -181,7 +196,7 @@ class ASRChunkSessionStore:
             offset_ms=offset_ms,
             duration_ms=duration_ms,
             raw_byte_size=len(data),
-            base64_size=_base64_size(len(data)),
+            base64_size=base64_size,
             mime_type=mime_type,
             suffix=suffix,
         )
@@ -194,12 +209,13 @@ class ASRChunkSessionStore:
         if len(metadata.chunks) != metadata.total_chunks:
             raise ASRChunkSessionError("missing chunks")
         chunks = [metadata.chunks[index] for index in range(metadata.total_chunks)]
-        expected_offset_ms = 0
+        tolerance_ms = 1500
+        covered_end = 0
         for chunk in chunks:
-            if chunk.offset_ms != expected_offset_ms:
+            if chunk.offset_ms > covered_end + tolerance_ms:
                 raise ASRChunkSessionError("source_duration_ms coverage gap")
-            expected_offset_ms = chunk.end_ms
-        if expected_offset_ms != metadata.source_duration_ms:
+            covered_end = max(covered_end, chunk.end_ms)
+        if abs(covered_end - metadata.source_duration_ms) > tolerance_ms:
             raise ASRChunkSessionError("source_duration_ms coverage gap")
         return chunks
 
@@ -210,6 +226,7 @@ class ASRChunkSessionStore:
         if not path.exists():
             return False
         shutil.rmtree(path)
+        self._provider_options_by_session.pop(session_id, None)
         return True
 
     def cleanup_expired(self, *, now: datetime | None = None) -> None:
@@ -231,6 +248,7 @@ class ASRChunkSessionStore:
                 expires_at = expires_at.replace(tzinfo=UTC)
             if expires_at <= current_time:
                 shutil.rmtree(session_dir, ignore_errors=True)
+                self._provider_options_by_session.pop(metadata.session_id, None)
 
     def session_dir(self, session_id: str) -> Path:
         self._validate_session_id(session_id)
@@ -290,6 +308,13 @@ def generate_session_id() -> str:
 def _source_file_privacy_fields(filename: str | None) -> tuple[str | None, str]:
     if not filename:
         return None, ""
+    if "\x00" in filename or "/" in filename or "\\" in filename:
+        raise ASRChunkSessionError("source_file_name must be a plain filename")
+    if PureWindowsPath(filename).drive:
+        raise ASRChunkSessionError("source_file_name must be a plain filename")
+    raw_path = Path(filename)
+    if raw_path.is_absolute() or raw_path.name != filename:
+        raise ASRChunkSessionError("source_file_name must be a plain filename")
     basename = Path(filename).name
     digest = sha1(basename.encode("utf-8")).hexdigest()
     suffix = Path(basename).suffix.lower()

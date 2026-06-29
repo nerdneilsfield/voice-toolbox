@@ -207,6 +207,15 @@ class FishAudioProvider:
     def _build_asr_request(self, request: ASRRequest) -> dict[str, Any]:
         model = self._resolve_asr_model(request)
         self._validate_model_id(model, expected_capability=ASR_CAPABILITY)
+        fields: dict[str, str] = (
+            {"language": request.language} if request.language != "auto" else {}
+        )
+        for key, value in request.provider_options.items():
+            if key == "language":
+                raise ProviderError("provider option language cannot override ASR language")
+            if key in {"model", "audio"}:
+                raise ProviderError(f"provider option {key} cannot override core ASR field")
+            fields[key] = str(value)
         return {
             "model": model,
             "files": {
@@ -216,7 +225,7 @@ class FishAudioProvider:
                     request.mime_type,
                 )
             },
-            "fields": {"language": request.language} if request.language != "auto" else {},
+            "fields": fields,
         }
 
     def synthesize(

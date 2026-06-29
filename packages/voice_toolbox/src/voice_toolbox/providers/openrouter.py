@@ -176,6 +176,7 @@ class OpenRouterProvider:
         }
         if request.language != "auto":
             body["language"] = request.language
+        _apply_openrouter_asr_options(body, request.provider_options)
         return body
 
     def synthesize(
@@ -404,6 +405,17 @@ def _apply_openrouter_body_options(
     for key, value in options.items():
         if key in protected:
             raise ProviderError(f"provider option {key} cannot override core OpenRouter field")
+        body[key] = value
+
+
+def _apply_openrouter_asr_options(
+    body: dict[str, object],
+    options: Mapping[str, object],
+) -> None:
+    protected = {"model", "input_audio", "language"}
+    for key, value in options.items():
+        if key in protected:
+            raise ProviderError(f"provider option {key} cannot override core OpenRouter ASR field")
         body[key] = value
 
 

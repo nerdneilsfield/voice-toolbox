@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -11,9 +13,17 @@ class TranscriptSegment(BaseModel):
     end_seconds: float | None = Field(default=None, ge=0)
     speaker: str | None = None
 
-    @field_validator("text", "speaker", mode="after")
+    @field_validator("text", mode="after")
     @classmethod
-    def strip_text_fields(cls, value: str | None) -> str | None:
+    def strip_required_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("segment text is required")
+        return stripped
+
+    @field_validator("speaker", mode="after")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         stripped = value.strip()
@@ -48,9 +58,13 @@ class TranscriptPayload(BaseModel):
 
     @property
     def has_complete_timestamps(self) -> bool:
-        return bool(self.segments) and all(
-            segment.start_seconds is not None and segment.end_seconds is not None
-            for segment in self.segments
+        return (
+            bool(self.segments)
+            and all(
+                segment.start_seconds is not None and segment.end_seconds is not None
+                for segment in self.segments
+            )
+            and self._segments_cover_text()
         )
 
     @property
@@ -63,6 +77,10 @@ class TranscriptPayload(BaseModel):
         if self.has_complete_timestamps:
             formats.extend(["srt", "vtt"])
         return formats
+
+    def _segments_cover_text(self) -> bool:
+        segment_text = "".join(segment.text for segment in self.segments)
+        return _compact_text(segment_text) == _compact_text(self.text)
 
 
 def render_txt(
@@ -165,3 +183,7 @@ def _total_milliseconds(seconds: float | None) -> int:
 def _require_complete_timestamps(payload: TranscriptPayload, format_name: str) -> None:
     if not payload.has_complete_timestamps:
         raise ValueError(f"{format_name} rendering requires complete timestamps")
+
+
+def _compact_text(value: str) -> str:
+    return re.sub(r"\s+", "", value)

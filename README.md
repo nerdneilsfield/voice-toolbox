@@ -153,8 +153,21 @@ rtk curl -s http://127.0.0.1:8000/v1/normalize/text \
   -d '{"content":"# Title\n\nHello **MiMo**.","input_format":"markdown"}'
 ```
 
-Chunking options are reserved for future long-text workflows and are not
-implemented yet.
+Chunking is implemented for both TTS and ASR.
+
+TTS accepts inline text or `.txt` / `.md` uploads. Long text can be split with
+`--chunking auto|force`, `--chunk-max-chars`, and `--chunk-silence-ms`; the
+backend calls the selected provider per chunk and writes one merged audio
+artifact.
+
+ASR supports backend whole-file chunking with `--chunking`, `--chunk-seconds`,
+and `--chunk-overlap-ms`. The API also exposes browser chunk sessions under
+`/v1/asr/chunk-sessions` so the web client can upload browser-sliced WAV chunks
+and finish with one merged transcript artifact.
+
+Transcript artifacts can be downloaded as the source `.txt`, or rendered through
+`/v1/artifacts/{id}/transcript?format=txt|srt|vtt|json`. SRT/VTT are available
+only when the provider returns complete timestamps.
 
 ## Local Data
 

@@ -42,6 +42,7 @@ def merge_transcript_chunks(
         return TranscriptMergeResult(payload=TranscriptPayload(text=""), dedupe_removed_chars=0)
     merged_text = chunks[0].payload.text
     removed_chars = 0
+    overlap_by_chunk: dict[int, int] = {}
     for chunk in chunks[1:]:
         overlap = exact_suffix_prefix_overlap(
             merged_text,
@@ -50,6 +51,7 @@ def merge_transcript_chunks(
             max_chars=dedupe_max_chars,
         )
         if overlap:
+            overlap_by_chunk[id(chunk)] = overlap
             merged_text += chunk.payload.text[overlap:]
             removed_chars += overlap
         else:
@@ -60,7 +62,14 @@ def merge_transcript_chunks(
     segments: list[TranscriptSegment] = []
     for chunk in chunks:
         offset = chunk.start_seconds
+        overlap_remaining = overlap_by_chunk.get(id(chunk), 0)
         for segment in chunk.payload.segments:
+            original_segment_text_length = len(segment.text)
+            segment = _trim_segment_prefix(segment, overlap_remaining)
+            if segment is None:
+                overlap_remaining = max(0, overlap_remaining - original_segment_text_length)
+                continue
+            overlap_remaining = 0
             segments.append(
                 TranscriptSegment(
                     text=segment.text or "",
@@ -93,3 +102,27 @@ def exact_suffix_prefix_overlap(
         if previous[-size:] == current[:size]:
             return size
     return 0
+
+
+def _trim_segment_prefix(
+    segment: TranscriptSegment,
+    overlap_chars: int,
+) -> TranscriptSegment | None:
+    if overlap_chars <= 0:
+        return segment
+    text = segment.text
+    if overlap_chars >= len(text):
+        return None
+    trimmed_text = text[overlap_chars:].lstrip()
+    if not trimmed_text:
+        return None
+    start_seconds = segment.start_seconds
+    if start_seconds is not None and segment.end_seconds is not None and len(text) > 0:
+        ratio = min(1.0, max(0.0, overlap_chars / len(text)))
+        start_seconds = start_seconds + ((segment.end_seconds - start_seconds) * ratio)
+    return TranscriptSegment(
+        text=trimmed_text,
+        start_seconds=start_seconds,
+        end_seconds=segment.end_seconds,
+        speaker=segment.speaker,
+    )

@@ -242,6 +242,7 @@ def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) ->
         raw_byte_size=raw_size,
         base64_size=base64_size,
         language="zh",
+        provider_options={"asr_temperature": 0},
     )
 
     provider = MimoProvider(
@@ -264,6 +265,7 @@ def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) ->
                 ],
             }
         ],
+        "_extra_body": {"asr_options": {"language": "zh", "temperature": 0}},
     }
 
     client = FakeClient(_asr_completion("你好"))
@@ -274,7 +276,7 @@ def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) ->
         {
             "model": "mimo-v2.5-asr",
             "messages": body["messages"],
-            "extra_body": {"asr_options": {"language": "zh"}},
+            "extra_body": {"asr_options": {"language": "zh", "temperature": 0}},
             "timeout": GENERATION_TIMEOUT_SECONDS,
         }
     ]

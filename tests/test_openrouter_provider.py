@@ -176,6 +176,7 @@ def test_openrouter_asr_posts_base64_input_audio_and_writes_transcript(tmp_path:
         raw_byte_size=16,
         base64_size=24,
         language="en",
+        provider_options={"prompt": "domain words"},
     )
 
     artifact = provider.transcribe(request)
@@ -192,6 +193,7 @@ def test_openrouter_asr_posts_base64_input_audio_and_writes_transcript(tmp_path:
                     "format": "wav",
                 },
                 "language": "en",
+                "prompt": "domain words",
             },
             "timeout": 300.0,
         }

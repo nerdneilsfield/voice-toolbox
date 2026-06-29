@@ -128,6 +128,38 @@ def test_transcript_merge_offsets_segments_and_preserves_speakers() -> None:
     assert merged.payload.segments[1].speaker == "B"
 
 
+def test_transcript_merge_dedupes_overlapping_segments() -> None:
+    merged = merge_transcript_chunks(
+        [
+            TranscriptChunk(
+                TranscriptPayload(
+                    text="alpha overlap",
+                    segments=[
+                        TranscriptSegment(text="alpha", start_seconds=0, end_seconds=1),
+                        TranscriptSegment(text="overlap", start_seconds=1, end_seconds=2),
+                    ],
+                ),
+                start_seconds=0,
+            ),
+            TranscriptChunk(
+                TranscriptPayload(
+                    text="overlap beta",
+                    segments=[
+                        TranscriptSegment(text="overlap", start_seconds=0, end_seconds=1),
+                        TranscriptSegment(text="beta", start_seconds=1, end_seconds=2),
+                    ],
+                ),
+                start_seconds=1,
+            ),
+        ],
+        dedupe_min_chars=3,
+        dedupe_max_chars=20,
+    )
+
+    assert merged.payload.text == "alpha overlap beta"
+    assert [segment.text for segment in merged.payload.segments] == ["alpha", "overlap", "beta"]
+
+
 def test_plan_asr_audio_chunks_overlap_bounds_and_limits(tmp_path: Path) -> None:
     source = tmp_path / "source.wav"
     source.write_bytes(_wav_silence(21_000))
@@ -160,6 +192,16 @@ def test_plan_asr_audio_chunks_overlap_bounds_and_limits(tmp_path: Path) -> None
             max_raw_bytes=1_000_000,
             max_base64_bytes=1_400_000,
         )
+    with pytest.raises(ASRAudioChunkingError, match="overlap_ms"):
+        plan_asr_audio_chunks(
+            source,
+            source_format="wav",
+            output_dir=tmp_path / "negative-overlap",
+            config=config,
+            overlap_ms=-1,
+            max_raw_bytes=1_000_000,
+            max_base64_bytes=1_400_000,
+        )
     with pytest.raises(ASRAudioChunkingError, match="max_chunks"):
         plan_asr_audio_chunks(
             source,
@@ -182,13 +224,28 @@ def test_plan_asr_audio_chunks_overlap_bounds_and_limits(tmp_path: Path) -> None
 
 def test_asr_chunk_session_store_validates_uploads_and_privacy(tmp_path: Path) -> None:
     store = ASRChunkSessionStore(tmp_path, ttl_seconds=3600, max_upload_mb=1)
+    with pytest.raises(ASRChunkSessionError, match="plain filename"):
+        store.create(
+            provider_id="mimo",
+            model="fake-asr",
+            language="zh",
+            total_chunks=2,
+            source_duration_ms=2000,
+            source_file_name="../../private/speech.wav",
+            transcript_timestamps=True,
+            transcript_speakers=False,
+            provider_options={"hint": "secret"},
+            option_metadata={"provider_option_keys": ["hint"]},
+            max_chunks=4,
+        )
+
     session = store.create(
         provider_id="mimo",
         model="fake-asr",
         language="zh",
         total_chunks=2,
         source_duration_ms=2000,
-        source_file_name="../../private/speech.wav",
+        source_file_name="speech.wav",
         transcript_timestamps=True,
         transcript_speakers=False,
         provider_options={"hint": "secret"},
@@ -200,6 +257,8 @@ def test_asr_chunk_session_store_validates_uploads_and_privacy(tmp_path: Path) -
     assert session.source_file_suffix == ".wav"
     assert "private" not in store.metadata_path(session.session_id).read_text(encoding="utf-8")
     assert "speech.wav" not in store.metadata_path(session.session_id).read_text(encoding="utf-8")
+    assert "secret" not in store.metadata_path(session.session_id).read_text(encoding="utf-8")
+    assert store.load(session.session_id).provider_options == {"hint": "secret"}
 
     with pytest.raises(ASRChunkSessionError, match="chunk_index"):
         store.write_chunk(
@@ -295,8 +354,41 @@ def test_asr_chunk_session_store_quota_coverage_delete_and_expiry(tmp_path: Path
         mime_type="audio/wav",
         suffix=".wav",
     )
+    assert len(store.finish_chunks(session.session_id)) == 2
+
+    gap_session = store.create(
+        provider_id="mimo",
+        model=None,
+        language="auto",
+        total_chunks=2,
+        source_duration_ms=4000,
+        source_file_name="speech.wav",
+        transcript_timestamps=False,
+        transcript_speakers=False,
+        provider_options={},
+        option_metadata={},
+        max_chunks=4,
+    )
+    store.write_chunk(
+        gap_session.session_id,
+        chunk_index=0,
+        data=_wav_silence(1000),
+        offset_ms=0,
+        duration_ms=1000,
+        mime_type="audio/wav",
+        suffix=".wav",
+    )
+    store.write_chunk(
+        gap_session.session_id,
+        chunk_index=1,
+        data=_wav_silence(1000),
+        offset_ms=3000,
+        duration_ms=1000,
+        mime_type="audio/wav",
+        suffix=".wav",
+    )
     with pytest.raises(ASRChunkSessionError, match="coverage gap"):
-        store.finish_chunks(session.session_id)
+        store.finish_chunks(gap_session.session_id)
 
     assert store.delete(session.session_id) is True
     assert not store.session_dir(session.session_id).exists()
@@ -317,3 +409,21 @@ def test_asr_chunk_session_store_quota_coverage_delete_and_expiry(tmp_path: Path
     )
     expired.cleanup_expired(now=old_session.expires_at)
     assert not expired.session_dir(old_session.session_id).exists()
+
+    load_expired = expired.create(
+        provider_id="mimo",
+        model=None,
+        language="auto",
+        total_chunks=1,
+        source_duration_ms=1000,
+        source_file_name="speech.wav",
+        transcript_timestamps=False,
+        transcript_speakers=False,
+        provider_options={},
+        option_metadata={},
+        max_chunks=4,
+        now=old_session.created_at,
+    )
+    with pytest.raises(ASRChunkSessionError, match="not found"):
+        expired.load(load_expired.session_id, now=load_expired.expires_at)
+    assert not expired.session_dir(load_expired.session_id).exists()

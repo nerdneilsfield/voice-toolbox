@@ -64,6 +64,24 @@ def test_srt_and_vtt_reject_missing_timestamps() -> None:
         render_vtt(payload)
 
 
+def test_srt_and_vtt_reject_unsegmented_text_tail() -> None:
+    payload = TranscriptPayload(
+        text="hello\nworld",
+        segments=[TranscriptSegment(text="hello", start_seconds=0, end_seconds=1)],
+    )
+
+    assert payload.has_complete_timestamps is False
+    with pytest.raises(ValueError, match="timestamps"):
+        render_srt(payload)
+    with pytest.raises(ValueError, match="timestamps"):
+        render_vtt(payload)
+
+
+def test_segment_text_is_required() -> None:
+    with pytest.raises(ValueError, match="segment text"):
+        TranscriptSegment(text="   ", start_seconds=0, end_seconds=1)
+
+
 def test_json_renderer_returns_full_payload() -> None:
     payload = TranscriptPayload(
         text="hello",

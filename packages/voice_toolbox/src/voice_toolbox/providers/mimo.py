@@ -205,7 +205,7 @@ class MimoProvider:
         model = self._resolve_asr_model(request)
         self._validate_model_id(model, expected_capability=ASR_CAPABILITY)
         _validate_base64_size(request.base64_size)
-        return {
+        body: dict[str, Any] = {
             "model": model,
             "messages": [
                 {
@@ -219,6 +219,18 @@ class MimoProvider:
                 }
             ],
         }
+        asr_options: dict[str, object] = {"language": request.language}
+        for key, value in request.provider_options.items():
+            if key == "language":
+                raise ProviderError("provider option language cannot override ASR language")
+            if key.startswith("asr_"):
+                asr_options[key.removeprefix("asr_")] = value
+                continue
+            if key in {"model", "messages"}:
+                raise ProviderError(f"provider option {key} cannot override core ASR field")
+            body[key] = value
+        body["_extra_body"] = {"asr_options": asr_options}
+        return body
 
     def synthesize(
         self,
@@ -315,10 +327,11 @@ class MimoProvider:
             request.mime_type,
         )
         body = self._build_asr_body(request, audio_data_url)
+        extra_body = body.pop("_extra_body", None)
         completion = self._create_completion(
             body,
             timeout=ASR_TIMEOUT_SECONDS,
-            extra_body={"asr_options": {"language": request.language}},
+            extra_body=extra_body if isinstance(extra_body, dict) else None,
         )
         return TranscriptPayload(text=_message_content(completion))
 

@@ -31,7 +31,11 @@ from voice_toolbox.audio_conversion import (
 )
 from voice_toolbox.artifacts import SAFE_OPERATION_ID_PATTERN
 from voice_toolbox.artifacts import ArtifactStore
-from voice_toolbox.chunking.audio import ASRAudioChunkingError, plan_asr_audio_chunks
+from voice_toolbox.chunking.audio import (
+    ASRAudioChunkingError,
+    inspect_audio_duration_ms,
+    plan_asr_audio_chunks,
+)
 from voice_toolbox.chunking.merge import merge_audio_results
 from voice_toolbox.chunking.merge import TranscriptChunk, merge_transcript_chunks
 from voice_toolbox.chunking.models import TextSource
@@ -99,6 +103,8 @@ DOWNLOAD_AUDIO_FORMATS: set[DownloadAudioFormat] = {
     "ogg",
     "webm",
 }
+BROWSER_BACKEND_ACCEPT_FORMATS = sorted(DOWNLOAD_AUDIO_FORMATS - {"pcm"})
+BROWSER_CHUNK_DURATION_TOLERANCE_MS = 1000
 
 
 def create_app(
@@ -514,28 +520,22 @@ def create_app(
             )
             mime_type = _normalize_mime_type(file.content_type)
             suffix = _suffix_for_upload(file.filename)
-            source_bytes = source_path.read_bytes()
-            if len(source_bytes) > MAX_UPLOAD_RAW_BYTES and not (
-                source_bytes.startswith(b"RIFF")
-                or source_bytes.startswith(b"ID3")
-                or (
-                    len(source_bytes) >= 2
-                    and source_bytes[0] == 0xFF
-                    and source_bytes[1] & 0xE0 == 0xE0
-                )
+            source_prefix = _read_file_prefix(source_path, 16)
+            if not _file_fits_provider_limit(source_path) and not _looks_like_audio_header(
+                source_prefix
             ):
-                raise HTTPException(
-                    status_code=413,
-                    detail="audio base64 payload exceeds 10 MiB",
-                )
-            source_format = _validate_upload_signature(source_bytes, mime_type, suffix)
+                raise HTTPException(status_code=413, detail="audio base64 payload exceeds 10 MiB")
+            source_format = _validate_upload_signature(
+                source_prefix,
+                mime_type,
+                suffix,
+            )
             return _run_asr_upload(
                 http_request=http_request,
                 provider_id=provider_id,
                 model=model,
                 language=language,
                 source_path=source_path,
-                source_bytes=source_bytes,
                 source_format=source_format,
                 source_mime_type=mime_type,
                 source_suffix=suffix,
@@ -610,34 +610,56 @@ def create_app(
     ) -> dict[str, Any]:
         _ensure_browser_asr_chunking_enabled(http_request)
         store = _asr_chunk_session_store(http_request)
-        quota_session = store.load(session_id)
-        remaining_bytes = quota_session.max_upload_bytes - quota_session.uploaded_bytes
-        contents = file.file.read(remaining_bytes + 1)
-        if len(contents) > remaining_bytes:
-            raise HTTPException(status_code=413, detail="session upload quota exceeded")
+        try:
+            quota_session = store.load(session_id)
+        except ASRChunkSessionError as exc:
+            raise _chunk_session_http_error(exc) from exc
+        remaining_quota = quota_session.max_upload_bytes - quota_session.uploaded_bytes
+        remaining_bytes = min(remaining_quota, MAX_UPLOAD_RAW_BYTES)
+        contents = _read_upload_stream_limited(
+            file,
+            max_bytes=remaining_bytes,
+            too_large_detail=(
+                "audio chunk exceeds provider payload limit"
+                if MAX_UPLOAD_RAW_BYTES <= remaining_quota
+                else "session upload quota exceeded"
+            ),
+        )
         mime_type = _normalize_mime_type(file.content_type)
         suffix = _suffix_for_upload(file.filename)
         audio_format = _validate_upload_signature(contents, mime_type, suffix)
         if audio_format != "wav":
             raise HTTPException(status_code=422, detail="browser ASR chunks must be wav")
+        with tempfile.NamedTemporaryFile(suffix=".wav") as temp_chunk:
+            temp_chunk.write(contents)
+            temp_chunk.flush()
+            try:
+                actual_duration_ms = inspect_audio_duration_ms(
+                    Path(temp_chunk.name),
+                    source_format="wav",
+                )
+            except AudioConversionError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if abs(actual_duration_ms - duration_ms) > BROWSER_CHUNK_DURATION_TOLERANCE_MS:
+            raise HTTPException(status_code=422, detail="chunk duration does not match audio")
         try:
             session = store.write_chunk(
                 session_id,
                 chunk_index=chunk_index,
                 data=contents,
                 offset_ms=offset_ms,
-                duration_ms=duration_ms,
+                duration_ms=actual_duration_ms,
                 mime_type="audio/wav",
                 suffix=".wav",
+                max_raw_bytes=MAX_UPLOAD_RAW_BYTES,
+                max_base64_bytes=MAX_BASE64_AUDIO_SIZE,
             )
         except ASRChunkSessionError as exc:
             raise _chunk_session_http_error(exc) from exc
         return {
             "session_id": session.session_id,
-            "chunk_index": chunk_index,
-            "uploaded_chunks": len(session.chunks),
+            "received_chunks": len(session.chunks),
             "total_chunks": session.total_chunks,
-            "expires_at": session.expires_at.isoformat(),
         }
 
     @app.post("/v1/asr/chunk-sessions/{session_id}/finish")
@@ -667,11 +689,14 @@ def create_app(
             chunks = store.finish_chunks(session_id)
         except ASRChunkSessionError as exc:
             raise _chunk_session_http_error(exc) from exc
-        return _run_asr_chunk_session_finish(
-            http_request=http_request,
-            session=session,
-            chunks=chunks,
-        )
+        try:
+            return _run_asr_chunk_session_finish(
+                http_request=http_request,
+                session=session,
+                chunks=chunks,
+            )
+        finally:
+            store.delete(session_id)
 
     @app.delete("/v1/asr/chunk-sessions/{session_id}")
     def delete_asr_chunk_session(session_id: str, http_request: Request) -> dict[str, bool]:
@@ -849,7 +874,7 @@ def _asr_chunk_session_create_payload(
     return {
         "session_id": session.session_id,
         "browser_slice_formats": ["wav"],
-        "backend_accept_formats": sorted(DOWNLOAD_AUDIO_FORMATS),
+        "backend_accept_formats": BROWSER_BACKEND_ACCEPT_FORMATS,
         "max_chunks": config.chunking.asr.max_chunks,
         "expires_at": session.expires_at.isoformat(),
     }
@@ -1432,15 +1457,21 @@ def _reject_mismatched_session_finish(
     provider_options: str | None,
 ) -> None:
     if provider_id is not None and provider_id != session.provider_id:
-        raise ASRChunkSessionError("provider_id does not match chunk session")
+        raise ASRChunkSessionError("provider_id does not match chunk session", status_code=409)
     if model is not None and model != session.model:
-        raise ASRChunkSessionError("model does not match chunk session")
+        raise ASRChunkSessionError("model does not match chunk session", status_code=409)
     if language is not None and language != session.language:
-        raise ASRChunkSessionError("language does not match chunk session")
+        raise ASRChunkSessionError("language does not match chunk session", status_code=409)
     if transcript_timestamps is not None and transcript_timestamps != session.transcript_timestamps:
-        raise ASRChunkSessionError("transcript_timestamps does not match chunk session")
+        raise ASRChunkSessionError(
+            "transcript_timestamps does not match chunk session",
+            status_code=409,
+        )
     if transcript_speakers is not None and transcript_speakers != session.transcript_speakers:
-        raise ASRChunkSessionError("transcript_speakers does not match chunk session")
+        raise ASRChunkSessionError(
+            "transcript_speakers does not match chunk session",
+            status_code=409,
+        )
     if provider_options is None:
         return
     try:
@@ -1450,7 +1481,10 @@ def _reject_mismatched_session_finish(
     if normalize_provider_options(submitted) != normalize_provider_options(
         session.provider_options
     ):
-        raise ASRChunkSessionError("provider_options do not match chunk session")
+        raise ASRChunkSessionError(
+            "provider_options do not match chunk session",
+            status_code=409,
+        )
 
 
 def _run_asr_chunk_session_finish(
@@ -1522,7 +1556,7 @@ def _run_asr_chunk_session_finish(
             "chunking_enabled": True,
             "chunking_mode": "browser",
             "chunking_operation": "asr",
-            "chunking_overlap_ms": 0,
+            "chunking_overlap_ms": _max_chunk_overlap_ms(chunks),
             "chunking_strategy": "browser_upload",
             "chunking_transcript_lengths": [len(chunk.payload.text) for chunk in transcript_chunks],
             "language": session.language,
@@ -1565,7 +1599,6 @@ def _run_asr_upload(
     model: str | None,
     language: Literal["auto", "zh", "en"],
     source_path: Path,
-    source_bytes: bytes,
     source_format: AudioFormat,
     source_mime_type: str,
     source_suffix: str,
@@ -1592,13 +1625,13 @@ def _run_asr_upload(
     _ensure_model_allowed(provider, model, expected_capability=ASR_CAPABILITY)
     started_at = datetime.now(UTC)
     try:
-        provider_audio = _convert_upload_for_provider(
-            source_bytes,
-            source_format=source_format,
-            provider_id=provider_id,
-            operation="asr",
-        )
-        if resolved_mode != "force":
+        if resolved_mode != "force" and _file_fits_provider_limit(source_path):
+            provider_audio = _convert_upload_for_provider(
+                source_path.read_bytes(),
+                source_format=source_format,
+                provider_id=provider_id,
+                operation="asr",
+            )
             request_path = source_path.with_name(f"provider{provider_audio.suffix}")
             request_path.write_bytes(provider_audio.data)
             request = _build_asr_request(
@@ -1627,6 +1660,8 @@ def _run_asr_upload(
                 elapsed_ms=int((finished_at - started_at).total_seconds() * 1000),
             )
             return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
+        if resolved_mode == "off":
+            raise HTTPException(status_code=413, detail="audio base64 payload exceeds 10 MiB")
     except HTTPException as exc:
         if resolved_mode == "off" or exc.status_code != 413:
             raise
@@ -1682,6 +1717,16 @@ def _run_asr_upload(
         elapsed_ms=int((finished_at - started_at).total_seconds() * 1000),
     )
     return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
+
+
+def _max_chunk_overlap_ms(chunks: list[ASRChunkRecord]) -> int:
+    overlap = 0
+    previous_end = 0
+    for chunk in sorted(chunks, key=lambda item: item.offset_ms):
+        if chunk.offset_ms < previous_end:
+            overlap = max(overlap, previous_end - chunk.offset_ms)
+        previous_end = max(previous_end, chunk.end_ms)
+    return overlap
 
 
 def _run_chunked_asr(
@@ -1843,6 +1888,49 @@ def _read_upload(upload: UploadFile) -> bytes:
     return contents
 
 
+def _read_upload_stream_limited(
+    upload: UploadFile,
+    *,
+    max_bytes: int,
+    too_large_detail: str,
+) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        read_size = max(1, min(1024 * 1024, max_bytes + 1 - total))
+        chunk = upload.file.read(read_size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail=too_large_detail)
+    if total == 0:
+        raise HTTPException(status_code=422, detail="upload file is empty")
+    return b"".join(chunks)
+
+
+def _read_file_prefix(path: Path, byte_count: int) -> bytes:
+    with path.open("rb") as file:
+        return file.read(byte_count)
+
+
+def _file_fits_provider_limit(path: Path) -> bool:
+    raw_size = path.stat().st_size
+    return (
+        raw_size <= MAX_UPLOAD_RAW_BYTES
+        and _base64_size_by_length(raw_size) <= MAX_BASE64_AUDIO_SIZE
+    )
+
+
+def _looks_like_audio_header(contents: bytes) -> bool:
+    return (
+        contents.startswith(b"RIFF")
+        or contents.startswith(b"ID3")
+        or (len(contents) >= 2 and contents[0] == 0xFF and contents[1] & 0xE0 == 0xE0)
+    )
+
+
 def _save_upload_to_temp(
     upload: UploadFile,
     *,
@@ -1991,7 +2079,11 @@ def _safe_upload_filename(filename: str | None, suffix: str) -> str:
 
 
 def _base64_size(contents: bytes) -> int:
-    return ((len(contents) + 2) // 3) * 4
+    return _base64_size_by_length(len(contents))
+
+
+def _base64_size_by_length(raw_byte_size: int) -> int:
+    return ((raw_byte_size + 2) // 3) * 4
 
 
 def _file_name_hash(filename: str) -> str:

@@ -98,6 +98,10 @@ def plan_asr_audio_chunks(
 ) -> list[ASRAudioChunk]:
     target_ms = (target_seconds or config.target_seconds) * 1000
     resolved_overlap_ms = config.overlap_ms if overlap_ms is None else overlap_ms
+    if target_ms <= 0:
+        raise ASRAudioChunkingError("target_seconds must be greater than 0")
+    if resolved_overlap_ms < 0:
+        raise ASRAudioChunkingError("overlap_ms must be greater than or equal to 0")
     if resolved_overlap_ms >= target_ms / 2:
         raise ASRAudioChunkingError("overlap_ms must be less than half target_seconds")
     try:
@@ -155,6 +159,15 @@ def _decode_source_audio(source_path: Path, *, source_format: AudioFormat):
         source_path,
         format=PYDUB_INPUT_FORMAT_BY_FORMAT[source_format],
     )
+
+
+def inspect_audio_duration_ms(source_path: Path, *, source_format: AudioFormat) -> int:
+    try:
+        return len(_decode_source_audio(source_path, source_format=source_format))
+    except AudioConversionError:
+        raise
+    except Exception as exc:
+        raise AudioConversionError("audio duration inspection failed") from exc
 
 
 def _chunk_ranges(

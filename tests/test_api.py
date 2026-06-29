@@ -735,19 +735,30 @@ def test_asr_chunk_session_create_contract_and_validation(tmp_path: Path) -> Non
             "language": "zh",
             "total_chunks": "2",
             "source_duration_ms": "2000",
-            "source_file_name": "../../private/speech.wav",
+            "source_file_name": "speech.wav",
             "transcript_timestamps": "true",
             "provider_options": json.dumps({"hint": "secret"}),
+        },
+    )
+    malicious_name = client.post(
+        "/v1/asr/chunk-sessions",
+        data={
+            "provider_id": "mimo",
+            "total_chunks": "1",
+            "source_duration_ms": "1000",
+            "source_file_name": "../../private/speech.wav",
         },
     )
 
     assert missing_duration.status_code == 422
     assert too_many.status_code == 422
+    assert malicious_name.status_code == 422
     assert created.status_code == 200, created.text
     payload = created.json()
     assert payload["session_id"]
     assert payload["browser_slice_formats"] == ["wav"]
     assert "wav" in payload["backend_accept_formats"]
+    assert "pcm" not in payload["backend_accept_formats"]
     assert payload["max_chunks"] == 2
     store = client.app.state.asr_chunk_sessions
     metadata = store.load(payload["session_id"])
@@ -760,6 +771,7 @@ def test_asr_chunk_session_create_contract_and_validation(tmp_path: Path) -> Non
     raw_metadata = store.metadata_path(payload["session_id"]).read_text(encoding="utf-8")
     assert "private" not in raw_metadata
     assert "speech.wav" not in raw_metadata
+    assert "secret" not in raw_metadata
 
     disabled_client, _ = _client(
         tmp_path / "disabled",
@@ -819,9 +831,23 @@ def test_asr_chunk_session_upload_validation_and_quota(tmp_path: Path) -> None:
     assert bad_index.status_code == 422
     assert bad_offset.status_code == 422
     assert first.status_code == 200, first.text
-    assert duplicate.status_code == 422
+    assert first.json() == {"session_id": session_id, "received_chunks": 1, "total_chunks": 2}
+    assert duplicate.status_code == 409
     assert non_monotonic.status_code == 422
     assert provider.asr_requests == []
+
+    duration_session = client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "1", "source_duration_ms": "1000"},
+    )
+    duration_id = duration_session.json()["session_id"]
+    wrong_duration = client.post(
+        f"/v1/asr/chunk-sessions/{duration_id}/chunks",
+        data={"chunk_index": "0", "offset_ms": "0", "duration_ms": "2000"},
+        files={"file": ("chunk.wav", _wav_silence(100), "audio/wav")},
+    )
+    assert wrong_duration.status_code == 422
+    assert "duration" in wrong_duration.text
 
     quota = client.post(
         "/v1/asr/chunk-sessions",
@@ -875,12 +901,14 @@ def test_asr_chunk_session_finish_mismatch_coverage_and_success(tmp_path: Path) 
         f"/v1/asr/chunk-sessions/{session_id}/finish",
         data={"provider_options": json.dumps({"hint": "other"})},
     )
-    assert mismatch.status_code == 422
+    assert mismatch.status_code == 409
     assert provider.asr_requests == []
 
     provider.asr_payloads = [TranscriptPayload(text="hello "), TranscriptPayload(text="world")]
     finished = client.post(f"/v1/asr/chunk-sessions/{session_id}/finish")
     assert finished.status_code == 200, finished.text
+    repeated = client.post(f"/v1/asr/chunk-sessions/{session_id}/finish")
+    assert repeated.status_code == 404
     assert len(provider.asr_requests) == 2
     assert {request.provider_options["hint"] for request in provider.asr_requests} == {"secret"}
     artifact = finished.json()["artifact"]
@@ -892,10 +920,10 @@ def test_asr_chunk_session_finish_mismatch_coverage_and_success(tmp_path: Path) 
 
     gap = client.post(
         "/v1/asr/chunk-sessions",
-        data={"provider_id": "mimo", "total_chunks": "2", "source_duration_ms": "3000"},
+        data={"provider_id": "mimo", "total_chunks": "2", "source_duration_ms": "3600"},
     )
     gap_id = gap.json()["session_id"]
-    for index, offset in enumerate([0, 2000]):
+    for index, offset in enumerate([0, 2600]):
         client.post(
             f"/v1/asr/chunk-sessions/{gap_id}/chunks",
             data={"chunk_index": str(index), "offset_ms": str(offset), "duration_ms": "1000"},
@@ -934,6 +962,39 @@ def test_asr_chunk_session_delete_and_expiry_cleanup(tmp_path: Path) -> None:
     )
     assert create_cleanup.status_code == 200
     assert not store.session_dir(expired_id).exists()
+
+    def create_expired_session() -> str:
+        response = client.post(
+            "/v1/asr/chunk-sessions",
+            data={"provider_id": "mimo", "total_chunks": "1", "source_duration_ms": "1000"},
+        )
+        created_id = response.json()["session_id"]
+        created_metadata_path = store.metadata_path(created_id)
+        created_metadata = json.loads(created_metadata_path.read_text(encoding="utf-8"))
+        created_metadata["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        created_metadata_path.write_text(json.dumps(created_metadata), encoding="utf-8")
+        return created_id
+
+    for method, url in (
+        ("post", f"/v1/asr/chunk-sessions/{create_expired_session()}/chunks"),
+        ("post", f"/v1/asr/chunk-sessions/{create_expired_session()}/finish"),
+        ("delete", f"/v1/asr/chunk-sessions/{create_expired_session()}"),
+    ):
+        expired_route_id = url.split("/")[4]
+        if method == "delete":
+            response = client.delete(url)
+        else:
+            response = client.post(
+                url,
+                data={"chunk_index": "0", "offset_ms": "0", "duration_ms": "1000"}
+                if url.endswith("/chunks")
+                else {},
+                files={"file": ("chunk.wav", _wav_silence(1000), "audio/wav")}
+                if url.endswith("/chunks")
+                else None,
+            )
+        assert response.status_code == 404
+        assert not store.session_dir(expired_route_id).exists()
 
 
 def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) -> None:
