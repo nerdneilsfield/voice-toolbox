@@ -83,7 +83,7 @@ p {
 .app-shell {
   width: min(1280px, calc(100vw - 80px));
   margin: 0 auto;
-  padding: 24px 48px 48px;
+  padding: 24px 80px 48px;
 }
 
 .topbar {
