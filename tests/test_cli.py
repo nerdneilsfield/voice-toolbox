@@ -11,6 +11,7 @@ from voice_toolbox.models import (
     ASRRequest,
     ArtifactKind,
     AudioArtifact,
+    ProviderAudioResult,
     TranscriptArtifact,
     TTSRequest,
 )
@@ -34,6 +35,15 @@ class RecordingProvider:
 
     def list_voices(self) -> list[object]:
         return []
+
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self.tts_requests.append(request)
+        return ProviderAudioResult(
+            audio=f"WAV:{request.text}".encode(),
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=request.model,
+        )
 
     def synthesize(
         self,
@@ -134,6 +144,77 @@ def test_cli_tts_accepts_text_format_markdown(monkeypatch, tmp_path: Path) -> No
     assert result.exit_code == 0, result.output
     assert "audio" in result.output.lower()
     assert provider.tts_requests[0].text == "Title"
+
+
+def test_cli_tts_synthesize_accepts_file_and_chunk_options(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    source = tmp_path / "script.md"
+    source.write_text("# Title\n\n" + ("One. " * 80), encoding="utf-8")
+
+    def fake_merge(results, *, silence_ms, output_format):
+        assert len(results) > 1
+        assert silence_ms == 25
+        assert output_format == "wav"
+        return ProviderAudioResult(
+            audio=b"merged",
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=None,
+        )
+
+    monkeypatch.setattr(cli, "merge_audio_results", fake_merge, raising=False)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "tts",
+            "synthesize",
+            "--file",
+            str(source),
+            "--voice",
+            "Mia",
+            "--chunking",
+            "force",
+            "--chunk-max-chars",
+            "200",
+            "--chunk-silence-ms",
+            "25",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(provider.tts_requests) > 1
+    assert provider.tts_requests[0].text.startswith("Title")
+    assert "chunks:" in result.output
+
+
+def test_cli_tts_rejects_text_and_file(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    source = tmp_path / "script.txt"
+    source.write_text("from file", encoding="utf-8")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "tts",
+            "synthesize",
+            "--text",
+            "inline",
+            "--file",
+            str(source),
+            "--voice",
+            "Mia",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+    assert provider.tts_requests == []
 
 
 def test_tts_synthesize_rejects_unknown_format(monkeypatch, tmp_path: Path) -> None:

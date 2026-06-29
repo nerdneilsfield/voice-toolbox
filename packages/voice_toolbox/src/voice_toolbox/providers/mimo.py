@@ -29,6 +29,7 @@ from voice_toolbox.models import (
     ModelInfo,
     OperationResult,
     OperationStatus,
+    ProviderAudioResult,
     TranscriptArtifact,
     TTSMode,
     TTSRequest,
@@ -221,23 +222,17 @@ class MimoProvider:
         artifact_metadata: Mapping[str, object] | None = None,
     ) -> AudioArtifact:
         self._ensure_open()
-        self._ensure_tts_capability(request)
         operation_id = self._next_operation_id("tts")
         started_at = datetime.now(UTC)
+        result = self.synthesize_bytes(request)
         body = self._build_tts_body(request)
-        completion = self._create_completion(body, timeout=TTS_TIMEOUT_SECONDS)
-        audio_payload = _message_audio_data(completion)
-
-        try:
-            audio = base64.b64decode(audio_payload, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ProviderError("mimo response audio data is not valid base64") from exc
-
         artifact = self._artifact_store.write_audio(
             operation_id=operation_id,
             provider_id=self.id,
             operation="tts",
-            audio=audio,
+            audio=result.audio,
+            mime_type=result.mime_type,
+            suffix=result.suffix,
             metadata={
                 **dict(artifact_metadata or {}),
                 **_tts_metadata(request, body, provider_id=self.id),
@@ -254,6 +249,23 @@ class MimoProvider:
             )
         )
         return artifact
+
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self._ensure_open()
+        self._ensure_tts_capability(request)
+        body = self._build_tts_body(request)
+        completion = self._create_completion(body, timeout=TTS_TIMEOUT_SECONDS)
+        audio_payload = _message_audio_data(completion)
+        try:
+            audio = base64.b64decode(audio_payload, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ProviderError("mimo response audio data is not valid base64") from exc
+        return ProviderAudioResult(
+            audio=audio,
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=body.get("model") if isinstance(body.get("model"), str) else None,
+        )
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
         self._ensure_open()

@@ -27,6 +27,7 @@ from voice_toolbox.models import (
     ModelInfo,
     OperationResult,
     OperationStatus,
+    ProviderAudioResult,
     TTSMode,
     TTSRequest,
     TranscriptArtifact,
@@ -175,21 +176,17 @@ class OpenRouterProvider:
         artifact_metadata: Mapping[str, object] | None = None,
     ) -> AudioArtifact:
         self._ensure_open()
-        self._ensure_tts_capability(request)
         operation_id = self._next_operation_id("tts")
         started_at = datetime.now(UTC)
+        result = self.synthesize_bytes(request)
         body = self._build_tts_body(request)
-        response = self._post_json("/audio/speech", body, timeout=TTS_TIMEOUT_SECONDS)
-        if not response.content:
-            raise ProviderError("openrouter TTS response audio is empty")
-
         artifact = self._artifact_store.write_audio(
             operation_id=operation_id,
             provider_id=self.id,
             operation="tts",
-            audio=response.content,
-            mime_type="audio/mpeg",
-            suffix=".mp3",
+            audio=result.audio,
+            mime_type=result.mime_type,
+            suffix=result.suffix,
             metadata={
                 **dict(artifact_metadata or {}),
                 **_tts_metadata(request, body, provider_id=self.id),
@@ -206,6 +203,20 @@ class OpenRouterProvider:
             )
         )
         return artifact
+
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self._ensure_open()
+        self._ensure_tts_capability(request)
+        body = self._build_tts_body(request)
+        response = self._post_json("/audio/speech", body, timeout=TTS_TIMEOUT_SECONDS)
+        if not response.content:
+            raise ProviderError("openrouter TTS response audio is empty")
+        return ProviderAudioResult(
+            audio=response.content,
+            mime_type="audio/mpeg",
+            suffix=".mp3",
+            model=body.get("model") if isinstance(body.get("model"), str) else None,
+        )
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
         self._ensure_open()

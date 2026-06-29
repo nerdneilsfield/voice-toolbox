@@ -8,6 +8,7 @@ from voice_toolbox.models import (
     ASRRequest,
     AudioArtifact,
     ModelInfo,
+    ProviderAudioResult,
     TranscriptArtifact,
     TTSRequest,
     VoiceInfo,
@@ -56,6 +57,9 @@ class VoiceProvider(Protocol):
         *,
         artifact_metadata: Mapping[str, object] | None = None,
     ) -> AudioArtifact:
+        raise NotImplementedError
+
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
         raise NotImplementedError
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:

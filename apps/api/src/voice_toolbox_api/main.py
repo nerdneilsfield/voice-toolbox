@@ -31,7 +31,15 @@ from voice_toolbox.audio_conversion import (
     validate_mime_suffix_match,
 )
 from voice_toolbox.artifacts import SAFE_OPERATION_ID_PATTERN
+from voice_toolbox.artifacts import ArtifactStore
+from voice_toolbox.chunking.merge import merge_audio_results
 from voice_toolbox.chunking.models import TextSource
+from voice_toolbox.chunking.options import (
+    build_provider_option_metadata,
+    merge_provider_options,
+    parse_provider_options_json,
+    validate_provider_options,
+)
 from voice_toolbox.chunking.text import (
     TextSourceError,
     infer_text_format_from_upload,
@@ -51,6 +59,7 @@ from voice_toolbox.models import (
     Artifact,
     OperationResult,
     OperationStatus,
+    ProviderAudioResult,
     TTSMode,
     TTSRequest,
 )
@@ -206,10 +215,11 @@ def create_app(
     def synthesize(
         http_request: Request,
         sample: Annotated[UploadFile | None, File()] = None,
+        text_file: Annotated[UploadFile | None, File()] = None,
         provider_id: Annotated[str, Form()] = "mimo",
         mode: Annotated[TTSMode, Form()] = TTSMode.BUILTIN,
         text: Annotated[str | None, Form()] = None,
-        text_format: Annotated[Literal["plain", "markdown", "auto"], Form()] = "plain",
+        text_format: Annotated[Literal["plain", "markdown", "auto"] | None, Form()] = None,
         voice_id: Annotated[str | None, Form()] = None,
         voice_description: Annotated[str | None, Form()] = None,
         optimize_text_preview: Annotated[bool, Form()] = False,
@@ -217,6 +227,10 @@ def create_app(
         style_instruction: Annotated[str | None, Form()] = None,
         clone_reference_text: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
+        chunking_mode: Annotated[Literal["off", "auto", "force"] | None, Form()] = None,
+        chunk_max_chars: Annotated[int | None, Form()] = None,
+        chunk_silence_ms: Annotated[int | None, Form()] = None,
+        provider_options: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
         if sample is not None and mode != TTSMode.CLONE:
@@ -224,37 +238,79 @@ def create_app(
                 status_code=422, detail="sample upload is only valid for clone mode"
             )
         if mode == TTSMode.BUILTIN:
-            prepared = _prepare_tts_or_422(
-                raw_text=text,
+            validated_options, option_metadata = _validate_tts_provider_options(
+                http_request,
+                provider_id=provider_id,
+                model_id=model,
+                capability="tts.builtin",
+                raw_provider_options=provider_options,
+            )
+            source = _prepare_tts_source(
+                text=text,
+                text_file=text_file,
                 text_format=text_format,
+                config=_config_from_request(http_request),
+                mode=TTSMode.BUILTIN,
+            )
+            prepared = _prepare_tts_or_422(
+                raw_text=source,
+                text_format=None,
+                config=_config_from_request(http_request),
+                chunking_mode=chunking_mode,
+                chunk_max_chars=chunk_max_chars,
+                chunk_silence_ms=chunk_silence_ms,
                 fields={
                     "provider_id": provider_id,
                     "mode": TTSMode.BUILTIN,
                     "model": model,
                     "voice_id": voice_id,
                     "style_instruction": style_instruction,
+                    "provider_options": validated_options,
                 },
+                artifact_metadata=option_metadata,
             )
-            return _run_tts(_registry_from_request(http_request), provider_id, prepared)
+            return _run_tts(http_request, provider_id, prepared)
         if mode == TTSMode.DESIGN:
+            validated_options, option_metadata = _validate_tts_provider_options(
+                http_request,
+                provider_id=provider_id,
+                model_id=model,
+                capability="tts.design",
+                raw_provider_options=provider_options,
+            )
             raw_text = _design_raw_text(text, optimize_text_preview=optimize_text_preview)
-            prepared = _prepare_tts_or_422(
-                raw_text=raw_text,
+            source = _prepare_tts_source(
+                text=raw_text,
+                text_file=text_file,
                 text_format=text_format,
+                config=_config_from_request(http_request),
+                mode=TTSMode.DESIGN,
+                optimize_text_preview=optimize_text_preview,
+            )
+            prepared = _prepare_tts_or_422(
+                raw_text=source,
+                text_format=None,
+                config=_config_from_request(http_request),
+                chunking_mode=chunking_mode,
+                chunk_max_chars=chunk_max_chars,
+                chunk_silence_ms=chunk_silence_ms,
                 fields={
                     "provider_id": provider_id,
                     "mode": TTSMode.DESIGN,
                     "model": model,
                     "voice_description": voice_description,
                     "optimize_text_preview": optimize_text_preview,
+                    "provider_options": validated_options,
                 },
+                artifact_metadata=option_metadata,
             )
-            return _run_tts(_registry_from_request(http_request), provider_id, prepared)
+            return _run_tts(http_request, provider_id, prepared)
         if sample is None:
             raise HTTPException(status_code=422, detail="clone mode requires sample upload")
         return _run_clone_upload(
             http_request=http_request,
             sample=sample,
+            text_file=text_file,
             provider_id=provider_id,
             text=text or "",
             text_format=text_format,
@@ -262,31 +318,60 @@ def create_app(
             style_instruction=style_instruction,
             clone_reference_text=clone_reference_text,
             model=model,
+            chunking_mode=chunking_mode,
+            chunk_max_chars=chunk_max_chars,
+            chunk_silence_ms=chunk_silence_ms,
+            provider_options=provider_options,
         )
 
     @app.post("/v1/tts/builtin")
     def synthesize_builtin(
         http_request: Request,
         provider_id: Annotated[str, Form()] = "mimo",
-        text: Annotated[str, Form()] = "",
-        text_format: Annotated[Literal["plain", "markdown", "auto"], Form()] = "plain",
+        text: Annotated[str | None, Form()] = None,
+        text_file: Annotated[UploadFile | None, File()] = None,
+        text_format: Annotated[Literal["plain", "markdown", "auto"] | None, Form()] = None,
         voice_id: Annotated[str, Form()] = "",
         style_instruction: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
+        chunking_mode: Annotated[Literal["off", "auto", "force"] | None, Form()] = None,
+        chunk_max_chars: Annotated[int | None, Form()] = None,
+        chunk_silence_ms: Annotated[int | None, Form()] = None,
+        provider_options: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
-        prepared = _prepare_tts_or_422(
-            raw_text=text,
+        validated_options, option_metadata = _validate_tts_provider_options(
+            http_request,
+            provider_id=provider_id,
+            model_id=model,
+            capability="tts.builtin",
+            raw_provider_options=provider_options,
+        )
+        source = _prepare_tts_source(
+            text=text,
+            text_file=text_file,
             text_format=text_format,
+            config=_config_from_request(http_request),
+            mode=TTSMode.BUILTIN,
+        )
+        prepared = _prepare_tts_or_422(
+            raw_text=source,
+            text_format=None,
+            config=_config_from_request(http_request),
+            chunking_mode=chunking_mode,
+            chunk_max_chars=chunk_max_chars,
+            chunk_silence_ms=chunk_silence_ms,
             fields={
                 "provider_id": provider_id,
                 "mode": TTSMode.BUILTIN,
                 "model": model,
                 "voice_id": voice_id,
                 "style_instruction": style_instruction,
+                "provider_options": validated_options,
             },
+            artifact_metadata=option_metadata,
         )
-        return _run_tts(_registry_from_request(http_request), provider_id, prepared)
+        return _run_tts(http_request, provider_id, prepared)
 
     @app.post("/v1/tts/design")
     def synthesize_design(
@@ -294,48 +379,84 @@ def create_app(
         provider_id: Annotated[str, Form()] = "mimo",
         voice_description: Annotated[str, Form()] = "",
         text: Annotated[str | None, Form()] = None,
-        text_format: Annotated[Literal["plain", "markdown", "auto"], Form()] = "plain",
+        text_file: Annotated[UploadFile | None, File()] = None,
+        text_format: Annotated[Literal["plain", "markdown", "auto"] | None, Form()] = None,
         optimize_text_preview: Annotated[bool, Form()] = False,
         model: Annotated[str | None, Form()] = None,
+        chunking_mode: Annotated[Literal["off", "auto", "force"] | None, Form()] = None,
+        chunk_max_chars: Annotated[int | None, Form()] = None,
+        chunk_silence_ms: Annotated[int | None, Form()] = None,
+        provider_options: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
+        validated_options, option_metadata = _validate_tts_provider_options(
+            http_request,
+            provider_id=provider_id,
+            model_id=model,
+            capability="tts.design",
+            raw_provider_options=provider_options,
+        )
         raw_text = _design_raw_text(text, optimize_text_preview=optimize_text_preview)
-        prepared = _prepare_tts_or_422(
-            raw_text=raw_text,
+        source = _prepare_tts_source(
+            text=raw_text,
+            text_file=text_file,
             text_format=text_format,
+            config=_config_from_request(http_request),
+            mode=TTSMode.DESIGN,
+            optimize_text_preview=optimize_text_preview,
+        )
+        prepared = _prepare_tts_or_422(
+            raw_text=source,
+            text_format=None,
+            config=_config_from_request(http_request),
+            chunking_mode=chunking_mode,
+            chunk_max_chars=chunk_max_chars,
+            chunk_silence_ms=chunk_silence_ms,
             fields={
                 "provider_id": provider_id,
                 "mode": TTSMode.DESIGN,
                 "model": model,
                 "voice_description": voice_description,
                 "optimize_text_preview": optimize_text_preview,
+                "provider_options": validated_options,
             },
+            artifact_metadata=option_metadata,
         )
-        return _run_tts(_registry_from_request(http_request), provider_id, prepared)
+        return _run_tts(http_request, provider_id, prepared)
 
     @app.post("/v1/tts/clone")
     def synthesize_clone(
         http_request: Request,
         sample: Annotated[UploadFile, File()],
         provider_id: Annotated[str, Form()] = "mimo",
-        text: Annotated[str, Form()] = "",
-        text_format: Annotated[Literal["plain", "markdown", "auto"], Form()] = "plain",
+        text: Annotated[str | None, Form()] = None,
+        text_file: Annotated[UploadFile | None, File()] = None,
+        text_format: Annotated[Literal["plain", "markdown", "auto"] | None, Form()] = None,
         consent_confirmed: Annotated[bool, Form()] = False,
         style_instruction: Annotated[str | None, Form()] = None,
         clone_reference_text: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
+        chunking_mode: Annotated[Literal["off", "auto", "force"] | None, Form()] = None,
+        chunk_max_chars: Annotated[int | None, Form()] = None,
+        chunk_silence_ms: Annotated[int | None, Form()] = None,
+        provider_options: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
         return _run_clone_upload(
             http_request=http_request,
             sample=sample,
+            text_file=text_file,
             provider_id=provider_id,
-            text=text,
+            text=text or "",
             text_format=text_format,
             consent_confirmed=consent_confirmed,
             style_instruction=style_instruction,
             clone_reference_text=clone_reference_text,
             model=model,
+            chunking_mode=chunking_mode,
+            chunk_max_chars=chunk_max_chars,
+            chunk_silence_ms=chunk_silence_ms,
+            provider_options=provider_options,
         )
 
     @app.post("/v1/asr/transcribe")
@@ -606,6 +727,11 @@ def _prepare_tts_or_422(
     raw_text: str | TextSource | None,
     text_format: Literal["plain", "markdown", "auto"] | None,
     fields: dict[str, object],
+    config: AppConfig | None = None,
+    chunking_mode: Literal["off", "auto", "force"] | None = None,
+    chunk_max_chars: int | None = None,
+    chunk_silence_ms: int | None = None,
+    artifact_metadata: Mapping[str, object] | None = None,
 ) -> PreparedTTSRequest:
     text_length = len(raw_text.text) if isinstance(raw_text, TextSource) and raw_text.text else (
         len(raw_text) if isinstance(raw_text, str) else 0
@@ -613,7 +739,17 @@ def _prepare_tts_or_422(
     if text_length > MAX_TEXT_INPUT_LENGTH:
         raise HTTPException(status_code=413, detail="text exceeds 200000 characters")
     try:
-        return prepare_tts_request(raw_text, text_format or "plain", fields)
+        prepared = prepare_tts_request(
+            raw_text,
+            text_format,
+            fields,
+            chunking_config=(config.chunking.tts if config is not None else None),
+            chunking_mode=chunking_mode,
+            chunk_max_chars=chunk_max_chars,
+            chunk_silence_ms=chunk_silence_ms,
+        )
+        prepared.artifact_metadata.update(dict(artifact_metadata or {}))
+        return prepared
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_safe_validation_errors(exc)) from exc
     except ValueError as exc:
@@ -674,6 +810,37 @@ def _design_raw_text(text: str | None, *, optimize_text_preview: bool) -> str | 
     return (text or "").strip() or None
 
 
+def _validate_tts_provider_options(
+    request: Request,
+    *,
+    provider_id: str,
+    model_id: str | None,
+    capability: str,
+    raw_provider_options: str | None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    try:
+        submitted = parse_provider_options_json(raw_provider_options)
+        provider_config = _configured_provider_for_id(_config_from_request(request), provider_id)
+        model_options: list[Any] = []
+        if provider_config is not None and model_id is not None:
+            configured_model = next(
+                (model for model in provider_config.models if model.id == model_id),
+                None,
+            )
+            if configured_model is not None:
+                model_options = list(configured_model.options)
+        specs = merge_provider_options(
+            provider_config.options if provider_config is not None else [],
+            model_options,
+            capability=capability,
+        )
+        validated = validate_provider_options(submitted, specs, capability=capability)
+        metadata = build_provider_option_metadata(validated, specs)
+        return validated, metadata
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
     return [
         {key: error[key] for key in ("loc", "msg", "type") if key in error}
@@ -711,13 +878,18 @@ def _run_clone_upload(
     *,
     http_request: Request,
     sample: UploadFile,
+    text_file: UploadFile | None,
     provider_id: str,
     text: str,
-    text_format: Literal["plain", "markdown", "auto"],
+    text_format: Literal["plain", "markdown", "auto"] | None,
     consent_confirmed: bool,
     style_instruction: str | None,
     clone_reference_text: str | None,
     model: str | None,
+    chunking_mode: Literal["off", "auto", "force"] | None,
+    chunk_max_chars: int | None,
+    chunk_silence_ms: int | None,
+    provider_options: str | None,
 ) -> dict[str, Any]:
     registry = _registry_from_request(http_request)
     _ensure_tts_provider(
@@ -732,6 +904,13 @@ def _run_clone_upload(
             consent_confirmed=True,
         ),
     )
+    validated_options, option_metadata = _validate_tts_provider_options(
+        http_request,
+        provider_id=provider_id,
+        model_id=model,
+        capability="tts.clone",
+        raw_provider_options=provider_options,
+    )
     contents = _read_upload(sample)
     mime_type = _normalize_mime_type(sample.content_type)
     suffix = _suffix_for_upload(sample.filename)
@@ -745,9 +924,20 @@ def _run_clone_upload(
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / _safe_upload_filename(sample.filename, provider_audio.suffix)
         temp_path.write_bytes(provider_audio.data)
-        prepared = _prepare_tts_or_422(
-            raw_text=text,
+        source = _prepare_tts_source(
+            text=text,
+            text_file=text_file,
             text_format=text_format,
+            config=_config_from_request(http_request),
+            mode=TTSMode.CLONE,
+        )
+        prepared = _prepare_tts_or_422(
+            raw_text=source,
+            text_format=None,
+            config=_config_from_request(http_request),
+            chunking_mode=chunking_mode,
+            chunk_max_chars=chunk_max_chars,
+            chunk_silence_ms=chunk_silence_ms,
             fields={
                 "provider_id": provider_id,
                 "mode": TTSMode.CLONE,
@@ -759,16 +949,19 @@ def _run_clone_upload(
                 "clone_raw_byte_size": len(provider_audio.data),
                 "clone_base64_size": _base64_size(provider_audio.data),
                 "consent_confirmed": consent_confirmed,
+                "provider_options": validated_options,
             },
+            artifact_metadata=option_metadata,
         )
-        return _run_tts(registry, provider_id, prepared)
+        return _run_tts(http_request, provider_id, prepared)
 
 
 def _run_tts(
-    provider_registry: ProviderRegistry,
+    http_request: Request,
     provider_id: str,
     prepared: PreparedTTSRequest,
 ) -> dict[str, Any]:
+    provider_registry = _registry_from_request(http_request)
     provider = _ensure_tts_provider(provider_registry, provider_id, prepared.request)
     _ensure_model_allowed(
         provider,
@@ -783,11 +976,20 @@ def _run_tts(
     if prepared.artifact_metadata.get("source_kind") != "file":
         mode_metadata["source_text_preview"] = _preview_text(prepared.request.text)
     try:
-        artifact = provider.synthesize(
-            prepared.request,
-            artifact_metadata=mode_metadata,
-        )
-    except ProviderError as exc:
+        if prepared.chunk_plan is not None and prepared.chunk_plan.chunking_enabled:
+            artifact = _run_chunked_tts(
+                provider,
+                prepared=prepared,
+                metadata=mode_metadata,
+                artifact_root=http_request.app.state.artifact_root,
+                started_at=started_at,
+            )
+        else:
+            artifact = provider.synthesize(
+                prepared.request,
+                artifact_metadata=mode_metadata,
+            )
+    except (ProviderError, AudioConversionError) as exc:
         _log_operation(
             operation="tts",
             status="failed",
@@ -808,6 +1010,56 @@ def _run_tts(
         elapsed_ms=int((finished_at - started_at).total_seconds() * 1000),
     )
     return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
+
+
+def _run_chunked_tts(
+    provider: Any,
+    *,
+    prepared: PreparedTTSRequest,
+    metadata: dict[str, object],
+    artifact_root: Path,
+    started_at: datetime,
+) -> Artifact:
+    if prepared.chunk_plan is None:
+        raise ProviderError("chunk plan is required")
+    results: list[ProviderAudioResult] = []
+    for chunk in prepared.chunk_plan.chunks:
+        chunk_request = prepared.request.model_copy(update={"text": chunk.text})
+        results.append(provider.synthesize_bytes(chunk_request))
+    merged = merge_audio_results(
+        results,
+        silence_ms=prepared.chunk_plan.silence_ms,
+        output_format=prepared.request.output_format,
+    )
+    operation_id = f"tts-{uuid4().hex}"
+    final_metadata = {
+        **metadata,
+        "model": merged.model or prepared.request.model,
+        "operation": "tts",
+        "output_format": prepared.request.output_format,
+        "provider_id": prepared.request.provider_id,
+    }
+    store = ArtifactStore(artifact_root)
+    artifact = store.write_audio(
+        operation_id=operation_id,
+        provider_id=prepared.request.provider_id,
+        operation="tts",
+        audio=merged.audio,
+        mime_type=merged.mime_type,
+        suffix=merged.suffix,
+        metadata=final_metadata,
+    )
+    store.record_operation(
+        OperationResult(
+            operation_id=operation_id,
+            operation="tts",
+            status=OperationStatus.COMPLETED,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+            artifact_ids=[artifact.id],
+        )
+    )
+    return artifact
 
 
 def _operation_payload(

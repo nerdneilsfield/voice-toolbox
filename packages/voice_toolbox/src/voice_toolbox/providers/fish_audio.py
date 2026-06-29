@@ -30,6 +30,7 @@ from voice_toolbox.models import (
     ModelInfo,
     OperationResult,
     OperationStatus,
+    ProviderAudioResult,
     TTSMode,
     TTSRequest,
     TranscriptArtifact,
@@ -206,9 +207,37 @@ class FishAudioProvider:
         artifact_metadata: Mapping[str, object] | None = None,
     ) -> AudioArtifact:
         self._ensure_open()
-        self._ensure_tts_capability(request)
         operation_id = self._next_operation_id("tts")
         started_at = datetime.now(UTC)
+        result = self.synthesize_bytes(request)
+        body = self._build_tts_body(request)
+        artifact = self._artifact_store.write_audio(
+            operation_id=operation_id,
+            provider_id=self.id,
+            operation="tts",
+            audio=result.audio,
+            mime_type=result.mime_type,
+            suffix=result.suffix,
+            metadata={
+                **dict(artifact_metadata or {}),
+                **_tts_metadata(request, body, provider_id=self.id),
+            },
+        )
+        self._artifact_store.record_operation(
+            OperationResult(
+                operation_id=operation_id,
+                operation="tts",
+                status=OperationStatus.COMPLETED,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                artifact_ids=[artifact.id],
+            )
+        )
+        return artifact
+
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self._ensure_open()
+        self._ensure_tts_capability(request)
         body = self._build_tts_body(request)
         if request.mode == TTSMode.DESIGN:
             response = self._post_json(
@@ -236,28 +265,12 @@ class FishAudioProvider:
             audio = response.content
         if not audio:
             raise ProviderError("fish_audio response audio is empty")
-
-        artifact = self._artifact_store.write_audio(
-            operation_id=operation_id,
-            provider_id=self.id,
-            operation="tts",
+        return ProviderAudioResult(
             audio=audio,
-            metadata={
-                **dict(artifact_metadata or {}),
-                **_tts_metadata(request, body, provider_id=self.id),
-            },
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=body.get("model") if isinstance(body.get("model"), str) else None,
         )
-        self._artifact_store.record_operation(
-            OperationResult(
-                operation_id=operation_id,
-                operation="tts",
-                status=OperationStatus.COMPLETED,
-                started_at=started_at,
-                finished_at=datetime.now(UTC),
-                artifact_ids=[artifact.id],
-            )
-        )
-        return artifact
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
         self._ensure_open()

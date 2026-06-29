@@ -14,6 +14,7 @@ from voice_toolbox.models import (
     ModelInfo,
     OperationResult,
     OperationStatus,
+    ProviderAudioResult,
     TranscriptArtifact,
     TTSMode,
     TTSRequest,
@@ -101,12 +102,9 @@ class FakeProvider:
         artifact_metadata: Mapping[str, object] | None = None,
     ) -> AudioArtifact:
         self._ensure_open()
-        capability = TTS_MODE_CAPABILITIES[request.mode]
-        if capability not in self._capabilities:
-            raise UnsupportedCapability(f"fake provider does not support capability: {capability}")
-
         operation_id = self._next_operation_id("tts")
         started_at = datetime.now(UTC)
+        result = self.synthesize_bytes(request)
         metadata = {
             "model": request.model or "fake-tts",
             "operation": "tts",
@@ -122,7 +120,9 @@ class FakeProvider:
             operation_id=operation_id,
             provider_id=self.id,
             operation="tts",
-            audio=self._audio_bytes(request),
+            audio=result.audio,
+            mime_type=result.mime_type,
+            suffix=result.suffix,
             metadata=metadata,
         )
         self._artifact_store.record_operation(
@@ -136,6 +136,18 @@ class FakeProvider:
             )
         )
         return artifact
+
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self._ensure_open()
+        capability = TTS_MODE_CAPABILITIES[request.mode]
+        if capability not in self._capabilities:
+            raise UnsupportedCapability(f"fake provider does not support capability: {capability}")
+        return ProviderAudioResult(
+            audio=self._audio_bytes(request),
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=request.model or "fake-tts",
+        )
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
         self._ensure_open()

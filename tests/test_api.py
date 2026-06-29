@@ -11,10 +11,19 @@ from voice_toolbox.config import (
     AppConfig,
     ConfiguredProvider,
     ConsoleLoggingConfig,
+    ChunkingConfig,
     LoggingConfig,
     ProviderDefaultModels,
+    TTSChunkingConfig,
 )
-from voice_toolbox.models import ASRRequest, ModelInfo, TTSRequest, VoiceInfo
+from voice_toolbox.models import (
+    ASRRequest,
+    ModelInfo,
+    ProviderAudioResult,
+    ProviderOptionSpec,
+    TTSRequest,
+    VoiceInfo,
+)
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.fake import FakeProvider
 from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE, MIMO_VOICES
@@ -39,9 +48,22 @@ class RecordingMimoProvider(FakeProvider):
         self.clone_sample_bytes: list[bytes] = []
         self.clone_sample_exists_during_call: list[bool] = []
         self.asr_error: ProviderError | None = None
+        self.tts_error_after_calls: int | None = None
 
     def list_voices(self) -> list[VoiceInfo]:
         return [voice.model_copy() for voice in MIMO_VOICES]
+
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self.tts_requests.append(request)
+        if request.clone_sample_path is not None:
+            self.clone_sample_paths.append(request.clone_sample_path)
+            self.clone_sample_exists_during_call.append(request.clone_sample_path.exists())
+            self.clone_sample_bytes.append(request.clone_sample_path.read_bytes())
+        if self.tts_error_after_calls is not None and (
+            len(self.tts_requests) >= self.tts_error_after_calls
+        ):
+            raise ProviderError("chunk failed")
+        return super().synthesize_bytes(request)
 
     def synthesize(
         self,
@@ -49,11 +71,6 @@ class RecordingMimoProvider(FakeProvider):
         *,
         artifact_metadata: Mapping[str, object] | None = None,
     ):
-        self.tts_requests.append(request)
-        if request.clone_sample_path is not None:
-            self.clone_sample_paths.append(request.clone_sample_path)
-            self.clone_sample_exists_during_call.append(request.clone_sample_path.exists())
-            self.clone_sample_bytes.append(request.clone_sample_path.read_bytes())
         return super().synthesize(request, artifact_metadata=artifact_metadata)
 
     def transcribe(self, request: ASRRequest):
@@ -79,10 +96,16 @@ class NoCloneProvider(RecordingMimoProvider):
         return {"tts.builtin", "asr.transcribe"}
 
 
-def _test_config(*, host: str = "127.0.0.1") -> AppConfig:
+def _test_config(
+    *,
+    host: str = "127.0.0.1",
+    tts_chunking: TTSChunkingConfig | None = None,
+    provider_options: list[ProviderOptionSpec] | None = None,
+) -> AppConfig:
     return AppConfig(
         api=APIConfig(host=host, port=8000),
         logging=LoggingConfig(console=ConsoleLoggingConfig(enabled=False)),
+        chunking=ChunkingConfig(tts=tts_chunking or TTSChunkingConfig()),
         providers=[
             ConfiguredProvider(
                 id="mimo",
@@ -97,19 +120,23 @@ def _test_config(*, host: str = "127.0.0.1") -> AppConfig:
                     ModelInfo(id="fake-asr", name="Fake ASR", capability="asr.transcribe"),
                 ],
                 voices=[VoiceInfo(id="mimo_default", name="MiMo-默认")],
+                options=provider_options or [],
             )
         ],
     )
 
 
 def _client(
-    tmp_path: Path, *, has_api_key: bool = True
+    tmp_path: Path,
+    *,
+    has_api_key: bool = True,
+    config: AppConfig | None = None,
 ) -> tuple[TestClient, RecordingMimoProvider]:
     provider = RecordingMimoProvider(tmp_path)
     app = create_app(
         registry=ProviderRegistry([provider]),
         artifact_root=tmp_path,
-        config=_test_config(),
+        config=config or _test_config(),
         env_values={"MIMO_API_KEY": "test-key" if has_api_key else ""},
     )
     return TestClient(app), provider
@@ -503,6 +530,23 @@ def test_tts_endpoint_normalizes_markdown_and_writes_metadata(tmp_path: Path) ->
     assert "Hello **world**" not in str(response.json())
 
 
+def test_tts_builtin_accepts_text_file(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={"provider_id": "mimo", "voice_id": "Mia"},
+        files={"text_file": ("script.md", b"# Title\nHello **file**", "text/markdown")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert provider.tts_requests[-1].text == "Title\nHello file"
+    metadata = response.json()["artifact"]["metadata"]
+    assert metadata["source_kind"] == "file"
+    assert metadata["uploaded_text_file_suffix"] == ".md"
+    assert "source_text_preview" not in metadata
+
+
 def test_clone_endpoint_normalizes_markdown(tmp_path: Path) -> None:
     client, provider = _client(tmp_path)
 
@@ -522,6 +566,185 @@ def test_clone_endpoint_normalizes_markdown(tmp_path: Path) -> None:
     assert (
         response.json()["artifact"]["metadata"]["normalization_normalizer_id"] == "markdown_basic"
     )
+
+
+def test_tts_clone_accepts_text_file(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/clone",
+        data={"provider_id": "mimo", "consent_confirmed": "true"},
+        files={
+            "sample": ("sample.wav", WAV_BYTES, "audio/wav"),
+            "text_file": ("script.txt", b"clone from file", "text/plain"),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert provider.tts_requests[-1].text == "clone from file"
+
+
+def test_tts_design_text_file_rules(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    accepted = client.post(
+        "/v1/tts/design",
+        data={"provider_id": "mimo", "voice_description": "warm narrator"},
+        files={"text_file": ("preview.txt", b"preview from file", "text/plain")},
+    )
+    rejected_preview = client.post(
+        "/v1/tts/design",
+        data={
+            "provider_id": "mimo",
+            "voice_description": "warm narrator",
+            "optimize_text_preview": "true",
+        },
+        files={"text_file": ("preview.txt", b"preview from file", "text/plain")},
+    )
+    rejected_force = client.post(
+        "/v1/tts/design",
+        data={
+            "provider_id": "mimo",
+            "voice_description": "warm narrator",
+            "text": "preview",
+            "chunking_mode": "force",
+        },
+    )
+    rejected_long = client.post(
+        "/v1/tts/design",
+        data={
+            "provider_id": "mimo",
+            "voice_description": "warm narrator",
+            "text": "x" * 250,
+            "chunk_max_chars": "200",
+        },
+    )
+
+    assert accepted.status_code == 200, accepted.text
+    assert provider.tts_requests[-1].text == "preview from file"
+    assert rejected_preview.status_code == 422
+    assert rejected_force.status_code == 422
+    assert rejected_long.status_code == 422
+
+
+def test_long_builtin_tts_chunks_without_visible_intermediate_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client, provider = _client(tmp_path)
+
+    def fake_merge(results, *, silence_ms, output_format):
+        assert len(results) > 1
+        assert silence_ms == 25
+        return ProviderAudioResult(
+            audio=b"|".join(result.audio for result in results),
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=results[-1].model,
+        )
+
+    monkeypatch.setattr(api_main, "merge_audio_results", fake_merge, raising=False)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={
+            "provider_id": "mimo",
+            "text": "One. " * 80,
+            "voice_id": "Mia",
+            "chunk_max_chars": "200",
+            "chunk_silence_ms": "25",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(provider.tts_requests) > 1
+    artifact = response.json()["artifact"]
+    assert artifact["metadata"]["chunking_enabled"] is True
+    assert artifact["metadata"]["chunking_chunk_count"] == len(provider.tts_requests)
+    assert "chunk text" not in json.dumps(artifact["metadata"])
+    listed = client.get("/v1/artifacts").json()["artifacts"]
+    assert [item["id"] for item in listed] == [artifact["id"]]
+
+
+def test_provider_options_reach_every_tts_chunk(monkeypatch, tmp_path: Path) -> None:
+    config = _test_config(
+        provider_options=[
+            ProviderOptionSpec(
+                key="speed",
+                label="Speed",
+                type="number",
+                capability="tts.builtin",
+                min_value=0.5,
+                max_value=2.0,
+            )
+        ]
+    )
+    client, provider = _client(tmp_path, config=config)
+    monkeypatch.setattr(
+        api_main,
+        "merge_audio_results",
+        lambda results, *, silence_ms, output_format: ProviderAudioResult(
+            audio=b"merged",
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=None,
+        ),
+        raising=False,
+    )
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={
+            "provider_id": "mimo",
+            "text": "One. " * 80,
+            "voice_id": "Mia",
+            "chunk_max_chars": "200",
+            "provider_options": json.dumps({"speed": 1.25}),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(provider.tts_requests) > 1
+    assert {request.provider_options["speed"] for request in provider.tts_requests} == {1.25}
+    metadata = response.json()["artifact"]["metadata"]
+    assert metadata["provider_option_keys"] == ["speed"]
+    assert "1.25" not in json.dumps(metadata)
+
+
+def test_chunked_clone_reuses_temp_sample_and_cleans_on_provider_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client, provider = _client(tmp_path)
+    provider.tts_error_after_calls = 2
+    monkeypatch.setattr(
+        api_main,
+        "merge_audio_results",
+        lambda results, *, silence_ms, output_format: ProviderAudioResult(
+            audio=b"merged",
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=None,
+        ),
+        raising=False,
+    )
+
+    response = client.post(
+        "/v1/tts/clone",
+        data={
+            "provider_id": "mimo",
+            "text": "One. " * 80,
+            "consent_confirmed": "true",
+            "chunk_max_chars": "200",
+        },
+        files={"sample": ("sample.wav", WAV_BYTES, "audio/wav")},
+    )
+
+    assert response.status_code == 502
+    assert len(provider.clone_sample_paths) == 2
+    assert len({path for path in provider.clone_sample_paths}) == 1
+    assert provider.clone_sample_exists_during_call == [True, True]
+    assert not provider.clone_sample_paths[0].parent.exists()
 
 
 def test_clone_upload_converts_non_native_audio_before_provider(

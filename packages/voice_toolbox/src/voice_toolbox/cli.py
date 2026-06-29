@@ -2,16 +2,29 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal, NoReturn, cast
+from typing import Annotated, Any, BinaryIO, Literal, NoReturn, cast
 
 import typer
 from loguru import logger
 from pydantic import ValidationError
 
+from voice_toolbox.artifacts import ArtifactStore
+from voice_toolbox.audio_conversion import AudioConversionError
+from voice_toolbox.chunking.merge import merge_audio_results
+from voice_toolbox.chunking.models import TextSource
+from voice_toolbox.chunking.text import TextSourceError, resolve_text_source
 from voice_toolbox.config import AppConfig, load_app_config, load_env_values, replay_config_warnings
 from voice_toolbox.logging_config import configure_logging, sanitize_log_metadata
-from voice_toolbox.models import ASRRequest, AudioArtifact, TranscriptArtifact, TTSMode
+from voice_toolbox.models import (
+    ASRRequest,
+    AudioArtifact,
+    OperationResult,
+    OperationStatus,
+    TranscriptArtifact,
+    TTSMode,
+)
 from voice_toolbox.models import TTSOutputFormat
 from voice_toolbox.pipeline import PreparedTTSRequest, prepare_tts_request
 from voice_toolbox.providers import ProviderError, ProviderRegistry
@@ -33,12 +46,38 @@ _CLI_CONFIG: AppConfig | None = None
 _CLI_ENV_VALUES: dict[str, str] | None = None
 _CLI_LOGGING_SIGNATURE: tuple[str | None, str] | None = None
 
+
+class _PathTextUpload:
+    filename: str | None
+    content_type: str | None
+    file: BinaryIO
+
+    def __init__(self, path: Path, file: BinaryIO) -> None:
+        resolved = path.expanduser()
+        self.filename = resolved.name
+        self.content_type: str | None = None
+        self.file = file
+
+
 ProviderOption = Annotated[str | None, typer.Option("--provider", help="Provider id.")]
 TextOption = Annotated[str, typer.Option("--text", help="Text to synthesize.")]
 OptionalTextOption = Annotated[str | None, typer.Option("--text", help="Text to synthesize.")]
 TextFormatOption = Annotated[
-    Literal["plain", "markdown", "auto"],
+    Literal["plain", "markdown", "auto"] | None,
     typer.Option("--text-format", help="Input text format."),
+]
+TextFileOption = Annotated[Path | None, typer.Option("--file", help="Text file: .txt/.md.")]
+ChunkingOption = Annotated[
+    Literal["off", "auto", "force"] | None,
+    typer.Option("--chunking", help="TTS chunking mode."),
+]
+ChunkMaxCharsOption = Annotated[
+    int | None,
+    typer.Option("--chunk-max-chars", help="Max chars per TTS chunk."),
+]
+ChunkSilenceMsOption = Annotated[
+    int | None,
+    typer.Option("--chunk-silence-ms", help="Silence between TTS chunks in milliseconds."),
 ]
 ModelOption = Annotated[str | None, typer.Option("--model", help="Provider model id.")]
 FormatOption = Annotated[str, typer.Option("--format", help="Output format: wav or mp3.")]
@@ -65,19 +104,35 @@ def main() -> None:
 
 @tts_app.command()
 def synthesize(
-    text: TextOption,
     voice: Annotated[str, typer.Option("--voice", help="Voice id.")],
+    text: OptionalTextOption = None,
+    file: TextFileOption = None,
     provider: ProviderOption = None,
-    text_format: TextFormatOption = "plain",
+    text_format: TextFormatOption = None,
     model: ModelOption = None,
     output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
     style: StyleOption = None,
+    chunking: ChunkingOption = None,
+    chunk_max_chars: ChunkMaxCharsOption = None,
+    chunk_silence_ms: ChunkSilenceMsOption = None,
 ) -> None:
+    config, _ = _load_cli_context()
     registry = build_provider_registry()
     provider_id = _resolve_provider_id(registry, provider)
-    prepared = _prepare_tts_or_fail(
-        raw_text=text,
+    source = _prepare_text_source_or_fail(
+        text=text,
+        file=file,
         text_format=text_format,
+        config=config,
+        mode=TTSMode.BUILTIN,
+    )
+    prepared = _prepare_tts_or_fail(
+        raw_text=source,
+        text_format=None,
+        config=config,
+        chunking_mode=chunking,
+        chunk_max_chars=chunk_max_chars,
+        chunk_silence_ms=chunk_silence_ms,
         fields={
             "provider_id": provider_id,
             "mode": TTSMode.BUILTIN,
@@ -95,21 +150,38 @@ def synthesize(
 def design(
     description: Annotated[str, typer.Option("--description", help="Voice description.")],
     text: OptionalTextOption = None,
+    file: TextFileOption = None,
     optimize_text_preview: Annotated[
         bool,
         typer.Option("--optimize-text-preview", help="Let provider optimize preview text."),
     ] = False,
     provider: ProviderOption = None,
-    text_format: TextFormatOption = "plain",
+    text_format: TextFormatOption = None,
     model: ModelOption = None,
     output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
+    chunking: ChunkingOption = None,
+    chunk_max_chars: ChunkMaxCharsOption = None,
+    chunk_silence_ms: ChunkSilenceMsOption = None,
 ) -> None:
+    config, _ = _load_cli_context()
     registry = build_provider_registry()
     provider_id = _resolve_provider_id(registry, provider)
     raw_text = _design_raw_text(text, optimize_text_preview=optimize_text_preview)
-    prepared = _prepare_tts_or_fail(
-        raw_text=raw_text,
+    source = _prepare_text_source_or_fail(
+        text=raw_text,
+        file=file,
         text_format=text_format,
+        config=config,
+        mode=TTSMode.DESIGN,
+        optimize_text_preview=optimize_text_preview,
+    )
+    prepared = _prepare_tts_or_fail(
+        raw_text=source,
+        text_format=None,
+        config=config,
+        chunking_mode=chunking,
+        chunk_max_chars=chunk_max_chars,
+        chunk_silence_ms=chunk_silence_ms,
         fields={
             "provider_id": provider_id,
             "mode": TTSMode.DESIGN,
@@ -139,23 +211,37 @@ def clone(
         typer.Option("--consent", help="Confirm rights and consent for uploaded voice sample."),
     ] = False,
     provider: ProviderOption = None,
-    text_format: TextFormatOption = "plain",
+    file: TextFileOption = None,
+    text_format: TextFormatOption = None,
     model: ModelOption = None,
     output_format: FormatOption = DEFAULT_OUTPUT_FORMAT,
     style: StyleOption = None,
+    chunking: ChunkingOption = None,
+    chunk_max_chars: ChunkMaxCharsOption = None,
+    chunk_silence_ms: ChunkSilenceMsOption = None,
 ) -> None:
     if sample is None:
         _fail("--sample is required")
-    if text is None:
-        _fail("--text is required")
+    config, _ = _load_cli_context()
+    source = _prepare_text_source_or_fail(
+        text=text,
+        file=file,
+        text_format=text_format,
+        config=config,
+        mode=TTSMode.CLONE,
+    )
     sample = _normalize_existing_audio_path(sample)
     consent_confirmed = _confirm_clone_consent(consent)
     mime_type, raw_byte_size, base64_size = _audio_upload_metadata(sample)
     registry = build_provider_registry()
     provider_id = _resolve_provider_id(registry, provider)
     prepared = _prepare_tts_or_fail(
-        raw_text=text,
-        text_format=text_format,
+        raw_text=source,
+        text_format=None,
+        config=config,
+        chunking_mode=chunking,
+        chunk_max_chars=chunk_max_chars,
+        chunk_silence_ms=chunk_silence_ms,
         fields={
             "provider_id": provider_id,
             "mode": TTSMode.CLONE,
@@ -209,16 +295,63 @@ def transcribe(
 
 def _prepare_tts_or_fail(
     *,
-    raw_text: str | None,
-    text_format: Literal["plain", "markdown", "auto"],
+    raw_text: str | TextSource | None,
+    text_format: Literal["plain", "markdown", "auto"] | None,
     fields: dict[str, object],
+    config: AppConfig,
+    chunking_mode: Literal["off", "auto", "force"] | None = None,
+    chunk_max_chars: int | None = None,
+    chunk_silence_ms: int | None = None,
 ) -> PreparedTTSRequest:
     try:
-        return prepare_tts_request(raw_text, text_format, fields)
+        return prepare_tts_request(
+            raw_text,
+            text_format,
+            fields,
+            chunking_config=config.chunking.tts,
+            chunking_mode=chunking_mode,
+            chunk_max_chars=chunk_max_chars,
+            chunk_silence_ms=chunk_silence_ms,
+        )
     except ValidationError as exc:
         _fail(_safe_validation_message(exc))
     except ValueError as exc:
         _fail(str(exc))
+
+
+def _prepare_text_source_or_fail(
+    *,
+    text: str | None,
+    file: Path | None,
+    text_format: Literal["plain", "markdown", "auto"] | None,
+    config: AppConfig,
+    mode: TTSMode,
+    optimize_text_preview: bool = False,
+) -> TextSource:
+    try:
+        if file is not None:
+            with file.expanduser().open("rb") as file_obj:
+                upload = _PathTextUpload(file, file_obj)
+                return resolve_text_source(
+                    text=text,
+                    text_file=upload,
+                    text_format=text_format,
+                    max_text_file_bytes=config.chunking.tts.max_text_file_bytes,
+                    mode=mode,
+                    optimize_text_preview=optimize_text_preview,
+                )
+        return resolve_text_source(
+            text=text,
+            text_file=None,
+            text_format=text_format,
+            max_text_file_bytes=config.chunking.tts.max_text_file_bytes,
+            mode=mode,
+            optimize_text_preview=optimize_text_preview,
+        )
+    except TextSourceError as exc:
+        _fail(exc.detail)
+    except OSError:
+        _fail(f"file not found: {file}")
 
 
 def _design_raw_text(text: str | None, *, optimize_text_preview: bool) -> str | None:
@@ -234,10 +367,13 @@ def _synthesize(
 ) -> AudioArtifact:
     try:
         provider = registry.ensure_tts_capability(provider_id, prepared.request)
-        artifact = provider.synthesize(
-            prepared.request,
-            artifact_metadata=prepared.artifact_metadata,
-        )
+        if prepared.chunk_plan is not None and prepared.chunk_plan.chunking_enabled:
+            artifact = _synthesize_chunked(provider, prepared)
+        else:
+            artifact = provider.synthesize(
+                prepared.request,
+                artifact_metadata=prepared.artifact_metadata,
+            )
         _log_cli_operation(
             operation="tts",
             status="completed",
@@ -247,7 +383,7 @@ def _synthesize(
             artifact_id=artifact.id,
         )
         return artifact
-    except ProviderError as exc:
+    except (ProviderError, AudioConversionError) as exc:
         _log_cli_operation(
             operation="tts",
             status="failed",
@@ -257,6 +393,51 @@ def _synthesize(
             error_summary=str(exc),
         )
         _fail(str(exc))
+
+
+def _synthesize_chunked(provider: Any, prepared: PreparedTTSRequest) -> AudioArtifact:
+    if prepared.chunk_plan is None:
+        raise ProviderError("chunk plan is required")
+    started_at = datetime.now(UTC)
+    results = [
+        provider.synthesize_bytes(prepared.request.model_copy(update={"text": chunk.text}))
+        for chunk in prepared.chunk_plan.chunks
+    ]
+    merged = merge_audio_results(
+        results,
+        silence_ms=prepared.chunk_plan.silence_ms,
+        output_format=prepared.request.output_format,
+    )
+    artifact_root = Path(getattr(provider, "artifact_root", Path.cwd()))
+    store = ArtifactStore(artifact_root)
+    operation_id = f"tts-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{id(merged):x}"
+    artifact = store.write_audio(
+        operation_id=operation_id,
+        provider_id=prepared.request.provider_id,
+        operation="tts",
+        audio=merged.audio,
+        mime_type=merged.mime_type,
+        suffix=merged.suffix,
+        metadata={
+            **prepared.artifact_metadata,
+            "model": merged.model or prepared.request.model,
+            "operation": "tts",
+            "output_format": prepared.request.output_format,
+            "provider_id": prepared.request.provider_id,
+            "tts_mode": prepared.request.mode.value,
+        },
+    )
+    store.record_operation(
+        OperationResult(
+            operation_id=operation_id,
+            operation="tts",
+            status=OperationStatus.COMPLETED,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+            artifact_ids=[artifact.id],
+        )
+    )
+    return artifact
 
 
 def _transcribe(
@@ -385,6 +566,9 @@ def _safe_validation_message(exc: ValidationError) -> str:
 def _print_audio_artifact(artifact: AudioArtifact) -> None:
     typer.echo(f"id: {artifact.id}")
     typer.echo(f"mime: {artifact.mime_type}")
+    chunk_count = artifact.metadata.get("chunking_chunk_count")
+    if artifact.metadata.get("chunking_enabled") is True and isinstance(chunk_count, int):
+        typer.echo(f"chunks: {chunk_count}")
 
 
 def _print_transcript_artifact(artifact: TranscriptArtifact) -> None:
