@@ -33,12 +33,11 @@
 - `tests/test_chunking_audio.py`
 - `tests/test_provider_options.py`
 - `tests/test_transcripts.py`
-- `apps/web/src/provider-options/ProviderOptionsPanel.tsx`
-- `apps/web/src/provider-options/SchemaOptionsForm.tsx`
-- `apps/web/src/provider-options/mimo.tsx`
-- `apps/web/src/provider-options/fishAudio.tsx`
-- `apps/web/src/provider-options/openrouter.tsx`
-- `apps/web/src/provider-options/providerOptions.test.tsx`
+- `apps/web/src/components/ProviderOptionsPanel.tsx`
+- `apps/web/src/lib/providerOptions.ts`
+- `apps/web/src/lib/providerOptions.test.ts`
+- `apps/web/src/lib/audioChunks.ts`
+- `apps/web/src/lib/audioChunks.test.ts`
 
 ## Modified Files
 
@@ -110,6 +109,7 @@
   - validate type, range, choices, required, and capability
   - build `provider_option_keys` and `provider_option_safe_values`
   - compare normalized provider option dictionaries with sorted keys and numeric equality for session finish checks
+  - expose a stable fingerprint helper for browser chunk sessions so raw option values never need to be persisted
 
 - [ ] Extend provider/model summary models so API can return:
   - provider `type`
@@ -456,19 +456,23 @@ rtk git commit -m "feat: transcribe chunked audio"
 - [ ] Add failing tests in `tests/test_api.py` and `tests/test_chunking_audio.py`:
   - create session returns server-generated ID
   - disabled browser upload returns 422 fixed message
-  - create stores provider/model/language/transcript options/provider options
+  - create stores provider/model/language/transcript options and a `provider_options` fingerprint, not raw `provider_options`
   - create rejects `total_chunks > max_chunks`
   - chunk upload rejects `chunk_index < 0` or `chunk_index >= total_chunks`
   - chunk upload rejects duplicate index
   - chunk upload rejects invalid signature
+  - chunk upload rejects decoded WAV duration mismatch
+  - chunk upload rejects chunks larger than provider raw/base64 limits
   - chunk upload rejects malicious/path-like `source_file_name` and stores only filename hash/suffix
   - chunk upload enforces cumulative session byte quota and returns 413 over `max_upload_mb`
   - chunk upload rejects bad/non-monotonic offset or duration
   - create requires `source_duration_ms`
   - `source_duration_ms` catches coverage gaps
   - finish rejects missing chunks
-  - finish rejects mismatched transcript/provider options
-  - finish passes stored provider options to every provider call
+  - finish rejects mismatched transcript/provider options by comparing resent options to the stored fingerprint
+  - finish can complete after process reload when the client resends matching `provider_options`
+  - finish rejects sessions that require `provider_options` when the client omits them and no in-memory copy exists
+  - finish passes validated provider options to every provider call
   - finish returns normal operation response
   - delete/cancel removes temp dir
   - expired sessions removed on startup/create/upload/finish/delete/lookup
@@ -477,11 +481,13 @@ rtk git commit -m "feat: transcribe chunked audio"
   - session ID generation
   - private temp directory layout
   - metadata JSON
+  - `provider_options_hash` / fingerprint only; no raw provider option values on disk
   - chunk path management
   - TTL cleanup
   - cumulative uploaded byte accounting
   - filename hash/suffix storage only
   - coverage validation
+  - opportunistic cleanup during create/upload/finish/delete/load
 
 - [ ] Add API endpoints:
   - `POST /v1/asr/chunk-sessions`
@@ -493,7 +499,7 @@ rtk git commit -m "feat: transcribe chunked audio"
 
 - [ ] Return:
   - `browser_slice_formats` with `["wav"]` for v1
-  - `backend_accept_formats`
+  - `backend_accept_formats` excluding raw `pcm` for browser upload
   - `max_chunks`
   - `expires_at`
 
@@ -528,6 +534,8 @@ Adversarial review focus:
 - chunk sessions cannot leak path traversal
 - expired/cancelled sessions clean temp files
 - provider options cannot leak to logs/sidecars
+- chunk-session metadata cannot leak raw provider option values
+- browser chunk upload enforces provider per-chunk payload limits
 - transcript renderer endpoint split is unambiguous
 - browser session and backend ASR produce same response shape
 
@@ -545,8 +553,7 @@ Adversarial review focus:
   - `advanced=false` renders in always-visible summary section
   - choice validation and required UI errors
   - provider/model change migration keeps valid values and drops invalid values
-  - custom provider renderer registry dispatches by `type:capability`
-  - provider `id` does not affect custom renderer dispatch when `type` is unchanged
+  - schema-driven option helpers are isolated from `App.tsx`
   - TTS source selector switches Text/File
   - Markdown file infers Markdown display
   - preview reads selected file and calls normalize endpoint
@@ -562,16 +569,18 @@ Adversarial review focus:
 
 - [ ] Add provider option modules:
   - `ProviderOptionsPanel.tsx`
-  - `SchemaOptionsForm.tsx`
-  - `mimo.tsx`
-  - `fishAudio.tsx`
-  - `openrouter.tsx`
+  - `providerOptions.ts`
+  - `providerOptions.test.ts`
+
+- [ ] Keep custom provider renderer registry deferred until a provider needs richer controls than schema fallback. The v1 requirement is no provider-specific `if/else` in `App.tsx`, not a registry with empty first-party modules.
 
 - [ ] Update `App.tsx`:
   - remove provider-specific option conditionals from main file
   - render `ProviderOptionsPanel` below selected model
+  - remove hard-coded expected output format labels; generated artifacts use actual MIME type
   - add TTS Text/File source selector
   - file accept `.txt,.md,.markdown,text/plain,text/markdown`
+  - preview selected text files by reading the file in browser; submit still sends original file
   - add chunk controls under TTS Advanced
 
 - [ ] Update styles/i18n.
@@ -606,6 +615,8 @@ rtk git commit -m "feat(web): add provider option panels"
   - browser upload uploads chunks sequentially and shows progress
   - finish renders final transcript artifact
   - browser decode/slice failure falls back to backend upload with message
+  - browser chunking rejects non-PCM WAV before upload and falls back to backend upload
+  - cancel aborts in-flight create/upload/finish requests and deletes the session when possible
   - transcript buttons enable/disable from artifact metadata
   - SRT/VTT links use `/transcript?format=srt|vtt`
   - speaker/timestamp TXT links include query flags
@@ -615,10 +626,11 @@ rtk git commit -m "feat(web): add provider option panels"
   - transcript download URL helpers
 
 - [ ] Add browser audio slicing helper:
-  - decode with Web Audio where possible
-  - encode chunk blobs as WAV in v1
+  - accept browser-side slicing only for PCM WAV in v1
+  - produce chunk blobs as WAV in v1
   - produce chunk blobs and offset/duration metadata
-  - include `source_duration_ms`
+  - send `source_duration_ms` on session create only
+  - do not send `source_duration_ms` on finish; finish validates against stored session metadata
   - fall back to backend upload when browser decode or WAV chunk encoding fails
 
 - [ ] Update ASR UI:
@@ -627,8 +639,11 @@ rtk git commit -m "feat(web): add provider option panels"
   - transcript timestamp/speaker toggles only when model capabilities allow
   - progress display
   - cancel/delete session
+  - label browser strategy as best-effort/preferred browser chunking if fallback is allowed
 
 - [ ] Add transcript download controls in `TranscriptPanel`.
+  - hide SRT/VTT when artifact metadata lacks complete timestamps
+  - hide TXT timestamp/speaker flags when artifact metadata lacks those enrichments
 
 - [ ] Run:
 
@@ -724,7 +739,10 @@ Adversarial review focus:
 - transcript download endpoints are unambiguous
 - sidecars/logs still redact unsafe content
 - no provider-specific UI logic sits in `App.tsx`
+- no hard-coded provider output format label sits in `App.tsx`
 - chunk/session temp cleanup is bounded and tested
+- browser chunk session `provider_options` survives process reload via fingerprint + client resend without persisting raw values
+- browser chunk uploads reject non-PCM WAV and bad decoded duration before provider calls
 - all docs match actual endpoints/options
 
 If any review finding is real, fix and commit before handoff.

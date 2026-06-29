@@ -59,7 +59,7 @@ Why this split:
 - Backend chunking still solves the provider per-call size limit because the backend can convert and split before provider calls.
 - Both ASR paths share the same backend transcript merge and artifact logic, so frontend chunking is a transport optimization, not a second transcription implementation.
 
-V1 supports browser chunk sessions but does not persist them across refresh or server restart. If a session is abandoned, temp files expire and no artifact is created.
+V1 browser chunk sessions are temp-file based and are not a resumable product feature in the web UI. Session files may survive a process restart until TTL cleanup, but raw provider options are not persisted; clients must resend matching `provider_options` on `finish` when a process restart or multi-worker boundary loses the in-memory copy. If a session is abandoned, temp files expire and no artifact is created.
 
 ## Config
 
@@ -270,7 +270,7 @@ Frontend rendering:
 
 - Provider/model summaries provide option specs.
 - Frontend renders controls from schema as fallback.
-- First-party providers may register provider-specific React panels for richer UX.
+- First-party providers may later register provider-specific React panels for richer UX.
 - The generic fallback is still required so config-defined providers remain usable.
 - Advanced settings are grouped by selected provider and selected model, not by a fixed global layout.
 - When provider or model changes, invalid option values are dropped and defaults for the new schema are applied.
@@ -283,7 +283,7 @@ Frontend rendering:
   - `multiselect` -> checkbox group
 - `placeholder`, `required`, `default`, `choices`, `min_value`, `max_value`, and `step` must be honored by the fallback renderer.
 - `advanced=false` does not move the field outside `ProviderOptionsPanel`; it means the field appears in the panel's always-visible summary section. `advanced=true` appears in the collapsible advanced section.
-- Custom renderer registry keys use provider `type` plus capability, for example `openrouter:tts.builtin`. Provider instances with the same `type` share renderer code; schema still comes from the selected provider/model and can differ per instance.
+- Optional custom renderer registry keys use provider `type` plus capability, for example `openrouter:tts.builtin`. Provider instances with the same `type` share renderer code; schema still comes from the selected provider/model and can differ per instance.
 - Provider/model change migration algorithm:
   1. Merge the new provider/model option schema for the current capability.
   2. Drop keys absent from the new schema or marked `enabled=false`.
@@ -297,7 +297,7 @@ Examples:
 - MiMo TTS design can expose model-specific voice-design hints or audio-tag helpers that do not belong to the shared TTS contract.
 - Fish Audio can expose latency/format/reference-related knobs that do not apply to MiMo.
 - OpenRouter can expose OpenAI-style `instructions` / provider routing options only on models that support them.
-- In this app OpenRouter is a voice provider for TTS/ASR through OpenRouter audio endpoints, so `OpenRouterTTSOptionsPanel` is intentional.
+- In this app OpenRouter is a voice provider for TTS/ASR through OpenRouter audio endpoints; a future `OpenRouterTTSOptionsPanel` would be intentional, but v1 schema fallback is sufficient.
 - ASR models with diarization can expose speaker-related controls; plain ASR models should not show them.
 
 ## TTS File Input
@@ -439,21 +439,23 @@ Browser chunk session handling:
 
 - Browser chunking is enabled only when `chunking.asr.browser_upload=true`.
 - The browser is responsible for producing ordered chunk files with overlap.
-- Session creation records selected provider, model, language, transcript options, and validated `provider_options`.
+- Session creation records selected provider, model, language, transcript options, safe option metadata, and a fingerprint of validated `provider_options`; raw option values are not written to metadata JSON.
 - Individual chunk uploads do not accept `provider_options`; they are transport-only.
-- `finish` may resend transcript options and `provider_options` only to support stateless clients, but if present they must validate to the same normalized values stored at session creation. Mismatch returns 409.
+- `finish` may resend transcript options and `provider_options` only to support stateless clients, process restarts, or multi-worker boundaries. If present, options must validate to the same normalized fingerprint stored at session creation. Mismatch returns 409.
+- If a session was created with non-empty provider options and the backend no longer has an in-memory copy, `finish` without resent `provider_options` returns 409 rather than silently dropping provider-specific behavior.
 - The backend is authoritative for validation:
   - `session_id` must be server-generated.
   - `chunk_index` must be `0..total_chunks-1`.
   - Duplicate chunk indexes are rejected.
   - `total_chunks` must be `<= max_chunks`.
-  - Each uploaded chunk must pass MIME/suffix/signature validation.
+- Each uploaded chunk must pass MIME/suffix/signature validation.
+- Browser-uploaded chunks are WAV only in v1 and must be decoded as PCM WAV. Non-PCM WAV, malformed WAV, or decoded duration mismatch returns 422 or falls back to backend upload on the frontend before upload.
   - Each provider-ready chunk must satisfy provider raw/base64 limits.
 - Browser-provided `offset_ms` is the chunk start offset and is used for transcript timestamp adjustment after validation. Offsets must be non-negative and strictly increasing by chunk index, while overlap is represented by `offset[i + 1] < offset[i] + duration[i]`.
 - Browser-provided `duration_ms` is treated as a client plan, not truth. The backend decodes each chunk, records actual duration, and rejects the chunk if client duration differs from decoded duration by more than 1000 ms.
 - `source_duration_ms` is required for browser chunk sessions. Finish cross-checks the union of chunk offsets/durations against it. A gap or overrun larger than 1500 ms returns 422.
 - Session state is stored under a private temp directory, not `data/artifacts`.
-- Session state contains only safe metadata and temp chunk paths. Raw `source_file_name` is never stored; state may store `source_file_name_hash = sha256(basename).hexdigest()[:12]` and suffix.
+- Session state contains only safe metadata, temp chunk paths, and the `provider_options` fingerprint. Raw `source_file_name` and raw provider option values are never stored; state may store an opaque `source_file_name_hash` plus suffix.
 - A session expires after `session_ttl_seconds`.
 - `finish` fails if any chunk is missing.
 - Abandoned sessions are cleaned on startup and opportunistically during new session creation, chunk upload, finish, delete, and session lookup.
@@ -683,14 +685,11 @@ POST /v1/asr/chunk-sessions
   model?
   language
   total_chunks
-  chunk_seconds
-  chunk_overlap_ms
   source_duration_ms
   transcript_timestamps?
   transcript_speakers?
   provider_options?
   source_file_name?
-  source_mime_type?
 
 POST /v1/asr/chunk-sessions/{session_id}/chunks
   chunk_index
@@ -718,7 +717,7 @@ Session creation returns:
 }
 ```
 
-`browser_slice_formats` is the subset the frontend should upload after browser-side slicing. V1 uses WAV output because Web Audio can decode many input formats but browsers do not provide built-in encoders for mp3/m4a/aac/ogg/webm consistently. Input files may be any browser-decodable file from `backend_accept_formats`; the browser decodes them and uploads WAV chunks. If browser decode fails, fall back to backend whole-file upload.
+`browser_slice_formats` is the subset the frontend should upload after browser-side slicing. V1 uses WAV chunks because providers accept WAV and browser-side mp3/m4a/aac/ogg/webm encoders are not consistently available. The v1 browser helper slices PCM WAV only; non-PCM WAV or other formats fall back to backend whole-file upload. `backend_accept_formats` intentionally excludes raw `pcm` for browser chunk upload because raw PCM has no self-describing sample rate/channel metadata.
 
 Chunk upload returns safe progress only:
 
@@ -819,7 +818,7 @@ TTS:
   - It receives selected provider, selected model, capability, and current option values.
   - It merges provider-level and model-level option specs.
   - It renders schema-driven fallback controls.
-  - It may delegate to provider-specific panels such as `MimoTTSOptionsPanel`, `FishAudioTTSOptionsPanel`, or `OpenRouterTTSOptionsPanel`.
+- It may delegate to provider-specific panels in a later enhancement, but v1 can ship schema fallback only as long as provider/model schemas remain distinct and no provider-specific `if/else` lives in `App.tsx`.
   - It serializes validated values into `provider_options` FormData.
 
 ASR:
@@ -830,9 +829,10 @@ ASR:
   - Overlap milliseconds
 - Add upload strategy:
   - `Backend upload`: current whole-file upload; backend chunks if needed.
-  - `Browser chunk upload`: browser slices and uploads chunks to `/v1/asr/chunk-sessions`.
+  - `Prefer browser chunk upload`: browser slices and uploads chunks to `/v1/asr/chunk-sessions`, with backend upload fallback when browser slicing fails.
 - Browser chunk upload uses sequential uploads with visible progress: `uploaded N / total`.
-- If browser cannot decode/slice a file, fall back to backend upload with a clear local message.
+- Browser chunk upload aborts in-flight create/upload/finish requests when the user cancels, then best-effort deletes the session.
+- If browser cannot decode/slice a file, or if the WAV is non-PCM, fall back to backend upload with a clear local message.
 - Add transcript options:
   - request timestamps when provider/model declares support
   - request speakers when provider/model declares support
@@ -851,7 +851,8 @@ ASR:
 Frontend modularity:
 
 - Do not place provider-specific conditionals directly inside `App.tsx`.
-- Add a registry:
+- V1 uses a schema-driven fallback panel as the required implementation. A custom renderer registry is an extension seam, not required until a provider needs UX richer than schema controls.
+- Optional future registry shape:
 
 ```ts
 type ProviderOptionsPanelProps = {
@@ -865,17 +866,16 @@ type ProviderOptionsPanelProps = {
 type ProviderOptionsRenderer = (props: ProviderOptionsPanelProps) => React.ReactNode;
 ```
 
-- `ProviderOptionsPanel` first checks a renderer registry by provider `type` and capability.
+- If a custom renderer registry exists, `ProviderOptionsPanel` first checks by provider `type` and capability.
 - If no custom renderer exists, use schema fallback.
-- Provider-specific modules can live under:
+- Current v1 files live under:
 
 ```text
-apps/web/src/provider-options/
+apps/web/src/components/
   ProviderOptionsPanel.tsx
-  SchemaOptionsForm.tsx
-  mimo.tsx
-  fishAudio.tsx
-  openrouter.tsx
+apps/web/src/lib/
+  providerOptions.ts
+  audioChunks.ts
 ```
 
 - The schema fallback must be accessible and complete enough for config-only providers.
@@ -937,8 +937,10 @@ This applies to sidecars, application logs, Uvicorn/FastAPI logs, provider adapt
 - ASR browser chunk session missing/expired: 404
 - ASR browser chunk session duplicate chunk index: 409
 - ASR browser chunk session finish with mismatched transcript/provider options: 409
+- ASR browser chunk session finish omits `provider_options` after process reload when options are required: 409
 - ASR browser chunk session finish with missing chunks: 422
 - ASR browser chunk offset/duration inconsistent with decoded audio: 422
+- ASR browser upload of non-PCM WAV: frontend fallback to backend upload, or backend 422 if submitted directly
 - ASR browser chunk session missing `source_duration_ms`: 422
 - ASR browser chunk source coverage gap with `source_duration_ms`: 422
 - ASR browser chunk session cumulative upload exceeds `max_upload_mb`: 413
@@ -1023,14 +1025,17 @@ Backend tests:
 - `/v1/artifacts/{id}/download?format=txt` rejects transcript artifacts with 422.
 - ASR final sidecar does not contain transcript contents.
 - Browser chunk session creates server-generated session ID.
-- Browser chunk session stores validated `provider_options` from create.
+- Browser chunk session stores a validated `provider_options` fingerprint from create without raw values on disk.
 - Browser chunk upload rejects duplicate chunk indexes.
 - Browser chunk finish rejects missing chunks.
 - Browser chunk finish rejects mismatched resent `provider_options`.
+- Browser chunk finish accepts matching resent `provider_options` after process-local option cache is gone.
+- Browser chunk finish rejects omitted `provider_options` after process-local option cache is gone when the session requires options.
 - Browser chunk upload rejects non-monotonic or materially wrong `offset_ms` / `duration_ms`.
+- Browser chunk upload rejects non-PCM WAV or frontend falls back before upload.
 - Browser chunk session requires `source_duration_ms`.
 - Browser chunk finish rejects source coverage gaps.
-- Browser chunk finish passes stored `provider_options` to provider chunk calls.
+- Browser chunk finish passes validated provider options from the in-memory session copy or matching resent finish payload to provider chunk calls.
 - Browser chunk finish produces the same operation response shape as whole-file ASR.
 - Browser chunk temp files are removed on success, cancel, and expiry cleanup.
 - Log capture does not contain raw uploaded text, chunk text, transcripts, or base64.
@@ -1044,8 +1049,11 @@ Frontend tests:
 - Chunking controls append expected form fields.
 - ASR chunking controls append expected form fields.
 - Browser ASR chunk mode creates a chunk session and uploads chunks sequentially.
+- Browser ASR chunk mode sends `source_duration_ms` on create, not finish.
 - Browser ASR chunk progress renders uploaded count.
 - Browser ASR finish renders the final transcript artifact.
+- Browser ASR cancel aborts in-flight requests and deletes the session when possible.
+- Browser ASR non-PCM WAV falls back to backend upload.
 - Provider-specific options panel renders schema fallback for unknown provider type.
 - Provider-specific options panel can use a custom renderer for a known provider.
 - Provider/model change drops invalid provider option values and applies defaults.
