@@ -495,6 +495,7 @@ function App() {
                 )}
               </button>
             </div>
+            {ttsArtifact || ttsState === "loading" ? <ResultPanel artifact={ttsArtifact} state={ttsState} /> : null}
           </form>
         ) : (
           <form className="canvas" onSubmit={submitAsr}>
@@ -552,21 +553,19 @@ function App() {
                 )}
               </button>
             </div>
+            {asrArtifact || asrState === "loading" ? (
+              <TranscriptPanel artifact={asrArtifact} transcript={transcript} state={asrState} />
+            ) : null}
           </form>
         )}
 
-        <div className="output-panel">
-          {historyError ? <div className="notice error compact">{historyError}</div> : null}
-          {tab === "tts" ? (
-            <ResultPanel artifact={ttsArtifact} state={ttsState} />
-          ) : (
-            <TranscriptPanel artifact={asrArtifact} transcript={transcript} state={asrState} />
-          )}
+        <aside className="output-panel">
           <div role="status" aria-live="polite" className="sr-only">
             {history.length} history items
           </div>
+          {historyError ? <div className="notice error compact">{historyError}</div> : null}
           <HistoryPanel artifacts={history} onSelect={selectHistoryItem} />
-        </div>
+        </aside>
       </div>
     </main>
   );
