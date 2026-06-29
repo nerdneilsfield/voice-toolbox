@@ -25,6 +25,7 @@ import {
   Voice,
   cloneVoice,
   createAsrChunkSession,
+  deleteAsrChunkSession,
   designVoice,
   finishAsrChunkSession,
   getArtifacts,
@@ -41,6 +42,7 @@ type TtsMode = "builtin" | "design" | "clone";
 type RequestState = "idle" | "loading" | "success" | "error";
 type DownloadFormat = "source" | "wav" | "mp3" | "pcm" | "m4a" | "aac" | "flac" | "ogg" | "webm";
 type TranscriptDownloadFormat = "txt" | "srt" | "vtt" | "json";
+type AsrUploadStrategy = "auto" | "browser" | "backend";
 
 const INLINE_TAGS = ["(唱歌)", "(笑)", "(叹气)", "(停顿)", "[breath]", "[laughter]"];
 const BASE64_LIMIT_BYTES = 10 * 1024 * 1024;
@@ -86,6 +88,7 @@ function App() {
   const [cloneConsent, setCloneConsent] = useState(false);
   const [asrFile, setAsrFile] = useState<File | null>(null);
   const [asrLanguage, setAsrLanguage] = useState("auto");
+  const [asrUploadStrategy, setAsrUploadStrategy] = useState<AsrUploadStrategy>("auto");
   const [asrChunkingMode, setAsrChunkingMode] = useState<ChunkingMode>("auto");
   const [asrChunkSeconds, setAsrChunkSeconds] = useState(90);
   const [asrChunkOverlapMs, setAsrChunkOverlapMs] = useState(1200);
@@ -95,10 +98,13 @@ function App() {
   const [asrState, setAsrState] = useState<RequestState>("idle");
   const [ttsError, setTtsError] = useState("");
   const [asrError, setAsrError] = useState("");
+  const [asrProgress, setAsrProgress] = useState("");
+  const [asrChunkSessionId, setAsrChunkSessionId] = useState<string | null>(null);
   const [ttsArtifact, setTtsArtifact] = useState<Artifact | null>(null);
   const [asrArtifact, setAsrArtifact] = useState<Artifact | null>(null);
   const [transcript, setTranscript] = useState("");
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const asrCancelRequestedRef = useRef(false);
   const [modelProviderId, setModelProviderId] = useState("");
   const [voiceProviderId, setVoiceProviderId] = useState("");
   const [history, setHistory] = useState<Artifact[]>([]);
@@ -404,43 +410,76 @@ function App() {
   }
 
   async function submitAsrWithChunking(file: File, providerOptions: Record<string, unknown>) {
-    if (shouldUseBrowserAsrChunks(file, asrChunkingMode)) {
-      const { chunks, sourceDurationMs } = await sliceWavFile(file, {
-        targetSeconds: asrChunkSeconds,
-        overlapMs: asrChunkOverlapMs,
-      });
-      const session = await createAsrChunkSession({
-        providerId: selectedProviderId,
-        model: asrModel,
-        language: asrLanguage,
-        sourceDurationMs,
-        totalChunks: chunks.length,
-        sourceFileName: file.name,
-        transcriptTimestamps: asrTranscriptTimestamps,
-        transcriptSpeakers: asrTranscriptSpeakers,
-        providerOptions,
-      });
-      for (let index = 0; index < chunks.length; index += 1) {
-        const chunk = chunks[index];
-        await uploadAsrChunk({
-          sessionId: session.session_id,
-          file: chunk.blob,
-          fileName: chunk.fileName,
-          chunkIndex: index,
-          offsetMs: chunk.offsetMs,
-          durationMs: chunk.durationMs,
+    if (shouldUseBrowserAsrChunks(file, asrChunkingMode, asrUploadStrategy)) {
+      let sessionId: string | null = null;
+      try {
+        setAsrProgress(t("asr.chunkPreparing"));
+        const { chunks, sourceDurationMs } = await sliceWavFile(file, {
+          targetSeconds: asrChunkSeconds,
+          overlapMs: asrChunkOverlapMs,
         });
+        throwIfAsrCanceled();
+        const session = await createAsrChunkSession({
+          providerId: selectedProviderId,
+          model: asrModel,
+          language: asrLanguage,
+          sourceDurationMs,
+          totalChunks: chunks.length,
+          sourceFileName: file.name,
+          transcriptTimestamps: asrTranscriptTimestamps,
+          transcriptSpeakers: asrTranscriptSpeakers,
+          providerOptions,
+        });
+        sessionId = session.session_id;
+        setAsrChunkSessionId(sessionId);
+        for (let index = 0; index < chunks.length; index += 1) {
+          throwIfAsrCanceled();
+          const chunk = chunks[index];
+          setAsrProgress(t("asr.chunkUploading", { current: index + 1, total: chunks.length }));
+          await uploadAsrChunk({
+            sessionId,
+            file: chunk.blob,
+            fileName: chunk.fileName,
+            chunkIndex: index,
+            offsetMs: chunk.offsetMs,
+            durationMs: chunk.durationMs,
+          });
+        }
+        throwIfAsrCanceled();
+        setAsrProgress(t("asr.chunkFinishing"));
+        return await finishAsrChunkSession({
+          sessionId,
+          providerId: selectedProviderId,
+          model: asrModel,
+          language: asrLanguage,
+          sourceDurationMs,
+          transcriptTimestamps: asrTranscriptTimestamps,
+          transcriptSpeakers: asrTranscriptSpeakers,
+          providerOptions,
+        });
+      } catch (err) {
+        if (sessionId) {
+          await safeDeleteAsrSession(sessionId);
+        }
+        setAsrChunkSessionId(null);
+        if (asrCancelRequestedRef.current) {
+          throw err;
+        }
+        setAsrProgress(
+          t("asr.browserChunkFallback", {
+            message: err instanceof Error ? err.message : t("errors.asrRequestFailed"),
+          }),
+        );
+        return transcribe(buildAsrBackendForm(file, providerOptions));
+      } finally {
+        setAsrChunkSessionId(null);
       }
-      return finishAsrChunkSession({
-        sessionId: session.session_id,
-        providerId: selectedProviderId,
-        model: asrModel,
-        language: asrLanguage,
-        transcriptTimestamps: asrTranscriptTimestamps,
-        transcriptSpeakers: asrTranscriptSpeakers,
-        providerOptions,
-      });
     }
+    setAsrProgress("");
+    return transcribe(buildAsrBackendForm(file, providerOptions));
+  }
+
+  function buildAsrBackendForm(file: File, providerOptions: Record<string, unknown>) {
     const body = new FormData();
     body.set("provider_id", selectedProviderId);
     body.set("language", asrLanguage);
@@ -454,7 +493,29 @@ function App() {
     if (Object.keys(providerOptions).length > 0) {
       body.set("provider_options", JSON.stringify(providerOptions));
     }
-    return transcribe(body);
+    return body;
+  }
+
+  function throwIfAsrCanceled() {
+    if (asrCancelRequestedRef.current) {
+      throw new Error(t("asr.chunkUploadCanceled"));
+    }
+  }
+
+  async function safeDeleteAsrSession(sessionId: string) {
+    try {
+      await deleteAsrChunkSession(sessionId);
+    } catch {
+      // Session may already be finished, expired, or removed by the server.
+    }
+  }
+
+  async function cancelAsrChunks() {
+    asrCancelRequestedRef.current = true;
+    setAsrProgress(t("asr.chunkCanceling"));
+    if (asrChunkSessionId) {
+      await safeDeleteAsrSession(asrChunkSessionId);
+    }
   }
 
   async function submitAsr(event: FormEvent) {
@@ -466,6 +527,9 @@ function App() {
     }
     setAsrError("");
     setAsrState("loading");
+    setAsrProgress("");
+    setAsrChunkSessionId(null);
+    asrCancelRequestedRef.current = false;
     setTranscript("");
     try {
       const providerOptions = sanitizedOptionsOrThrow(asrOptions, asrOptionSpecs);
@@ -481,6 +545,11 @@ function App() {
     } catch (err) {
       setAsrError(err instanceof Error ? err.message : t("errors.asrRequestFailed"));
       setAsrState("error");
+    } finally {
+      setAsrChunkSessionId(null);
+      if (!asrCancelRequestedRef.current) {
+        setAsrProgress("");
+      }
     }
   }
 
@@ -732,26 +801,41 @@ function App() {
                 secondaryValue={asrChunkOverlapMs}
                 setSecondaryValue={setAsrChunkOverlapMs}
               />
-              <div className="two-col-fields">
-                <label className="checkbox-line">
-                  <input
-                    type="checkbox"
-                    checked={asrTranscriptTimestamps}
-                    onChange={(event) => setAsrTranscriptTimestamps(event.target.checked)}
-                    disabled={!supportsTimestamps}
-                  />
-                  <span>{t("asr.timestamps")}</span>
-                </label>
-                <label className="checkbox-line">
-                  <input
-                    type="checkbox"
-                    checked={asrTranscriptSpeakers}
-                    onChange={(event) => setAsrTranscriptSpeakers(event.target.checked)}
-                    disabled={!supportsSpeakers}
-                  />
-                  <span>{t("asr.speakers")}</span>
-                </label>
-              </div>
+              <label className="field">
+                <span className="field-title">{t("asr.uploadStrategy")}</span>
+                <select
+                  value={asrUploadStrategy}
+                  onChange={(event) => setAsrUploadStrategy(event.target.value as AsrUploadStrategy)}
+                >
+                  <option value="auto">{t("asr.uploadStrategy.auto")}</option>
+                  <option value="browser">{t("asr.uploadStrategy.browser")}</option>
+                  <option value="backend">{t("asr.uploadStrategy.backend")}</option>
+                </select>
+              </label>
+              {supportsTimestamps || supportsSpeakers ? (
+                <div className="two-col-fields">
+                  {supportsTimestamps ? (
+                    <label className="checkbox-line">
+                      <input
+                        type="checkbox"
+                        checked={asrTranscriptTimestamps}
+                        onChange={(event) => setAsrTranscriptTimestamps(event.target.checked)}
+                      />
+                      <span>{t("asr.timestamps")}</span>
+                    </label>
+                  ) : null}
+                  {supportsSpeakers ? (
+                    <label className="checkbox-line">
+                      <input
+                        type="checkbox"
+                        checked={asrTranscriptSpeakers}
+                        onChange={(event) => setAsrTranscriptSpeakers(event.target.checked)}
+                      />
+                      <span>{t("asr.speakers")}</span>
+                    </label>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             <div className="card">
               <AdvancedSettings
@@ -773,21 +857,29 @@ function App() {
                 <span className="format-pill">{asrLanguage.toUpperCase()}</span>
               </div>
               {asrError ? <div className="notice error compact">{asrError}</div> : null}
+              {asrProgress ? <div className="notice compact">{asrProgress}</div> : null}
               {!asrSupported ? <div className="notice error compact">{t("asr.unsupported")}</div> : null}
-              <button
-                className="primary-action"
-                type="submit"
-                disabled={asrState === "loading" || !providerReady || !asrSupported}
-              >
-                {asrState === "loading" ? (
-                  <>
-                    <span className="spinner" aria-hidden="true" />
-                    {t("asr.transcribing")}
-                  </>
-                ) : (
-                  t("asr.transcribe")
-                )}
-              </button>
+              <div className="action-row">
+                <button
+                  className="primary-action"
+                  type="submit"
+                  disabled={asrState === "loading" || !providerReady || !asrSupported}
+                >
+                  {asrState === "loading" ? (
+                    <>
+                      <span className="spinner" aria-hidden="true" />
+                      {t("asr.transcribing")}
+                    </>
+                  ) : (
+                    t("asr.transcribe")
+                  )}
+                </button>
+                {asrState === "loading" && asrChunkSessionId ? (
+                  <button className="btn btn-ghost" type="button" onClick={() => void cancelAsrChunks()}>
+                    {t("asr.cancelChunks")}
+                  </button>
+                ) : null}
+              </div>
             </div>
             {asrArtifact || asrState === "loading" ? (
               <TranscriptPanel artifact={asrArtifact} transcript={transcript} state={asrState} />
@@ -1582,12 +1674,12 @@ function optionValues(values: Record<string, ProviderOptionValues>, key: string)
   return values[key] ?? {};
 }
 
-function shouldUseBrowserAsrChunks(file: File, mode: ChunkingMode) {
-  if (mode === "off") {
+function shouldUseBrowserAsrChunks(file: File, mode: ChunkingMode, strategy: AsrUploadStrategy) {
+  if (mode === "off" || strategy === "backend") {
     return false;
   }
   const isWav = file.type === "audio/wav" || file.type === "audio/x-wav" || /\.wav$/i.test(file.name);
-  return isWav && (mode === "force" || file.size > BASE64_LIMIT_BYTES);
+  return isWav && (strategy === "browser" || mode === "force" || file.size > BASE64_LIMIT_BYTES);
 }
 
 function shortId(id: string) {

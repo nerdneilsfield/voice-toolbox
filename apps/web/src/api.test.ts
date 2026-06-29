@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createAsrChunkSession,
+  deleteAsrChunkSession,
   finishAsrChunkSession,
   getArtifacts,
   synthesizeBuiltin,
   transcriptDownloadUrl,
+  uploadAsrChunk,
 } from "./api";
 
 describe("api client", () => {
@@ -117,6 +119,7 @@ describe("api client", () => {
       providerId: "mimo",
       model: "mimo-v2.5-asr",
       language: "auto",
+      sourceDurationMs: 125000,
       transcriptTimestamps: true,
       providerOptions: { domain: "medical" },
     });
@@ -124,8 +127,49 @@ describe("api client", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/v1/asr/chunk-sessions/session-1/finish");
     const body = init?.body as FormData;
+    expect(body.get("source_duration_ms")).toBe("125000");
     expect(body.get("provider_options")).toBe(JSON.stringify({ domain: "medical" }));
     expect(body.get("transcript_timestamps")).toBe("true");
+  });
+
+  it("uploads ASR browser chunks in sequence payload shape", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ session_id: "session-1", received_chunks: 1, total_chunks: 2 }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const chunk = new Blob(["riff"], { type: "audio/wav" });
+
+    await uploadAsrChunk({
+      sessionId: "session-1",
+      file: chunk,
+      fileName: "meeting.0.wav",
+      chunkIndex: 0,
+      offsetMs: 0,
+      durationMs: 60000,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/v1/asr/chunk-sessions/session-1/chunks");
+    const body = init?.body as FormData;
+    expect(body.get("chunk_index")).toBe("0");
+    expect(body.get("offset_ms")).toBe("0");
+    expect(body.get("duration_ms")).toBe("60000");
+    const file = body.get("file") as File;
+    expect(file.name).toBe("meeting.0.wav");
+    expect(file.type).toBe("audio/wav");
+  });
+
+  it("deletes ASR browser chunk sessions for cancel cleanup", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ deleted: true }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await deleteAsrChunkSession("session/1");
+
+    expect(fetchMock).toHaveBeenCalledWith("/v1/asr/chunk-sessions/session%2F1", { method: "DELETE" });
   });
 
   it("fetches artifacts with limit", async () => {
