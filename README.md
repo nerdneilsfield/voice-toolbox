@@ -47,6 +47,12 @@ binding. It stores only API key environment variable names such as
 environment. When the API reports provider status, it exposes only whether a key
 is configured plus a masked local preview, never the full key.
 
+Provider and model-specific options also live in `voice_toolbox.toml`. The web
+UI reads option schemas from `/v1/providers` and renders only options that apply
+to the selected provider, model, and capability. Multipart API calls pass option
+values as a `provider_options` JSON object string. The CLI does not expose
+provider-specific options yet.
+
 When `voice_toolbox.toml` exists, it is the source of truth for `base_url`,
 `api.host`, and `api.port`. The `.env` values `MIMO_BASE_URL`,
 `VOICE_TOOLBOX_API_HOST`, and `VOICE_TOOLBOX_API_PORT` are fallback-only aliases
@@ -99,6 +105,28 @@ rtk uv run --env-file .env voice-toolbox tts synthesize \
   --format wav
 ```
 
+TTS from a `.txt` file:
+
+```bash
+rtk uv run --env-file .env voice-toolbox tts synthesize \
+  --file smoke-inputs/tts-long.txt \
+  --text-format plain \
+  --voice 冰糖 \
+  --chunking auto \
+  --format wav
+```
+
+TTS from Markdown:
+
+```bash
+rtk uv run --env-file .env voice-toolbox tts synthesize \
+  --file smoke-inputs/tts-long.md \
+  --text-format markdown \
+  --voice 冰糖 \
+  --chunking auto \
+  --format wav
+```
+
 MiMo and Fish Audio currently accept `wav` output through Voice Toolbox. OpenRouter
 TTS uses its OpenAI-compatible speech endpoint and stores browser-friendly MP3
 artifacts, so use `--format mp3` when targeting the OpenRouter provider.
@@ -121,6 +149,17 @@ rtk uv run --env-file .env voice-toolbox asr transcribe \
   --language auto
 ```
 
+Backend ASR chunking:
+
+```bash
+rtk uv run --env-file .env voice-toolbox asr transcribe \
+  --file smoke-inputs/asr-long.wav \
+  --language auto \
+  --chunking force \
+  --chunk-seconds 90 \
+  --chunk-overlap-ms 1200
+```
+
 More real-provider checks live in [docs/smoke/mimo.md](docs/smoke/mimo.md).
 
 Fish Audio provider support:
@@ -136,7 +175,7 @@ OpenRouter provider support:
 - `asr.transcribe`: calls `POST /api/v1/audio/transcriptions` with base64 `input_audio`.
 - `tts.design` and `tts.clone`: not enabled because OpenRouter docs only define the standard TTS endpoint.
 
-## Markdown Cleanup Preview
+## TTS Text Input And Cleanup
 
 The API and web UI can preview Markdown cleanup before synthesis. In the web UI,
 set the text format to Markdown or Auto, then use `Preview cleaned text`.
@@ -153,21 +192,67 @@ rtk curl -s http://127.0.0.1:8000/v1/normalize/text \
   -d '{"content":"# Title\n\nHello **MiMo**.","input_format":"markdown"}'
 ```
 
-Chunking is implemented for both TTS and ASR.
+TTS accepts inline text or `.txt` / `.md` uploads. The API uses multipart
+`text_file`; the CLI uses `--file`. Long text can be split with
+`chunking_mode=auto|force`, `chunk_max_chars`, and `chunk_silence_ms`; the
+backend calls the selected provider once per chunk and writes one merged audio
+artifact. All first-class fields and validated `provider_options` are copied to
+each chunk request.
 
-TTS accepts inline text or `.txt` / `.md` uploads. Long text can be split with
-`--chunking auto|force`, `--chunk-max-chars`, and `--chunk-silence-ms`; the
-backend calls the selected provider per chunk and writes one merged audio
-artifact.
+Voice design does not enter the chunked path in v1. It treats chunking as `off`;
+if the design source text or uploaded file exceeds the single-call `max_chars`,
+the API returns 422 instead of chunking.
 
-ASR supports backend whole-file chunking with `--chunking`, `--chunk-seconds`,
-and `--chunk-overlap-ms`. The API also exposes browser chunk sessions under
-`/v1/asr/chunk-sessions` so the web client can upload browser-sliced WAV chunks
-and finish with one merged transcript artifact.
+## ASR Chunking
 
-Transcript artifacts can be downloaded as the source `.txt`, or rendered through
-`/v1/artifacts/{id}/transcript?format=txt|srt|vtt|json`. SRT/VTT are available
-only when the provider returns complete timestamps.
+ASR has two chunking paths:
+
+- Backend chunking: upload one audio file to `/v1/asr/transcribe` or use the CLI
+  `--chunking force|auto`. The backend converts/splits audio, transcribes each
+  chunk, then deduplicates overlap text into one transcript artifact.
+- Browser chunking: the web client slices WAV audio in the browser, creates
+  `/v1/asr/chunk-sessions`, uploads chunks to
+  `/v1/asr/chunk-sessions/{session_id}/chunks`, then calls
+  `/v1/asr/chunk-sessions/{session_id}/finish`.
+
+Browser chunk session rules:
+
+- `source_duration_ms` is required when creating a session.
+- `provider_options` is a JSON object string on create/finish; malformed JSON,
+  arrays, unknown keys, invalid choices, more than 32 keys, or more than 4096
+  UTF-8 bytes return 422.
+- If browser chunk upload is disabled by config, session routes return 422.
+- Missing or expired sessions return 404.
+- Duplicate chunk indexes return 409.
+- Finish-time provider/model/language/transcript option mismatches return 409.
+- `provider_options` values are kept in memory for the active session only; raw
+  values are not written to session metadata JSON.
+
+## Transcript Downloads
+
+Transcript artifacts can be downloaded as the source `.txt`, or rendered through:
+
+```text
+/v1/artifacts/{id}/transcript?format=txt|srt|vtt|json
+```
+
+For `txt`, `timestamps=true` and `speakers=true` add available timestamp/speaker
+labels. SRT/VTT are available only when the provider returns complete timestamp
+segments. Audio artifacts return 422 from the transcript endpoint, and transcript
+artifacts return 422 for converted audio downloads.
+
+## Privacy Boundaries
+
+Voice Toolbox stores generated artifacts and redacted sidecars under local
+`data/artifacts/YYYYMMDD/`. It does not write raw TTS text, transcript text,
+base64 audio, clone sample bytes, or unsafe provider option values to sidecar
+metadata or logs. Safe provider option metadata is intentionally narrow:
+booleans/numbers/enums may be stored when marked `safe_metadata=true`, while
+free text stores keys only. Multiselect options store `<key>_count`.
+
+Browser chunk session metadata stores file name, chunk indexes, offsets,
+durations, and redacted option keys. Chunk audio is deleted when the session is
+finished, explicitly deleted, expired, or cleaned up on startup/session activity.
 
 ## Local Data
 

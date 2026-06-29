@@ -17,6 +17,28 @@ retention = "14 days"
 compression = "gz"
 enqueue = true
 
+[chunking.tts]
+# off: never split; auto: split only when text exceeds max_chars; force: always split.
+mode = "auto"
+max_chars = 1500
+max_chunks = 40
+max_text_file_bytes = 2000000
+silence_ms = 120
+repeat_leading_audio_tags = true
+
+[chunking.asr]
+# Backend chunking accepts large uploads and splits them server-side.
+# Browser chunking lets the web client upload WAV chunks per chunk session.
+mode = "auto"
+target_seconds = 90
+overlap_ms = 1200
+max_chunks = 80
+max_upload_mb = 250
+browser_upload = true
+session_ttl_seconds = 3600
+dedupe_min_chars = 8
+dedupe_max_chars = 200
+
 [[providers]]
 id = "mimo"
 type = "mimo"
@@ -50,6 +72,29 @@ capability = "tts.clone"
 id = "mimo-v2.5-asr"
 name = "MiMo ASR"
 capability = "asr.transcribe"
+
+# Provider/model-specific options are exposed by /v1/providers and rendered by
+# the web UI under the selected model. Multipart API routes pass values as a
+# JSON object string in provider_options. CLI does not expose provider_options yet.
+#
+# [[providers.options]]
+# key = "domain"
+# label = "Domain vocabulary"
+# type = "select"
+# capability = "asr.transcribe"
+# default = "general"
+# safe_metadata = true
+# [[providers.options.choices]]
+# value = "general"
+# label = "General"
+# [[providers.options.choices]]
+# value = "meeting"
+# label = "Meeting"
+#
+# [[providers.models.options]]
+# key = "domain"
+# capability = "asr.transcribe"
+# default = "meeting"
 
 # To add another provider, copy the [[providers]] block and use another api_key_env,
 # for example MIMO_SGP_API_KEY. Do not put API key values in this file.
@@ -91,6 +136,10 @@ capability = "asr.transcribe"
 # id = "fish-audio-asr"
 # name = "Fish Audio ASR"
 # capability = "asr.transcribe"
+# [providers.models.transcript_capabilities]
+# timestamps = false
+# speakers = false
+# segments = false
 #
 # [[providers.voices]]
 # id = "e58b0d7efca34eb38d5c4985e378abcb"
@@ -117,10 +166,22 @@ capability = "asr.transcribe"
 # capability = "tts.builtin"
 # note = "OpenRouter TTS endpoint; response_format mp3"
 #
+# [[providers.models.options]]
+# key = "instructions"
+# label = "Provider instructions"
+# type = "text"
+# capability = "tts.builtin"
+# placeholder = "Speak warmly, with careful pacing."
+# safe_metadata = false
+#
 # [[providers.models]]
 # id = "openai/whisper-1"
 # name = "OpenAI Whisper"
 # capability = "asr.transcribe"
+# [providers.models.transcript_capabilities]
+# timestamps = false
+# speakers = false
+# segments = false
 #
 # [[providers.voices]]
 # id = "alloy"
