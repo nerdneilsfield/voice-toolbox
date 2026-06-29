@@ -83,14 +83,15 @@ p {
 .app-shell {
   width: min(1280px, calc(100vw - 48px));
   margin: 0 auto;
-  padding: 24px 0 48px;
+  padding: 24px 24px 48px;
 }
 
 .topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
+  gap: 16px;
   padding: 16px 0;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--accent-border);
@@ -605,7 +606,7 @@ p {
 @media (max-width: 819px) {
   .app-shell {
     width: min(100vw - 20px, 1280px);
-    padding-top: 14px;
+    padding: 14px 16px 24px;
   }
 
   .topbar {
@@ -1054,7 +1055,7 @@ button:focus-visible,
 .topbar-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
 .topbar-controls .btn-ghost {
@@ -1067,6 +1068,12 @@ button:focus-visible,
 .topbar-controls .btn-ghost.active {
   color: var(--accent-hover);
   background: var(--accent-soft);
+}
+
+.language-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .theme-toggle {
