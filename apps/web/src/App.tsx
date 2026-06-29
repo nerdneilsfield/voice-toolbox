@@ -780,6 +780,7 @@ function BuiltinControls({
         <label className="field">
           <span className="field-title">{t("tts.stylePrompt")}</span>
           <input
+            type="text"
             value={style}
             onChange={(event) => setStyle(event.target.value)}
             placeholder={t("tts.stylePlaceholder")}
@@ -810,6 +811,7 @@ function BuiltinControls({
             </button>
           ))}
           <input
+            type="text"
             className="tag-input"
             value={customTag}
             onChange={(event) => setCustomTag(event.target.value)}
@@ -983,6 +985,7 @@ function CloneControls({
           <label className="field">
             <span className="field-title">{t("tts.stylePrompt")}</span>
             <input
+              type="text"
               value={style}
               onChange={(event) => setStyle(event.target.value)}
               placeholder={t("tts.stylePromptPlaceholder")}
