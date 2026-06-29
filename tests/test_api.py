@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from voice_toolbox.artifacts import ArtifactStore
 from voice_toolbox.config import (
     APIConfig,
     AppConfig,
@@ -28,6 +29,7 @@ from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.fake import FakeProvider
 from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE, MIMO_VOICES
 from voice_toolbox.providers.registry import ProviderRegistry
+from voice_toolbox.transcripts import TranscriptPayload, TranscriptSegment
 import voice_toolbox_api.main as api_main
 from voice_toolbox_api.main import create_app
 
@@ -142,6 +144,33 @@ def _client(
         env_values={"MIMO_API_KEY": "test-key" if has_api_key else ""},
     )
     return TestClient(app), provider
+
+
+def _write_rich_transcript_artifact(tmp_path: Path) -> str:
+    artifact = ArtifactStore(tmp_path).write_transcript(
+        operation_id="op_transcript",
+        provider_id="mimo",
+        operation="asr",
+        text="hello\nworld",
+        payload=TranscriptPayload(
+            text="hello\nworld",
+            segments=[
+                TranscriptSegment(
+                    text="hello",
+                    start_seconds=0,
+                    end_seconds=1.25,
+                    speaker="A",
+                ),
+                TranscriptSegment(
+                    text="world",
+                    start_seconds=1.25,
+                    end_seconds=2.5,
+                    speaker="B",
+                ),
+            ],
+        ),
+    )
+    return artifact.id
 
 
 def test_health() -> None:
@@ -1024,6 +1053,71 @@ def test_artifact_metadata_and_download_read_sidecar(tmp_path: Path) -> None:
     assert download.headers["content-type"].startswith("text/plain")
 
 
+def test_transcript_endpoint_json_is_only_explicit_payload_renderer(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    created = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.mp3", MP3_BYTES, "audio/mpeg")},
+    ).json()
+    artifact_id = created["artifact"]["id"]
+
+    metadata = client.get(f"/v1/artifacts/{artifact_id}")
+    download_json = client.get(f"/v1/artifacts/{artifact_id}/download?format=json")
+    transcript_json = client.get(f"/v1/artifacts/{artifact_id}/transcript?format=json")
+
+    assert metadata.status_code == 200
+    assert "fake transcript" not in metadata.text
+    assert download_json.status_code == 422
+    assert transcript_json.status_code == 200
+    assert transcript_json.json() == {"text": "fake transcript", "segments": []}
+
+
+def test_transcript_endpoint_renders_txt_srt_and_vtt(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    artifact_id = _write_rich_transcript_artifact(tmp_path)
+
+    txt = client.get(
+        f"/v1/artifacts/{artifact_id}/transcript?format=txt&timestamps=true&speakers=true"
+    )
+    srt = client.get(f"/v1/artifacts/{artifact_id}/transcript?format=srt")
+    vtt = client.get(f"/v1/artifacts/{artifact_id}/transcript?format=vtt")
+
+    assert txt.status_code == 200
+    assert txt.text == "[00:00.000 - 00:01.250] A: hello\n[00:01.250 - 00:02.500] B: world"
+    assert srt.status_code == 200
+    assert "00:00:00,000 --> 00:00:01,250" in srt.text
+    assert vtt.status_code == 200
+    assert vtt.text.startswith("WEBVTT\n\n")
+
+
+def test_transcript_endpoint_rejects_audio_artifacts(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    artifact = ArtifactStore(tmp_path).write_audio(
+        operation_id="op_audio",
+        provider_id="mimo",
+        operation="tts",
+        audio=WAV_BYTES,
+    )
+
+    response = client.get(f"/v1/artifacts/{artifact.id}/transcript")
+
+    assert response.status_code == 422
+    assert "transcript" in response.json()["detail"]
+
+
+def test_download_format_txt_rejects_transcript_artifacts(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    created = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.mp3", MP3_BYTES, "audio/mpeg")},
+    ).json()
+
+    response = client.get(f"/v1/artifacts/{created['artifact']['id']}/download?format=txt")
+
+    assert response.status_code == 422
+    assert "transcript" in response.json()["detail"]
+
+
 def test_artifact_routes_require_trusted_local_api(tmp_path: Path) -> None:
     client, _ = _client(tmp_path, config=_test_config(host="0.0.0.0"))
 
@@ -1144,7 +1238,7 @@ def test_artifact_download_rejects_transcript_format_conversion(tmp_path: Path) 
     response = client.get(f"/v1/artifacts/{created['artifact']['id']}/download?format=mp3")
 
     assert response.status_code == 422
-    assert "audio" in response.json()["detail"]
+    assert "transcript" in response.json()["detail"]
 
 
 def test_artifact_download_rejects_sidecar_path_outside_artifact_root(tmp_path: Path) -> None:

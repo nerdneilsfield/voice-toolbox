@@ -9,6 +9,7 @@ from voice_toolbox.artifacts import ArtifactStore, redact_metadata
 from voice_toolbox.models import AudioArtifact, OperationResult, OperationStatus
 from voice_toolbox.settings import has_mimo_api_key, load_settings
 from voice_toolbox.storage import MetadataStore
+from voice_toolbox.transcripts import TranscriptPayload, TranscriptSegment
 
 
 def test_redact_metadata_excludes_api_key_and_data_url_and_maps_source_text_length() -> None:
@@ -210,6 +211,17 @@ def test_artifact_store_write_transcript_writes_text_and_json_sidecar(tmp_path) 
         provider_id="mimo",
         operation="asr",
         text="hello transcript",
+        payload=TranscriptPayload(
+            text="hello transcript",
+            segments=[
+                TranscriptSegment(
+                    text="hello",
+                    start_seconds=0,
+                    end_seconds=1,
+                    speaker="A",
+                )
+            ],
+        ),
         metadata={"api_key": "secret", "source_text": "abc"},
     )
 
@@ -224,10 +236,55 @@ def test_artifact_store_write_transcript_writes_text_and_json_sidecar(tmp_path) 
     assert '"kind": "transcript"' in sidecar_text
     assert '"path"' not in sidecar_text
     assert '"api_key"' not in sidecar_text
+    assert "hello transcript" not in sidecar_text
+    assert '"hello"' not in sidecar_text
     assert '"source_text_length": 3' in sidecar_text
+    transcript_payload = artifact.path.with_suffix(".transcript.json")
+    assert transcript_payload.exists()
+    assert transcript_payload.read_text(encoding="utf-8") == (
+        "{\n"
+        '  "segments": [\n'
+        "    {\n"
+        '      "end_seconds": 1.0,\n'
+        '      "speaker": "A",\n'
+        '      "start_seconds": 0.0,\n'
+        '      "text": "hello"\n'
+        "    }\n"
+        "  ],\n"
+        '  "text": "hello transcript"\n'
+        "}"
+    )
     assert stat.S_IMODE(artifact.path.stat().st_mode) == 0o600
     assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+    assert stat.S_IMODE(transcript_payload.stat().st_mode) == 0o600
     assert stat.S_IMODE(sidecar.parent.stat().st_mode) == 0o700
+
+
+def test_artifact_store_reads_transcript_payload_from_sibling_or_plain_text(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    rich = TranscriptPayload(
+        text="hello transcript",
+        segments=[TranscriptSegment(text="hello", start_seconds=0, end_seconds=1)],
+    )
+    rich_artifact = store.write_transcript(
+        operation_id="op_rich",
+        provider_id="mimo",
+        operation="asr",
+        text="hello transcript",
+        payload=rich,
+    )
+    plain_artifact = store.write_transcript(
+        operation_id="op_plain",
+        provider_id="mimo",
+        operation="asr",
+        text="plain transcript",
+    )
+    plain_artifact.path.with_suffix(".transcript.json").unlink()
+
+    assert store.read_transcript_payload(rich_artifact) == rich
+    assert store.read_transcript_payload(plain_artifact) == TranscriptPayload(
+        text="plain transcript"
+    )
 
 
 def test_artifact_store_write_transcript_duplicate_id_preserves_original(tmp_path) -> None:

@@ -59,6 +59,7 @@ from voice_toolbox.models import (
     OperationResult,
     OperationStatus,
     ProviderAudioResult,
+    TranscriptArtifact,
     TTSMode,
     TTSRequest,
 )
@@ -70,6 +71,7 @@ from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.factory import build_provider_registry
 from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE
 from voice_toolbox.providers.registry import TTS_MODE_CAPABILITIES, ProviderRegistry
+from voice_toolbox.transcripts import render_json, render_srt, render_txt, render_vtt
 
 CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
 CORS_METHODS = ["GET", "POST"]
@@ -531,6 +533,8 @@ def create_app(
         sidecars = artifact_root.glob("*/*.json")
         artifacts: list[Artifact] = []
         for sidecar_path in sidecars:
+            if sidecar_path.name.endswith(".transcript.json"):
+                continue
             try:
                 artifacts.append(_read_artifact_sidecar_path(sidecar_path, root))
             # Listing is intentionally lenient: a single corrupt/malformed sidecar
@@ -562,6 +566,48 @@ def create_app(
         artifact = _read_artifact_sidecar(root, artifact_id)
         return _safe_artifact_payload(artifact)
 
+    @app.get("/v1/artifacts/{artifact_id}/transcript", response_model=None)
+    def artifact_transcript(
+        http_request: Request,
+        artifact_id: str,
+        format: Annotated[Literal["txt", "srt", "vtt", "json"], Query()] = "txt",
+        timestamps: Annotated[bool, Query()] = False,
+        speakers: Annotated[bool, Query()] = False,
+    ) -> Response:
+        _ensure_trusted_artifact_request(http_request)
+        artifact = _read_artifact_sidecar(root, artifact_id)
+        if artifact.kind.value != "transcript":
+            raise HTTPException(status_code=422, detail="artifact is not a transcript")
+        try:
+            payload = ArtifactStore(root).read_transcript_payload(
+                cast(TranscriptArtifact, artifact)
+            )
+            if format == "json":
+                return JSONResponse(render_json(payload))
+            if format == "srt":
+                rendered = render_srt(payload)
+                media_type = "application/x-subrip; charset=utf-8"
+                suffix = ".srt"
+            elif format == "vtt":
+                rendered = render_vtt(payload)
+                media_type = "text/vtt; charset=utf-8"
+                suffix = ".vtt"
+            else:
+                rendered = render_txt(payload, timestamps=timestamps, speakers=speakers)
+                media_type = "text/plain; charset=utf-8"
+                suffix = ".txt"
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return Response(
+            rendered,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{_download_filename(artifact, suffix)}"'
+                )
+            },
+        )
+
     @app.get("/v1/artifacts/{artifact_id}/download", response_model=None)
     def artifact_download(
         http_request: Request,
@@ -573,6 +619,17 @@ def create_app(
         path = artifact.path
         if not path.is_file():
             raise HTTPException(status_code=404, detail="artifact file not found")
+        if artifact.kind.value == "transcript":
+            if format.strip().lower() != "source":
+                raise HTTPException(
+                    status_code=422,
+                    detail="transcript formats are available from the transcript endpoint",
+                )
+            return FileResponse(
+                path,
+                media_type=artifact.mime_type,
+                filename=_source_download_filename(artifact),
+            )
         download_format = _normalize_download_format(format)
         if download_format is not None:
             if artifact.kind.value != "audio":

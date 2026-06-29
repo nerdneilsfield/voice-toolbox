@@ -6,8 +6,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from voice_toolbox.models import AudioArtifact, OperationResult, TranscriptArtifact
 from voice_toolbox.storage import MetadataStore
+from voice_toolbox.transcripts import TranscriptPayload
 
 ALLOWED_METADATA_KEYS = {
     "base64_size",
@@ -130,34 +133,62 @@ class ArtifactStore:
         provider_id: str,
         operation: str,
         text: str,
+        payload: TranscriptPayload | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TranscriptArtifact:
         self._validate_operation_id(operation_id)
+        transcript_payload = payload or TranscriptPayload(text=text)
         path = self._artifact_dir() / f"{operation_id}.txt"
         self._ensure_sidecar_available(path)
+        self._ensure_transcript_payload_available(path)
         with path.open("x", encoding="utf-8") as transcript_file:
             transcript_file.write(text)
         path.chmod(0o600)
+        self._write_transcript_payload(path, transcript_payload)
         artifact = TranscriptArtifact(
             id=operation_id,
             provider_id=provider_id,
             operation=operation,
             path=path,
             mime_type="text/plain; charset=utf-8",
-            metadata=redact_metadata(metadata or {}),
+            metadata=redact_metadata(
+                {
+                    **(metadata or {}),
+                    "transcript_has_speakers": transcript_payload.has_complete_speakers,
+                    "transcript_has_timestamps": transcript_payload.has_complete_timestamps,
+                    "transcript_segment_count": len(transcript_payload.segments),
+                    "transcript_download_formats": transcript_payload.download_formats,
+                }
+            ),
         )
         self._write_sidecar(artifact)
         self._metadata_store.insert_artifact(artifact)
         return artifact
 
+    def read_transcript_payload(self, artifact: TranscriptArtifact) -> TranscriptPayload:
+        payload_path = artifact.path.with_suffix(".transcript.json")
+        if payload_path.exists():
+            resolved_payload = payload_path.resolve(strict=False)
+            if not resolved_payload.is_relative_to(self._artifact_root()):
+                raise ValueError("transcript payload is outside artifact root")
+            try:
+                payload_data = json.loads(resolved_payload.read_text(encoding="utf-8"))
+                return TranscriptPayload.model_validate(payload_data)
+            except (json.JSONDecodeError, OSError, ValidationError) as exc:
+                raise ValueError("transcript payload is invalid") from exc
+        return TranscriptPayload(text=artifact.path.read_text(encoding="utf-8"))
+
     def record_operation(self, operation: OperationResult) -> None:
         self._metadata_store.insert_operation(operation)
 
     def _artifact_dir(self) -> Path:
-        path = self.root / "data" / "artifacts" / datetime.now(UTC).strftime("%Y%m%d")
+        path = self._artifact_root() / datetime.now(UTC).strftime("%Y%m%d")
         path.mkdir(parents=True, exist_ok=True)
         path.chmod(0o700)
         return path
+
+    def _artifact_root(self) -> Path:
+        return (self.root / "data" / "artifacts").resolve(strict=False)
 
     def _validate_operation_id(self, operation_id: str) -> None:
         if not SAFE_OPERATION_ID_PATTERN.fullmatch(operation_id):
@@ -170,6 +201,11 @@ class ArtifactStore:
         if sidecar_path.exists():
             raise FileExistsError(f"artifact sidecar already exists: {sidecar_path}")
 
+    def _ensure_transcript_payload_available(self, artifact_path: Path) -> None:
+        payload_path = artifact_path.with_suffix(".transcript.json")
+        if payload_path.exists():
+            raise FileExistsError(f"transcript payload already exists: {payload_path}")
+
     def _write_sidecar(self, artifact: AudioArtifact | TranscriptArtifact) -> None:
         sidecar_path = artifact.path.with_suffix(".json")
         if sidecar_path.exists():
@@ -178,3 +214,20 @@ class ArtifactStore:
         with sidecar_path.open("x", encoding="utf-8") as sidecar_file:
             sidecar_file.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         sidecar_path.chmod(0o600)
+
+    def _write_transcript_payload(
+        self,
+        artifact_path: Path,
+        payload: TranscriptPayload,
+    ) -> None:
+        payload_path = artifact_path.with_suffix(".transcript.json")
+        with payload_path.open("x", encoding="utf-8") as payload_file:
+            payload_file.write(
+                json.dumps(
+                    payload.model_dump(mode="json", exclude_none=True),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        payload_path.chmod(0o600)
