@@ -105,6 +105,31 @@ def test_openrouter_tts_sends_style_instruction_as_openai_options(tmp_path: Path
     assert body["provider"] == {"options": {"openai": {"instructions": "warm and concise"}}}
 
 
+def test_openrouter_tts_provider_options_passthrough(tmp_path: Path) -> None:
+    client = FakeOpenRouterClient(_response(b"MP3DATA"))
+    provider = OpenRouterProvider(
+        config=make_default_openrouter_provider_config(),
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+    )
+
+    provider.synthesize(
+        TTSRequest(
+            provider_id="openrouter",
+            mode=TTSMode.BUILTIN,
+            text="hello",
+            voice_id="alloy",
+            provider_options={"instructions": "clear voice", "speed": 1.1},
+        )
+    )
+
+    body = client.calls[0]["body"]
+    assert isinstance(body, dict)
+    assert body["speed"] == 1.1
+    assert body["provider"] == {"options": {"openai": {"instructions": "clear voice"}}}
+
+
 def test_openrouter_base_url_override_is_revalidated(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="base_url"):
         OpenRouterProvider(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import os
 import tempfile
 import threading
@@ -169,6 +170,7 @@ class MimoProvider:
                 messages.append({"role": "user", "content": request.style_instruction})
             messages.append({"role": "assistant", "content": request.text})
             audio["voice"] = request.voice_id
+            _apply_mimo_provider_options(body, audio, request.provider_options)
             return body
 
         if request.mode == TTSMode.DESIGN:
@@ -176,6 +178,7 @@ class MimoProvider:
             if request.text:
                 messages.append({"role": "assistant", "content": request.text})
             audio["optimize_text_preview"] = request.optimize_text_preview
+            _apply_mimo_provider_options(body, audio, request.provider_options)
             return body
 
         if request.mode == TTSMode.CLONE:
@@ -192,6 +195,7 @@ class MimoProvider:
                 request.clone_mime_type,
             )
             audio["voice"] = audio_data_url
+            _apply_mimo_provider_options(body, audio, request.provider_options)
             return body
 
         raise UnsupportedCapability(f"mimo provider does not support TTS mode: {request.mode}")
@@ -297,7 +301,8 @@ class MimoProvider:
                 "provider_id": self.id,
                 "raw_byte_size": raw_size,
                 "uploaded_file_mime_type": request.mime_type,
-                "uploaded_file_name": request.audio_path.name,
+                "uploaded_file_name_hash": _file_name_hash(request.audio_path.name),
+                "uploaded_file_suffix": request.audio_path.suffix,
             },
         )
         self._artifact_store.record_operation(
@@ -489,7 +494,8 @@ def _tts_metadata(
     }
     if request.mode == TTSMode.CLONE:
         if request.clone_sample_path is not None:
-            metadata["uploaded_file_name"] = request.clone_sample_path.name
+            metadata["uploaded_file_name_hash"] = _file_name_hash(request.clone_sample_path.name)
+            metadata["uploaded_file_suffix"] = request.clone_sample_path.suffix
         metadata.update(
             {
                 "base64_size": _clone_base64_size(request),
@@ -516,3 +522,24 @@ def _clone_base64_size(request: TTSRequest) -> int | None:
         return None
     raw_size = os.path.getsize(request.clone_sample_path)
     return ((raw_size + 2) // 3) * 4
+
+
+def _apply_mimo_provider_options(
+    body: dict[str, Any],
+    audio: dict[str, Any],
+    options: Mapping[str, object],
+) -> None:
+    for key, value in options.items():
+        if key.startswith("audio_"):
+            audio_key = key.removeprefix("audio_")
+            if audio_key in {"format", "voice"}:
+                raise ProviderError(f"provider option {key} cannot override core audio field")
+            audio[audio_key] = value
+            continue
+        if key in {"model", "messages", "audio"}:
+            raise ProviderError(f"provider option {key} cannot override core request field")
+        body[key] = value
+
+
+def _file_name_hash(filename: str) -> str:
+    return hashlib.sha256(filename.encode("utf-8", errors="surrogatepass")).hexdigest()[:12]

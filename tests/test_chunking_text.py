@@ -190,6 +190,27 @@ def test_tts_chunker_propagates_leading_audio_tag() -> None:
         "(唱歌) 第二段也很長很長。",
     ]
     assert plan.repeated_leading_audio_tags is True
+    assert all(chunk.char_count <= plan.max_chars for chunk in plan.chunks)
+
+
+def test_tts_chunker_keeps_repeated_audio_tag_chunks_within_limit() -> None:
+    plan = plan_tts_text_chunks(
+        TTSChunkingRequest(
+            mode=TTSMode.BUILTIN,
+            text="(唱歌) 第一段很長很長。第二段也很長很長。",
+            chunking_mode="force",
+            max_chars=12,
+            max_chunks=10,
+            repeat_leading_audio_tags=True,
+        )
+    )
+
+    assert [chunk.text for chunk in plan.chunks] == [
+        "(唱歌) 第一段很長很長",
+        "(唱歌) 。第二段也很長",
+        "(唱歌) 很長。",
+    ]
+    assert all(chunk.char_count <= plan.max_chars for chunk in plan.chunks)
 
 
 def test_tts_chunker_enforces_max_chunk_count() -> None:

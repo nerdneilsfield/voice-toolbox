@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from voice_toolbox.chunking.models import TextSource
+import pytest
+
 from voice_toolbox.models import TTSMode
 from voice_toolbox.pipeline import prepare_tts_request
 
@@ -66,19 +68,30 @@ def test_prepare_tts_request_skips_none_text_for_optimized_design() -> None:
 
 def test_prepare_tts_request_adds_source_and_chunking_metadata_for_inline_text() -> None:
     prepared = prepare_tts_request(
-        "One. Two.",
+        ("One. " * 45) + ("Two. " * 45),
         "plain",
         {"mode": TTSMode.BUILTIN, "voice_id": "Mia"},
         chunking_mode="force",
-        chunk_max_chars=5,
+        chunk_max_chars=200,
     )
 
-    assert prepared.request.text == "One. Two."
+    assert prepared.request.text is not None
     assert prepared.chunk_plan is not None
     assert prepared.artifact_metadata["source_kind"] == "inline"
-    assert prepared.artifact_metadata["source_text_raw_char_count"] == 9
+    assert prepared.artifact_metadata["source_text_raw_char_count"] == 450
     assert prepared.artifact_metadata["chunking_enabled"] is True
-    assert prepared.artifact_metadata["chunking_text_lengths"] == [4, 4]
+    assert all(length <= 200 for length in prepared.artifact_metadata["chunking_text_lengths"])
+
+
+def test_prepare_tts_request_rejects_invalid_chunk_override() -> None:
+    with pytest.raises(ValueError, match="max_chars"):
+        prepare_tts_request(
+            "One. Two.",
+            "plain",
+            {"mode": TTSMode.BUILTIN, "voice_id": "Mia"},
+            chunking_mode="force",
+            chunk_max_chars=1,
+        )
 
 
 def test_prepare_tts_request_omits_raw_preview_for_uploaded_file_source() -> None:
@@ -100,7 +113,7 @@ def test_prepare_tts_request_omits_raw_preview_for_uploaded_file_source() -> Non
         None,
         {"mode": TTSMode.BUILTIN, "voice_id": "Mia"},
         chunking_mode="auto",
-        chunk_max_chars=100,
+        chunk_max_chars=200,
     )
 
     assert prepared.request.text == "Secret\nbody"

@@ -21,7 +21,9 @@ TEXT_SUFFIX_MIME_TYPES = {
     ".md": {"text/markdown", "text/x-markdown", "application/octet-stream"},
     ".markdown": {"text/markdown", "text/x-markdown", "application/octet-stream"},
 }
-LEADING_AUDIO_TAG_PATTERN = re.compile(r"^((?:\([^)\n]{1,32}\)|（[^）\n]{1,32}）|\[[^\]\n]{1,32}\])(?:\s+|$))+")
+LEADING_AUDIO_TAG_PATTERN = re.compile(
+    r"^((?:\([^)\n]{1,32}\)|（[^）\n]{1,32}）|\[[^\]\n]{1,32}\])(?:\s+|$))+"
+)
 
 
 class UploadLike(Protocol):
@@ -99,9 +101,7 @@ def infer_text_format_from_upload(
     suffix = _text_suffix(filename)
     mime_type = _normalized_mime_type(content_type)
     if mime_type not in TEXT_SUFFIX_MIME_TYPES[suffix]:
-        raise TextSourceError(
-            f"text file MIME type {mime_type!r} does not match suffix {suffix!r}"
-        )
+        raise TextSourceError(f"text file MIME type {mime_type!r} does not match suffix {suffix!r}")
     return TEXT_SUFFIX_FORMATS[suffix]
 
 
@@ -119,7 +119,9 @@ def plan_tts_text_chunks(request: TTSChunkingRequest) -> TextChunkPlan:
     chunks = _split_text(text, max_chars=request.max_chars)
     repeated = False
     if request.repeat_leading_audio_tags:
-        chunks, repeated = _propagate_leading_audio_tag(chunks)
+        chunks, repeated = _propagate_leading_audio_tag(chunks, max_chars=request.max_chars)
+    if any(len(chunk) > request.max_chars for chunk in chunks):
+        raise ValueError("chunk exceeds max_chars")
     if len(chunks) > request.max_chunks:
         raise ValueError("chunk count exceeds max_chunks")
     return _chunk_plan(
@@ -272,21 +274,27 @@ def _hard_split(text: str, *, max_chars: int) -> list[str]:
     return chunks
 
 
-def _propagate_leading_audio_tag(chunks: list[str]) -> tuple[list[str], bool]:
+def _propagate_leading_audio_tag(chunks: list[str], *, max_chars: int) -> tuple[list[str], bool]:
     if len(chunks) <= 1:
         return chunks, False
     match = LEADING_AUDIO_TAG_PATTERN.match(chunks[0])
     if match is None:
         return chunks, False
     prefix = match.group(0)
+    available = max_chars - len(prefix)
+    if available <= 0:
+        raise ValueError("leading audio tag prefix exceeds max_chars")
     repeated = False
     propagated = [chunks[0]]
     for chunk in chunks[1:]:
-        if chunk.startswith(prefix):
-            propagated.append(chunk)
+        content = chunk[len(prefix) :] if chunk.startswith(prefix) else chunk
+        if len(prefix) + len(content) <= max_chars:
+            propagated.append(f"{prefix}{content}")
+            repeated = repeated or not chunk.startswith(prefix)
             continue
-        propagated.append(f"{prefix}{chunk}")
-        repeated = True
+        for part in _hard_split(content, max_chars=available):
+            propagated.append(f"{prefix}{part}")
+            repeated = True
     return propagated, repeated
 
 

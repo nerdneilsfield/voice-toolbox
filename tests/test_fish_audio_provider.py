@@ -94,6 +94,28 @@ def test_fish_builtin_tts_posts_json_and_writes_audio(tmp_path: Path) -> None:
     ]
 
 
+def test_fish_tts_provider_options_passthrough(tmp_path: Path) -> None:
+    client = FakeFishClient(_response(b"WAVDATA"))
+    provider = FishAudioProvider(
+        config=make_default_fish_audio_provider_config(),
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+    )
+
+    provider.synthesize(
+        TTSRequest(
+            provider_id="fish-audio",
+            mode=TTSMode.BUILTIN,
+            text="hello",
+            voice_id="e58b0d7efca34eb38d5c4985e378abcb",
+            provider_options={"latency": "balanced"},
+        )
+    )
+
+    assert client.calls[0]["json_body"]["latency"] == "balanced"
+
+
 def test_fish_voice_design_decodes_first_audio_candidate(tmp_path: Path) -> None:
     audio = base64.b64encode(b"DESIGNED").decode("ascii")
     client = FakeFishClient(_response(json.dumps({"voices": [{"audio": audio}]}).encode()))

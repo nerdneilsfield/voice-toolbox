@@ -101,6 +101,7 @@ def _test_config(
     host: str = "127.0.0.1",
     tts_chunking: TTSChunkingConfig | None = None,
     provider_options: list[ProviderOptionSpec] | None = None,
+    models: list[ModelInfo] | None = None,
 ) -> AppConfig:
     return AppConfig(
         api=APIConfig(host=host, port=8000),
@@ -115,7 +116,8 @@ def _test_config(
                 api_key_env="MIMO_API_KEY",
                 default_voice="mimo_default",
                 default_models=ProviderDefaultModels(tts_builtin="fake-tts", asr="fake-asr"),
-                models=[
+                models=models
+                or [
                     ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
                     ModelInfo(id="fake-asr", name="Fake ASR", capability="asr.transcribe"),
                 ],
@@ -711,6 +713,78 @@ def test_provider_options_reach_every_tts_chunk(monkeypatch, tmp_path: Path) -> 
     assert "1.25" not in json.dumps(metadata)
 
 
+def test_default_model_provider_options_are_merged(tmp_path: Path) -> None:
+    config = _test_config(
+        provider_options=[
+            ProviderOptionSpec(
+                key="speed",
+                label="Speed",
+                type="number",
+                capability="tts.builtin",
+                min_value=0.5,
+                max_value=2.0,
+            )
+        ],
+        models=[
+            ModelInfo(
+                id="fake-tts",
+                name="Fake TTS",
+                capability="tts.builtin",
+                options=[
+                    {
+                        "key": "speed",
+                        "capability": "tts.builtin",
+                        "max_value": 1.5,
+                    }
+                ],
+            ),
+            ModelInfo(id="fake-asr", name="Fake ASR", capability="asr.transcribe"),
+        ],
+    )
+    client, provider = _client(tmp_path, config=config)
+
+    rejected = client.post(
+        "/v1/tts/builtin",
+        data={
+            "provider_id": "mimo",
+            "text": "hello",
+            "voice_id": "Mia",
+            "provider_options": json.dumps({"speed": 1.75}),
+        },
+    )
+    accepted = client.post(
+        "/v1/tts/builtin",
+        data={
+            "provider_id": "mimo",
+            "text": "hello",
+            "voice_id": "Mia",
+            "provider_options": json.dumps({"speed": 1.25}),
+        },
+    )
+
+    assert rejected.status_code == 422
+    assert accepted.status_code == 200, accepted.text
+    assert provider.tts_requests[-1].provider_options == {"speed": 1.25}
+
+
+def test_tts_chunk_max_chars_override_uses_config_bounds(tmp_path: Path) -> None:
+    client, _provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={
+            "provider_id": "mimo",
+            "text": "hello",
+            "voice_id": "Mia",
+            "chunking_mode": "force",
+            "chunk_max_chars": "1",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "max_chars" in response.text
+
+
 def test_chunked_clone_reuses_temp_sample_and_cleans_on_provider_failure(
     monkeypatch,
     tmp_path: Path,
@@ -948,6 +1022,18 @@ def test_artifact_metadata_and_download_read_sidecar(tmp_path: Path) -> None:
     assert download.status_code == 200
     assert download.content == b"fake transcript"
     assert download.headers["content-type"].startswith("text/plain")
+
+
+def test_artifact_routes_require_trusted_local_api(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path, config=_test_config(host="0.0.0.0"))
+
+    listing = client.get("/v1/artifacts")
+    metadata = client.get("/v1/artifacts/missing")
+    download = client.get("/v1/artifacts/missing/download")
+
+    assert listing.status_code == 403
+    assert metadata.status_code == 403
+    assert download.status_code == 403
 
 
 def test_artifact_download_infers_mp3_path_from_audio_mpeg_sidecar(tmp_path: Path) -> None:

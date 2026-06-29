@@ -34,9 +34,7 @@ def parse_provider_options_json(raw: str | None) -> dict[str, object]:
 
 def merge_provider_options(
     provider_options: Sequence[ProviderOptionSpec | Mapping[str, Any]],
-    model_options: Sequence[
-        ProviderOptionSpec | ProviderOptionOverride | Mapping[str, Any]
-    ] = (),
+    model_options: Sequence[ProviderOptionSpec | ProviderOptionOverride | Mapping[str, Any]] = (),
     *,
     capability: str,
 ) -> list[ProviderOptionSpec]:
@@ -87,7 +85,9 @@ def validate_provider_options(
         spec = by_key.get(key)
         if spec is None:
             if key in all_by_key:
-                raise ValueError(f"provider option {key} does not belong to capability {capability}")
+                raise ValueError(
+                    f"provider option {key} does not belong to capability {capability}"
+                )
             raise ValueError(f"unknown provider option: {key}")
         if spec.capability != capability:
             raise ValueError(f"provider option {key} does not belong to capability {capability}")
@@ -117,9 +117,7 @@ def build_provider_option_metadata(
         spec = specs_by_key.get(key)
         if spec is None or not spec.safe_metadata:
             continue
-        if spec.type in {"boolean", "integer", "number"} and isinstance(
-            value, bool | int | float
-        ):
+        if spec.type in {"boolean", "integer", "number"} and isinstance(value, bool | int | float):
             safe_values[key] = value
         elif spec.type == "select" and isinstance(value, str) and len(value) <= 256:
             choice_values = {choice.value for choice in spec.choices}
@@ -132,7 +130,9 @@ def build_provider_option_metadata(
     return metadata
 
 
-def normalize_provider_options(provider_options: Mapping[str, object]) -> tuple[tuple[str, Any], ...]:
+def normalize_provider_options(
+    provider_options: Mapping[str, object],
+) -> tuple[tuple[str, Any], ...]:
     return tuple((key, _normalize_value(value)) for key, value in sorted(provider_options.items()))
 
 

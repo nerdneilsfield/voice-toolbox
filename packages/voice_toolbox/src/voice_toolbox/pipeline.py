@@ -103,19 +103,40 @@ def _plan_chunks(
     chunk_max_chars: int | None,
     chunk_silence_ms: int | None,
 ) -> TextChunkPlan:
-    config = chunking_config or TTSChunkingConfig()
+    config = _resolved_chunking_config(
+        chunking_config=chunking_config,
+        chunk_max_chars=chunk_max_chars,
+        chunk_silence_ms=chunk_silence_ms,
+    )
     return plan_tts_text_chunks(
         TTSChunkingRequest(
             mode=request.mode,
             text=request.text,
-            chunking_mode=chunking_mode or config.mode,
-            max_chars=chunk_max_chars or config.max_chars,
+            chunking_mode=chunking_mode if chunking_mode is not None else config.mode,
+            max_chars=config.max_chars,
             max_chunks=config.max_chunks,
-            silence_ms=chunk_silence_ms if chunk_silence_ms is not None else config.silence_ms,
+            silence_ms=config.silence_ms,
             repeat_leading_audio_tags=config.repeat_leading_audio_tags,
             optimize_text_preview=request.optimize_text_preview,
         )
     )
+
+
+def _resolved_chunking_config(
+    *,
+    chunking_config: TTSChunkingConfig | None,
+    chunk_max_chars: int | None,
+    chunk_silence_ms: int | None,
+) -> TTSChunkingConfig:
+    config = chunking_config or TTSChunkingConfig()
+    updates: dict[str, int] = {}
+    if chunk_max_chars is not None:
+        updates["max_chars"] = chunk_max_chars
+    if chunk_silence_ms is not None:
+        updates["silence_ms"] = chunk_silence_ms
+    if not updates:
+        return config
+    return TTSChunkingConfig.model_validate({**config.model_dump(), **updates})
 
 
 def _normalization_metadata(normalized: NormalizedContent) -> dict[str, object]:

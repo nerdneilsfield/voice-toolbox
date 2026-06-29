@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import tempfile
 import threading
@@ -147,14 +148,20 @@ class FishAudioProvider:
         self._validate_tts_request(request)
         model = self._resolve_tts_model(request)
         if request.mode == TTSMode.BUILTIN:
+            payload: dict[str, object] = {
+                "text": request.text,
+                "format": request.output_format,
+                "reference_id": request.voice_id,
+                "normalize": True,
+            }
+            _apply_fish_provider_options(
+                payload,
+                request.provider_options,
+                protected={"text", "format", "reference_id"},
+            )
             return {
                 "model": _fish_api_model_id(model),
-                "json": {
-                    "text": request.text,
-                    "format": request.output_format,
-                    "reference_id": request.voice_id,
-                    "normalize": True,
-                },
+                "json": payload,
             }
         if request.mode == TTSMode.DESIGN:
             body: dict[str, Any] = {"instruction": request.voice_description}
@@ -162,24 +169,35 @@ class FishAudioProvider:
                 if len(request.text) > FISH_DESIGN_REFERENCE_TEXT_MAX_CHARS:
                     raise ProviderError("fish_audio voice design reference_text exceeds 150 chars")
                 body["reference_text"] = request.text
+            _apply_fish_provider_options(
+                body,
+                request.provider_options,
+                protected={"instruction", "reference_text"},
+            )
             return {"model": FISH_VOICE_DESIGN_MODEL, "json": body}
         if request.mode == TTSMode.CLONE:
             self._validate_clone_request(request)
             if request.clone_sample_path is None:
                 raise ProviderError("fish_audio clone mode requires clone sample path")
+            payload: dict[str, object] = {
+                "text": request.text,
+                "format": request.output_format,
+                "normalize": True,
+                "references": [
+                    {
+                        "audio": request.clone_sample_path.read_bytes(),
+                        "text": request.clone_reference_text,
+                    }
+                ],
+            }
+            _apply_fish_provider_options(
+                payload,
+                request.provider_options,
+                protected={"text", "format", "references"},
+            )
             return {
                 "model": _fish_api_model_id(model),
-                "msgpack": {
-                    "text": request.text,
-                    "format": request.output_format,
-                    "normalize": True,
-                    "references": [
-                        {
-                            "audio": request.clone_sample_path.read_bytes(),
-                            "text": request.clone_reference_text,
-                        }
-                    ],
-                },
+                "msgpack": payload,
             }
         raise UnsupportedCapability(
             f"fish_audio provider does not support TTS mode: {request.mode}"
@@ -298,7 +316,8 @@ class FishAudioProvider:
                 "provider_id": self.id,
                 "raw_byte_size": request.raw_byte_size,
                 "uploaded_file_mime_type": request.mime_type,
-                "uploaded_file_name": request.audio_path.name,
+                "uploaded_file_name_hash": _file_name_hash(request.audio_path.name),
+                "uploaded_file_suffix": request.audio_path.suffix,
             },
         )
         self._artifact_store.record_operation(
@@ -517,6 +536,22 @@ def _fish_api_model_id(model: str) -> str:
     if model in {"s1-design", "s1-clone"}:
         return "s1"
     return model
+
+
+def _apply_fish_provider_options(
+    payload: dict[str, object],
+    options: Mapping[str, object],
+    *,
+    protected: set[str],
+) -> None:
+    for key, value in options.items():
+        if key in protected:
+            raise ProviderError(f"provider option {key} cannot override core Fish Audio field")
+        payload[key] = value
+
+
+def _file_name_hash(filename: str) -> str:
+    return hashlib.sha256(filename.encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
 
 
 def _encode_multipart(

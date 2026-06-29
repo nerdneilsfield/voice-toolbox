@@ -25,7 +25,9 @@ def decode_audio_result(result: ProviderAudioResult):
     except AudioConversionError:
         raise
     except Exception as exc:
-        raise AudioConversionError("audio merge failed; provider returned unsupported audio") from exc
+        raise AudioConversionError(
+            "audio merge failed; provider returned unsupported audio"
+        ) from exc
 
 
 def concat_audio_results(

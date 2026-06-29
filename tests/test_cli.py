@@ -292,6 +292,53 @@ def test_tts_design_accepts_format_wav(monkeypatch, tmp_path: Path) -> None:
     assert provider.tts_requests[0].output_format == "wav"
 
 
+def test_tts_design_rejects_force_chunking(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "tts",
+            "design",
+            "--description",
+            "warm narrator",
+            "--text",
+            "preview",
+            "--chunking",
+            "force",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "design mode does not support force chunking" in result.output
+    assert provider.tts_requests == []
+
+
+def test_tts_design_rejects_file_with_optimized_preview(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    source = tmp_path / "preview.txt"
+    source.write_text("preview", encoding="utf-8")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "tts",
+            "design",
+            "--description",
+            "warm narrator",
+            "--file",
+            str(source),
+            "--optimize-text-preview",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "text_file is not allowed" in result.output
+    assert provider.tts_requests == []
+
+
 def test_tts_clone_fails_without_consent_in_non_tty(monkeypatch, tmp_path: Path) -> None:
     provider = _install_recording_provider(monkeypatch, tmp_path)
     sample = tmp_path / "voice.wav"
@@ -363,6 +410,54 @@ def test_tts_clone_accepts_format_wav(monkeypatch, tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert provider.tts_requests[0].output_format == "wav"
+
+
+def test_tts_clone_accepts_text_file_and_chunk_options(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    sample = tmp_path / "voice.wav"
+    source = tmp_path / "script.txt"
+    sample.write_bytes(b"abcd")
+    source.write_text("One. " * 80, encoding="utf-8")
+
+    def fake_merge(results, *, silence_ms, output_format):
+        assert len(results) > 1
+        assert silence_ms == 25
+        assert output_format == "wav"
+        return ProviderAudioResult(
+            audio=b"merged",
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=None,
+        )
+
+    monkeypatch.setattr(cli, "merge_audio_results", fake_merge, raising=False)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "tts",
+            "clone",
+            "--sample",
+            str(sample),
+            "--file",
+            str(source),
+            "--consent",
+            "--chunking",
+            "force",
+            "--chunk-max-chars",
+            "200",
+            "--chunk-silence-ms",
+            "25",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(provider.tts_requests) > 1
+    assert provider.tts_requests[0].clone_sample_path == sample
 
 
 def test_asr_transcribe_auto_language_succeeds(monkeypatch, tmp_path: Path) -> None:

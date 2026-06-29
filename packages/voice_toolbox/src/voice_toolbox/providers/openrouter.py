@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import tempfile
 import threading
@@ -145,14 +146,21 @@ class OpenRouterProvider:
 
     def _build_tts_body(self, request: TTSRequest) -> dict[str, Any]:
         self._validate_tts_request(request)
+        provider_options = dict(request.provider_options)
         body: dict[str, Any] = {
             "model": self._resolve_tts_model(request),
             "input": request.text,
             "voice": request.voice_id,
             "response_format": OPENROUTER_TTS_RESPONSE_FORMAT,
         }
+        instructions = provider_options.pop("instructions", None)
+        if instructions is not None and not isinstance(instructions, str):
+            raise ProviderError("provider option instructions must be a string")
+        _apply_openrouter_body_options(body, provider_options)
         if request.style_instruction:
-            body["provider"] = {"options": {"openai": {"instructions": request.style_instruction}}}
+            instructions = request.style_instruction
+        if instructions:
+            body["provider"] = {"options": {"openai": {"instructions": instructions}}}
         return body
 
     def _build_asr_body(self, request: ASRRequest) -> dict[str, Any]:
@@ -243,7 +251,8 @@ class OpenRouterProvider:
                 "provider_id": self.id,
                 "raw_byte_size": request.raw_byte_size,
                 "uploaded_file_mime_type": request.mime_type,
-                "uploaded_file_name": request.audio_path.name,
+                "uploaded_file_name_hash": _file_name_hash(request.audio_path.name),
+                "uploaded_file_suffix": request.audio_path.suffix,
             },
         )
         self._artifact_store.record_operation(
@@ -379,6 +388,21 @@ class _MissingCredentialsClient:
             f"{self._api_key_env} is required for provider {self._provider_id}; "
             "set it in environment or .env"
         )
+
+
+def _apply_openrouter_body_options(
+    body: dict[str, object],
+    options: Mapping[str, object],
+) -> None:
+    protected = {"model", "input", "voice", "response_format", "provider"}
+    for key, value in options.items():
+        if key in protected:
+            raise ProviderError(f"provider option {key} cannot override core OpenRouter field")
+        body[key] = value
+
+
+def _file_name_hash(filename: str) -> str:
+    return hashlib.sha256(filename.encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
 
 
 def _audio_format_from_mime(mime_type: str) -> str:

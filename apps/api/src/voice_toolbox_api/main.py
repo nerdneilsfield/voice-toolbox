@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import tempfile
 from hashlib import sha1
 from uuid import uuid4
@@ -77,7 +76,6 @@ CORS_METHODS = ["GET", "POST"]
 CORS_HEADERS = ["Accept", "Content-Type"]
 MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
 MAX_TEXT_INPUT_LENGTH = 200_000
-SAFE_UPLOAD_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 PROVIDER_NATIVE_UPLOAD_FORMATS = {"wav", "mp3"}
 DOWNLOAD_AUDIO_FORMATS: set[DownloadAudioFormat] = {
     "wav",
@@ -523,8 +521,10 @@ def create_app(
 
     @app.get("/v1/artifacts")
     def list_artifacts(
+        http_request: Request,
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
     ) -> dict[str, list[dict[str, Any]]]:
+        _ensure_trusted_artifact_request(http_request)
         artifact_root = (root / "data" / "artifacts").resolve(strict=False)
         if not artifact_root.exists():
             return {"artifacts": []}
@@ -557,15 +557,18 @@ def create_app(
         }
 
     @app.get("/v1/artifacts/{artifact_id}")
-    def artifact_metadata(artifact_id: str) -> dict[str, Any]:
+    def artifact_metadata(artifact_id: str, http_request: Request) -> dict[str, Any]:
+        _ensure_trusted_artifact_request(http_request)
         artifact = _read_artifact_sidecar(root, artifact_id)
         return _safe_artifact_payload(artifact)
 
     @app.get("/v1/artifacts/{artifact_id}/download", response_model=None)
     def artifact_download(
+        http_request: Request,
         artifact_id: str,
         format: Annotated[str, Query()] = "source",
     ) -> Response:
+        _ensure_trusted_artifact_request(http_request)
         artifact = _read_artifact_sidecar(root, artifact_id)
         path = artifact.path
         if not path.is_file():
@@ -733,8 +736,10 @@ def _prepare_tts_or_422(
     chunk_silence_ms: int | None = None,
     artifact_metadata: Mapping[str, object] | None = None,
 ) -> PreparedTTSRequest:
-    text_length = len(raw_text.text) if isinstance(raw_text, TextSource) and raw_text.text else (
-        len(raw_text) if isinstance(raw_text, str) else 0
+    text_length = (
+        len(raw_text.text)
+        if isinstance(raw_text, TextSource) and raw_text.text
+        else (len(raw_text) if isinstance(raw_text, str) else 0)
     )
     if text_length > MAX_TEXT_INPUT_LENGTH:
         raise HTTPException(status_code=413, detail="text exceeds 200000 characters")
@@ -822,9 +827,14 @@ def _validate_tts_provider_options(
         submitted = parse_provider_options_json(raw_provider_options)
         provider_config = _configured_provider_for_id(_config_from_request(request), provider_id)
         model_options: list[Any] = []
-        if provider_config is not None and model_id is not None:
+        resolved_model_id = (
+            model_id
+            if model_id is not None
+            else _default_model_for_capability(provider_config, capability)
+        )
+        if provider_config is not None and resolved_model_id is not None:
             configured_model = next(
-                (model for model in provider_config.models if model.id == model_id),
+                (model for model in provider_config.models if model.id == resolved_model_id),
                 None,
             )
             if configured_model is not None:
@@ -839,6 +849,24 @@ def _validate_tts_provider_options(
         return validated, metadata
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _default_model_for_capability(
+    provider_config: ConfiguredProvider | None,
+    capability: str,
+) -> str | None:
+    if provider_config is None or provider_config.default_models is None:
+        return None
+    field_by_capability = {
+        "tts.builtin": "tts_builtin",
+        "tts.design": "tts_design",
+        "tts.clone": "tts_clone",
+        "asr.transcribe": "asr",
+    }
+    field_name = field_by_capability.get(capability)
+    if field_name is None:
+        return None
+    return cast(str | None, getattr(provider_config.default_models, field_name))
 
 
 def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -872,6 +900,11 @@ def _trusted_local_request(request: Request, *, config: AppConfig) -> bool:
         return False
     client_host = request.client.host if request.client is not None else ""
     return client_host in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _ensure_trusted_artifact_request(request: Request) -> None:
+    if not _trusted_local_request(request, config=_config_from_request(request)):
+        raise HTTPException(status_code=403, detail="artifact access requires trusted local API")
 
 
 def _run_clone_upload(
@@ -1230,11 +1263,8 @@ def _audio_format_for_artifact(artifact: Artifact) -> AudioFormat:
 
 
 def _safe_upload_filename(filename: str | None, suffix: str) -> str:
-    raw_name = Path(filename or f"upload{suffix}").name
-    sanitized = SAFE_UPLOAD_NAME_PATTERN.sub("_", raw_name).strip("._")
-    if not sanitized.lower().endswith(suffix):
-        sanitized = f"{sanitized or 'upload'}{suffix}"
-    return sanitized
+    del filename
+    return f"upload-{uuid4().hex}{suffix}"
 
 
 def _base64_size(contents: bytes) -> int:
@@ -1305,11 +1335,7 @@ def _preview_text(text: str | None, max_length: int = 80) -> str:
 
 def _artifact_preview(artifact: Artifact) -> str:
     if artifact.kind.value == "transcript":
-        try:
-            text = artifact.path.read_text(encoding="utf-8")
-            return _preview_text(text)
-        except OSError:
-            return ""
+        return ""
     if isinstance(artifact.metadata, dict):
         return _preview_text(artifact.metadata.get("source_text_preview"))
     return ""

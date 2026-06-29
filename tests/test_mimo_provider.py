@@ -115,6 +115,25 @@ def test_builtin_tts_places_tags_in_assistant_content(mimo_provider: MimoProvide
     assert body["audio"] == {"voice": "冰糖", "format": "wav"}
 
 
+def test_mimo_tts_provider_options_passthrough(tmp_path: Path) -> None:
+    provider = MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=FakeClient(_tts_completion()),
+    )
+    request = TTSRequest(
+        mode=TTSMode.BUILTIN,
+        text="hello",
+        voice_id="冰糖",
+        provider_options={"stream": False, "audio_sample_rate": 24000},
+    )
+
+    body = provider._build_tts_body(request)
+
+    assert body["stream"] is False
+    assert body["audio"]["sample_rate"] == 24000
+
+
 def test_design_optimized_preview_omits_assistant_message_when_text_missing(
     mimo_provider: MimoProvider,
 ) -> None:
@@ -163,7 +182,8 @@ def test_clone_builds_data_url_and_never_metadata_payload(tmp_path: Path) -> Non
     sidecar = artifact.path.with_suffix(".json").read_text(encoding="utf-8")
 
     assert client.chat.completions.calls[0]["timeout"] == GENERATION_TIMEOUT_SECONDS
-    assert artifact.metadata["uploaded_file_name"] == "sample.wav"
+    assert artifact.metadata["uploaded_file_suffix"] == ".wav"
+    assert "uploaded_file_name" not in artifact.metadata
     assert artifact.metadata["uploaded_file_mime_type"] == "audio/wav"
     assert artifact.metadata["base64_size"] == len(expected_payload)
     assert "clone audio" not in sidecar
