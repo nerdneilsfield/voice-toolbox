@@ -11,6 +11,7 @@ from voice_toolbox.chunking.audio import ASRAudioChunkingError, plan_asr_audio_c
 from voice_toolbox.chunking.merge import merge_audio_results
 from voice_toolbox.chunking.merge import TranscriptChunk, exact_suffix_prefix_overlap
 from voice_toolbox.chunking.merge import merge_transcript_chunks
+from voice_toolbox.chunking.sessions import ASRChunkSessionError, ASRChunkSessionStore
 from voice_toolbox.config_models import ASRChunkingConfig
 from voice_toolbox.models import ProviderAudioResult
 from voice_toolbox.transcripts import TranscriptPayload, TranscriptSegment
@@ -177,3 +178,142 @@ def test_plan_asr_audio_chunks_overlap_bounds_and_limits(tmp_path: Path) -> None
             max_raw_bytes=100,
             max_base64_bytes=200,
         )
+
+
+def test_asr_chunk_session_store_validates_uploads_and_privacy(tmp_path: Path) -> None:
+    store = ASRChunkSessionStore(tmp_path, ttl_seconds=3600, max_upload_mb=1)
+    session = store.create(
+        provider_id="mimo",
+        model="fake-asr",
+        language="zh",
+        total_chunks=2,
+        source_duration_ms=2000,
+        source_file_name="../../private/speech.wav",
+        transcript_timestamps=True,
+        transcript_speakers=False,
+        provider_options={"hint": "secret"},
+        option_metadata={"provider_option_keys": ["hint"]},
+        max_chunks=4,
+    )
+
+    assert session.session_id
+    assert session.source_file_suffix == ".wav"
+    assert "private" not in store.metadata_path(session.session_id).read_text(encoding="utf-8")
+    assert "speech.wav" not in store.metadata_path(session.session_id).read_text(encoding="utf-8")
+
+    with pytest.raises(ASRChunkSessionError, match="chunk_index"):
+        store.write_chunk(
+            session.session_id,
+            chunk_index=2,
+            data=_wav_silence(1000),
+            offset_ms=0,
+            duration_ms=1000,
+            mime_type="audio/wav",
+            suffix=".wav",
+        )
+    store.write_chunk(
+        session.session_id,
+        chunk_index=0,
+        data=_wav_silence(1000),
+        offset_ms=0,
+        duration_ms=1000,
+        mime_type="audio/wav",
+        suffix=".wav",
+    )
+    with pytest.raises(ASRChunkSessionError, match="duplicate"):
+        store.write_chunk(
+            session.session_id,
+            chunk_index=0,
+            data=_wav_silence(1000),
+            offset_ms=0,
+            duration_ms=1000,
+            mime_type="audio/wav",
+            suffix=".wav",
+        )
+    with pytest.raises(ASRChunkSessionError, match="non-monotonic"):
+        store.write_chunk(
+            session.session_id,
+            chunk_index=1,
+            data=_wav_silence(1000),
+            offset_ms=0,
+            duration_ms=1000,
+            mime_type="audio/wav",
+            suffix=".wav",
+        )
+
+
+def test_asr_chunk_session_store_quota_coverage_delete_and_expiry(tmp_path: Path) -> None:
+    store = ASRChunkSessionStore(tmp_path, ttl_seconds=60, max_upload_mb=1)
+    session = store.create(
+        provider_id="mimo",
+        model=None,
+        language="auto",
+        total_chunks=2,
+        source_duration_ms=2500,
+        source_file_name="speech.wav",
+        transcript_timestamps=False,
+        transcript_speakers=False,
+        provider_options={},
+        option_metadata={},
+        max_chunks=4,
+    )
+    with pytest.raises(ASRChunkSessionError, match="quota"):
+        store.write_chunk(
+            session.session_id,
+            chunk_index=0,
+            data=b"RIFF0000WAVE" + (b"x" * (1024 * 1024)),
+            offset_ms=0,
+            duration_ms=1000,
+            mime_type="audio/wav",
+            suffix=".wav",
+        )
+    with pytest.raises(ASRChunkSessionError, match="duration_ms"):
+        store.write_chunk(
+            session.session_id,
+            chunk_index=0,
+            data=_wav_silence(1000),
+            offset_ms=0,
+            duration_ms=0,
+            mime_type="audio/wav",
+            suffix=".wav",
+        )
+    store.write_chunk(
+        session.session_id,
+        chunk_index=0,
+        data=_wav_silence(1000),
+        offset_ms=0,
+        duration_ms=1000,
+        mime_type="audio/wav",
+        suffix=".wav",
+    )
+    store.write_chunk(
+        session.session_id,
+        chunk_index=1,
+        data=_wav_silence(1000),
+        offset_ms=1500,
+        duration_ms=1000,
+        mime_type="audio/wav",
+        suffix=".wav",
+    )
+    with pytest.raises(ASRChunkSessionError, match="coverage gap"):
+        store.finish_chunks(session.session_id)
+
+    assert store.delete(session.session_id) is True
+    assert not store.session_dir(session.session_id).exists()
+
+    expired = ASRChunkSessionStore(tmp_path / "expired", ttl_seconds=1, max_upload_mb=1)
+    old_session = expired.create(
+        provider_id="mimo",
+        model=None,
+        language="auto",
+        total_chunks=1,
+        source_duration_ms=1000,
+        source_file_name="speech.wav",
+        transcript_timestamps=False,
+        transcript_speakers=False,
+        provider_options={},
+        option_metadata={},
+        max_chunks=4,
+    )
+    expired.cleanup_expired(now=old_session.expires_at)
+    assert not expired.session_dir(old_session.session_id).exists()

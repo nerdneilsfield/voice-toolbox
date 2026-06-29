@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import wave
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -693,6 +694,246 @@ def test_asr_richness_flags_are_validated_and_passed_to_chunks(tmp_path: Path) -
     )
     assert rejected.status_code == 422
     assert unsupported_provider.asr_requests == []
+
+
+def test_asr_chunk_session_create_contract_and_validation(tmp_path: Path) -> None:
+    config = _test_config(
+        asr_chunking=ASRChunkingConfig(max_chunks=2),
+        provider_options=[
+            ProviderOptionSpec(
+                key="hint",
+                label="Hint",
+                type="string",
+                capability="asr.transcribe",
+            )
+        ],
+        models=[
+            ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
+            ModelInfo(
+                id="fake-asr",
+                name="Fake ASR",
+                capability="asr.transcribe",
+                transcript_capabilities=TranscriptCapabilities(timestamps=True),
+            ),
+        ],
+    )
+    client, _ = _client(tmp_path, config=config)
+
+    missing_duration = client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "1"},
+    )
+    too_many = client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "3", "source_duration_ms": "1000"},
+    )
+    created = client.post(
+        "/v1/asr/chunk-sessions",
+        data={
+            "provider_id": "mimo",
+            "model": "fake-asr",
+            "language": "zh",
+            "total_chunks": "2",
+            "source_duration_ms": "2000",
+            "source_file_name": "../../private/speech.wav",
+            "transcript_timestamps": "true",
+            "provider_options": json.dumps({"hint": "secret"}),
+        },
+    )
+
+    assert missing_duration.status_code == 422
+    assert too_many.status_code == 422
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["session_id"]
+    assert payload["browser_slice_formats"] == ["wav"]
+    assert "wav" in payload["backend_accept_formats"]
+    assert payload["max_chunks"] == 2
+    store = client.app.state.asr_chunk_sessions
+    metadata = store.load(payload["session_id"])
+    assert metadata.provider_id == "mimo"
+    assert metadata.model == "fake-asr"
+    assert metadata.language == "zh"
+    assert metadata.transcript_timestamps is True
+    assert metadata.provider_options == {"hint": "secret"}
+    assert metadata.source_file_suffix == ".wav"
+    raw_metadata = store.metadata_path(payload["session_id"]).read_text(encoding="utf-8")
+    assert "private" not in raw_metadata
+    assert "speech.wav" not in raw_metadata
+
+    disabled_client, _ = _client(
+        tmp_path / "disabled",
+        config=_test_config(asr_chunking=ASRChunkingConfig(browser_upload=False)),
+    )
+    disabled = disabled_client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "1", "source_duration_ms": "1000"},
+    )
+    assert disabled.status_code == 422
+    assert disabled.json()["detail"] == "browser ASR chunk upload is disabled"
+
+
+def test_asr_chunk_session_upload_validation_and_quota(tmp_path: Path) -> None:
+    client, provider = _client(
+        tmp_path,
+        config=_test_config(asr_chunking=ASRChunkingConfig(max_upload_mb=1)),
+    )
+    created = client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "2", "source_duration_ms": "2000"},
+    )
+    session_id = created.json()["session_id"]
+
+    invalid_signature = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/chunks",
+        data={"chunk_index": "0", "offset_ms": "0", "duration_ms": "1000"},
+        files={"file": ("chunk.wav", b"not wav", "audio/wav")},
+    )
+    bad_index = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/chunks",
+        data={"chunk_index": "2", "offset_ms": "0", "duration_ms": "1000"},
+        files={"file": ("chunk.wav", _wav_silence(1000), "audio/wav")},
+    )
+    bad_offset = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/chunks",
+        data={"chunk_index": "0", "offset_ms": "-1", "duration_ms": "1000"},
+        files={"file": ("chunk.wav", _wav_silence(1000), "audio/wav")},
+    )
+    first = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/chunks",
+        data={"chunk_index": "0", "offset_ms": "0", "duration_ms": "1000"},
+        files={"file": ("chunk.wav", _wav_silence(1000), "audio/wav")},
+    )
+    duplicate = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/chunks",
+        data={"chunk_index": "0", "offset_ms": "0", "duration_ms": "1000"},
+        files={"file": ("chunk.wav", _wav_silence(1000), "audio/wav")},
+    )
+    non_monotonic = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/chunks",
+        data={"chunk_index": "1", "offset_ms": "0", "duration_ms": "1000"},
+        files={"file": ("chunk.wav", _wav_silence(1000), "audio/wav")},
+    )
+
+    assert invalid_signature.status_code == 422
+    assert bad_index.status_code == 422
+    assert bad_offset.status_code == 422
+    assert first.status_code == 200, first.text
+    assert duplicate.status_code == 422
+    assert non_monotonic.status_code == 422
+    assert provider.asr_requests == []
+
+    quota = client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "1", "source_duration_ms": "1000"},
+    )
+    quota_id = quota.json()["session_id"]
+    too_large = client.post(
+        f"/v1/asr/chunk-sessions/{quota_id}/chunks",
+        data={"chunk_index": "0", "offset_ms": "0", "duration_ms": "1000"},
+        files={"file": ("chunk.wav", b"RIFF0000WAVE" + (b"x" * (1024 * 1024)), "audio/wav")},
+    )
+    assert too_large.status_code == 413
+
+
+def test_asr_chunk_session_finish_mismatch_coverage_and_success(tmp_path: Path) -> None:
+    config = _test_config(
+        asr_chunking=ASRChunkingConfig(max_upload_mb=2),
+        provider_options=[
+            ProviderOptionSpec(
+                key="hint",
+                label="Hint",
+                type="string",
+                capability="asr.transcribe",
+                safe_metadata=False,
+            )
+        ],
+    )
+    client, provider = _client(tmp_path, config=config)
+    created = client.post(
+        "/v1/asr/chunk-sessions",
+        data={
+            "provider_id": "mimo",
+            "total_chunks": "2",
+            "source_duration_ms": "2000",
+            "provider_options": json.dumps({"hint": "secret"}),
+        },
+    )
+    session_id = created.json()["session_id"]
+    missing = client.post(f"/v1/asr/chunk-sessions/{session_id}/finish")
+    assert missing.status_code == 422
+
+    for index, offset in enumerate([0, 1000]):
+        uploaded = client.post(
+            f"/v1/asr/chunk-sessions/{session_id}/chunks",
+            data={"chunk_index": str(index), "offset_ms": str(offset), "duration_ms": "1000"},
+            files={"file": ("chunk.wav", _wav_silence(1000), "audio/wav")},
+        )
+        assert uploaded.status_code == 200, uploaded.text
+
+    mismatch = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/finish",
+        data={"provider_options": json.dumps({"hint": "other"})},
+    )
+    assert mismatch.status_code == 422
+    assert provider.asr_requests == []
+
+    provider.asr_payloads = [TranscriptPayload(text="hello "), TranscriptPayload(text="world")]
+    finished = client.post(f"/v1/asr/chunk-sessions/{session_id}/finish")
+    assert finished.status_code == 200, finished.text
+    assert len(provider.asr_requests) == 2
+    assert {request.provider_options["hint"] for request in provider.asr_requests} == {"secret"}
+    artifact = finished.json()["artifact"]
+    assert artifact["metadata"]["chunking_strategy"] == "browser_upload"
+    assert artifact["metadata"]["chunking_chunk_count"] == 2
+    assert "secret" not in json.dumps(artifact["metadata"])
+    transcript = client.get(f"/v1/artifacts/{artifact['id']}/transcript?format=json").json()
+    assert transcript["text"] == "hello\nworld"
+
+    gap = client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "2", "source_duration_ms": "3000"},
+    )
+    gap_id = gap.json()["session_id"]
+    for index, offset in enumerate([0, 2000]):
+        client.post(
+            f"/v1/asr/chunk-sessions/{gap_id}/chunks",
+            data={"chunk_index": str(index), "offset_ms": str(offset), "duration_ms": "1000"},
+            files={"file": ("chunk.wav", _wav_silence(1000), "audio/wav")},
+        )
+    coverage = client.post(f"/v1/asr/chunk-sessions/{gap_id}/finish")
+    assert coverage.status_code == 422
+
+
+def test_asr_chunk_session_delete_and_expiry_cleanup(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    created = client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "1", "source_duration_ms": "1000"},
+    )
+    session_id = created.json()["session_id"]
+    store = client.app.state.asr_chunk_sessions
+    assert store.session_dir(session_id).exists()
+    deleted = client.delete(f"/v1/asr/chunk-sessions/{session_id}")
+    assert deleted.status_code == 200
+    assert not store.session_dir(session_id).exists()
+
+    expired = client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "1", "source_duration_ms": "1000"},
+    )
+    expired_id = expired.json()["session_id"]
+    metadata_path = store.metadata_path(expired_id)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    create_cleanup = client.post(
+        "/v1/asr/chunk-sessions",
+        data={"provider_id": "mimo", "total_chunks": "1", "source_duration_ms": "1000"},
+    )
+    assert create_cleanup.status_code == 200
+    assert not store.session_dir(expired_id).exists()
 
 
 def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) -> None:

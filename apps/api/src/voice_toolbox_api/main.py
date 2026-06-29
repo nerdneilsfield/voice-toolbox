@@ -38,8 +38,15 @@ from voice_toolbox.chunking.models import TextSource
 from voice_toolbox.chunking.options import (
     build_provider_option_metadata,
     merge_provider_options,
+    normalize_provider_options,
     parse_provider_options_json,
     validate_provider_options,
+)
+from voice_toolbox.chunking.sessions import (
+    ASRChunkRecord,
+    ASRChunkSessionError,
+    ASRChunkSessionMetadata,
+    ASRChunkSessionStore,
 )
 from voice_toolbox.chunking.text import (
     TextSourceError,
@@ -77,7 +84,7 @@ from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITI
 from voice_toolbox.transcripts import render_json, render_srt, render_txt, render_vtt
 
 CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
-CORS_METHODS = ["GET", "POST"]
+CORS_METHODS = ["GET", "POST", "DELETE"]
 CORS_HEADERS = ["Accept", "Content-Type"]
 MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
 MAX_TEXT_INPUT_LENGTH = 200_000
@@ -128,6 +135,12 @@ def create_app(
     app.state.artifact_root = root
     app.state.config = config
     app.state.env_values = resolved_env_values
+    app.state.asr_chunk_sessions = ASRChunkSessionStore(
+        root,
+        ttl_seconds=config.chunking.asr.session_ttl_seconds,
+        max_upload_mb=config.chunking.asr.max_upload_mb,
+    )
+    app.state.asr_chunk_sessions.cleanup_expired()
 
     app.add_middleware(
         CORSMiddleware,
@@ -535,6 +548,142 @@ def create_app(
                 option_metadata=option_metadata,
             )
 
+    @app.post("/v1/asr/chunk-sessions")
+    def create_asr_chunk_session(
+        http_request: Request,
+        source_duration_ms: Annotated[int, Form()],
+        total_chunks: Annotated[int, Form()],
+        provider_id: Annotated[str, Form()] = "mimo",
+        model: Annotated[str | None, Form()] = None,
+        language: Annotated[Literal["auto", "zh", "en"], Form()] = "auto",
+        source_file_name: Annotated[str | None, Form()] = None,
+        transcript_timestamps: Annotated[bool, Form()] = False,
+        transcript_speakers: Annotated[bool, Form()] = False,
+        provider_options: Annotated[str | None, Form()] = None,
+    ) -> dict[str, Any]:
+        _ensure_browser_asr_chunking_enabled(http_request)
+        _ensure_provider_configured_for_operation(http_request, provider_id)
+        model = (model or "").strip() or None
+        config = _config_from_request(http_request)
+        validated_options, option_metadata = _validate_asr_provider_options(
+            http_request,
+            provider_id=provider_id,
+            model_id=model,
+            raw_provider_options=provider_options,
+        )
+        _ensure_transcript_richness_supported(
+            http_request,
+            provider_id=provider_id,
+            model_id=model,
+            timestamps=transcript_timestamps,
+            speakers=transcript_speakers,
+        )
+        registry = _registry_from_request(http_request)
+        provider = _ensure_asr_provider(registry, provider_id, None)
+        _ensure_model_allowed(provider, model, expected_capability=ASR_CAPABILITY)
+        try:
+            session = _asr_chunk_session_store(http_request).create(
+                provider_id=provider_id,
+                model=model,
+                language=language,
+                total_chunks=total_chunks,
+                source_duration_ms=source_duration_ms,
+                source_file_name=source_file_name,
+                transcript_timestamps=transcript_timestamps,
+                transcript_speakers=transcript_speakers,
+                provider_options=validated_options,
+                option_metadata=option_metadata,
+                max_chunks=config.chunking.asr.max_chunks,
+            )
+        except ASRChunkSessionError as exc:
+            raise _chunk_session_http_error(exc) from exc
+        return _asr_chunk_session_create_payload(session, config=config)
+
+    @app.post("/v1/asr/chunk-sessions/{session_id}/chunks")
+    def upload_asr_chunk_session_chunk(
+        session_id: str,
+        http_request: Request,
+        file: Annotated[UploadFile, File()],
+        chunk_index: Annotated[int, Form()],
+        offset_ms: Annotated[int, Form()],
+        duration_ms: Annotated[int, Form()],
+    ) -> dict[str, Any]:
+        _ensure_browser_asr_chunking_enabled(http_request)
+        store = _asr_chunk_session_store(http_request)
+        quota_session = store.load(session_id)
+        remaining_bytes = quota_session.max_upload_bytes - quota_session.uploaded_bytes
+        contents = file.file.read(remaining_bytes + 1)
+        if len(contents) > remaining_bytes:
+            raise HTTPException(status_code=413, detail="session upload quota exceeded")
+        mime_type = _normalize_mime_type(file.content_type)
+        suffix = _suffix_for_upload(file.filename)
+        audio_format = _validate_upload_signature(contents, mime_type, suffix)
+        if audio_format != "wav":
+            raise HTTPException(status_code=422, detail="browser ASR chunks must be wav")
+        try:
+            session = store.write_chunk(
+                session_id,
+                chunk_index=chunk_index,
+                data=contents,
+                offset_ms=offset_ms,
+                duration_ms=duration_ms,
+                mime_type="audio/wav",
+                suffix=".wav",
+            )
+        except ASRChunkSessionError as exc:
+            raise _chunk_session_http_error(exc) from exc
+        return {
+            "session_id": session.session_id,
+            "chunk_index": chunk_index,
+            "uploaded_chunks": len(session.chunks),
+            "total_chunks": session.total_chunks,
+            "expires_at": session.expires_at.isoformat(),
+        }
+
+    @app.post("/v1/asr/chunk-sessions/{session_id}/finish")
+    def finish_asr_chunk_session(
+        session_id: str,
+        http_request: Request,
+        provider_id: Annotated[str | None, Form()] = None,
+        model: Annotated[str | None, Form()] = None,
+        language: Annotated[Literal["auto", "zh", "en"] | None, Form()] = None,
+        transcript_timestamps: Annotated[bool | None, Form()] = None,
+        transcript_speakers: Annotated[bool | None, Form()] = None,
+        provider_options: Annotated[str | None, Form()] = None,
+    ) -> dict[str, Any]:
+        _ensure_browser_asr_chunking_enabled(http_request)
+        store = _asr_chunk_session_store(http_request)
+        try:
+            session = store.load(session_id)
+            _reject_mismatched_session_finish(
+                session,
+                provider_id=provider_id,
+                model=(model or "").strip() or None if model is not None else None,
+                language=language,
+                transcript_timestamps=transcript_timestamps,
+                transcript_speakers=transcript_speakers,
+                provider_options=provider_options,
+            )
+            chunks = store.finish_chunks(session_id)
+        except ASRChunkSessionError as exc:
+            raise _chunk_session_http_error(exc) from exc
+        return _run_asr_chunk_session_finish(
+            http_request=http_request,
+            session=session,
+            chunks=chunks,
+        )
+
+    @app.delete("/v1/asr/chunk-sessions/{session_id}")
+    def delete_asr_chunk_session(session_id: str, http_request: Request) -> dict[str, bool]:
+        _ensure_browser_asr_chunking_enabled(http_request)
+        try:
+            deleted = _asr_chunk_session_store(http_request).delete(session_id)
+        except ASRChunkSessionError as exc:
+            raise _chunk_session_http_error(exc) from exc
+        if not deleted:
+            raise HTTPException(status_code=404, detail="chunk session not found")
+        return {"deleted": True}
+
     @app.get("/v1/artifacts")
     def list_artifacts(
         http_request: Request,
@@ -679,6 +828,33 @@ def _env_values_from_request(request: Request) -> dict[str, str]:
     return request.app.state.env_values
 
 
+def _asr_chunk_session_store(request: Request) -> ASRChunkSessionStore:
+    return cast(ASRChunkSessionStore, request.app.state.asr_chunk_sessions)
+
+
+def _ensure_browser_asr_chunking_enabled(request: Request) -> None:
+    if not _config_from_request(request).chunking.asr.browser_upload:
+        raise HTTPException(status_code=422, detail="browser ASR chunk upload is disabled")
+
+
+def _chunk_session_http_error(exc: ASRChunkSessionError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+def _asr_chunk_session_create_payload(
+    session: ASRChunkSessionMetadata,
+    *,
+    config: AppConfig,
+) -> dict[str, Any]:
+    return {
+        "session_id": session.session_id,
+        "browser_slice_formats": ["wav"],
+        "backend_accept_formats": sorted(DOWNLOAD_AUDIO_FORMATS),
+        "max_chunks": config.chunking.asr.max_chunks,
+        "expires_at": session.expires_at.isoformat(),
+    }
+
+
 def _configured_provider_for_id(
     config: AppConfig,
     provider_id: str,
@@ -781,7 +957,7 @@ def _ensure_tts_provider(
 def _ensure_asr_provider(
     provider_registry: ProviderRegistry,
     provider_id: str,
-    request: ASRRequest,
+    request: ASRRequest | None,
 ) -> Any:
     try:
         return provider_registry.ensure_asr_capability(provider_id, request)
@@ -1243,6 +1419,143 @@ def _run_chunked_tts(
         )
     )
     return artifact
+
+
+def _reject_mismatched_session_finish(
+    session: ASRChunkSessionMetadata,
+    *,
+    provider_id: str | None,
+    model: str | None,
+    language: Literal["auto", "zh", "en"] | None,
+    transcript_timestamps: bool | None,
+    transcript_speakers: bool | None,
+    provider_options: str | None,
+) -> None:
+    if provider_id is not None and provider_id != session.provider_id:
+        raise ASRChunkSessionError("provider_id does not match chunk session")
+    if model is not None and model != session.model:
+        raise ASRChunkSessionError("model does not match chunk session")
+    if language is not None and language != session.language:
+        raise ASRChunkSessionError("language does not match chunk session")
+    if transcript_timestamps is not None and transcript_timestamps != session.transcript_timestamps:
+        raise ASRChunkSessionError("transcript_timestamps does not match chunk session")
+    if transcript_speakers is not None and transcript_speakers != session.transcript_speakers:
+        raise ASRChunkSessionError("transcript_speakers does not match chunk session")
+    if provider_options is None:
+        return
+    try:
+        submitted = parse_provider_options_json(provider_options)
+    except ValueError as exc:
+        raise ASRChunkSessionError(str(exc)) from exc
+    if normalize_provider_options(submitted) != normalize_provider_options(
+        session.provider_options
+    ):
+        raise ASRChunkSessionError("provider_options do not match chunk session")
+
+
+def _run_asr_chunk_session_finish(
+    *,
+    http_request: Request,
+    session: ASRChunkSessionMetadata,
+    chunks: list[ASRChunkRecord],
+) -> dict[str, Any]:
+    _ensure_provider_configured_for_operation(http_request, session.provider_id)
+    provider_registry = _registry_from_request(http_request)
+    provider = _get_provider(provider_registry, session.provider_id)
+    try:
+        provider_registry.ensure_asr_capability(session.provider_id)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _ensure_model_allowed(provider, session.model, expected_capability=ASR_CAPABILITY)
+    config = _config_from_request(http_request)
+    store = _asr_chunk_session_store(http_request)
+    transcript_chunks: list[TranscriptChunk] = []
+    started_at = datetime.now(UTC)
+    model_used = session.model
+    try:
+        for chunk in chunks:
+            request = _build_asr_request(
+                provider_id=session.provider_id,
+                model=session.model,
+                audio_path=store.chunk_path(session.session_id, chunk.index),
+                mime_type=chunk.mime_type,
+                raw_byte_size=chunk.raw_byte_size,
+                base64_size=chunk.base64_size,
+                language=session.language,
+                provider_options=session.provider_options,
+                transcript_timestamps=session.transcript_timestamps,
+                transcript_speakers=session.transcript_speakers,
+            )
+            asr_provider = _ensure_asr_provider(provider_registry, session.provider_id, request)
+            payload = asr_provider.transcribe_payload(request)
+            transcript_chunks.append(
+                TranscriptChunk(payload=payload, start_seconds=chunk.offset_ms / 1000)
+            )
+            model_used = request.model or model_used
+    except ProviderError as exc:
+        _log_operation(
+            operation="asr",
+            status="failed",
+            provider_id=session.provider_id,
+            model=session.model,
+            error_summary=str(exc),
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    merged = merge_transcript_chunks(
+        transcript_chunks,
+        dedupe_min_chars=config.chunking.asr.dedupe_min_chars,
+        dedupe_max_chars=config.chunking.asr.dedupe_max_chars,
+    )
+    operation_id = f"asr-{uuid4().hex}"
+    artifact = ArtifactStore(http_request.app.state.artifact_root).write_transcript(
+        operation_id=operation_id,
+        provider_id=session.provider_id,
+        operation="asr",
+        text=merged.payload.text,
+        payload=merged.payload,
+        metadata={
+            **session.option_metadata,
+            "base64_size": sum(chunk.base64_size for chunk in chunks),
+            "chunking_audio_durations_ms": [chunk.duration_ms for chunk in chunks],
+            "chunking_chunk_count": len(chunks),
+            "chunking_dedupe_removed_chars": merged.dedupe_removed_chars,
+            "chunking_enabled": True,
+            "chunking_mode": "browser",
+            "chunking_operation": "asr",
+            "chunking_overlap_ms": 0,
+            "chunking_strategy": "browser_upload",
+            "chunking_transcript_lengths": [len(chunk.payload.text) for chunk in transcript_chunks],
+            "language": session.language,
+            "model": model_used,
+            "operation": "asr",
+            "provider_id": session.provider_id,
+            "raw_byte_size": sum(chunk.raw_byte_size for chunk in chunks),
+            "source_file_name_hash": session.source_file_name_hash,
+            "source_file_suffix": session.source_file_suffix,
+            "uploaded_file_mime_type": "audio/wav",
+            "uploaded_file_suffix": ".wav",
+        },
+    )
+    finished_at = datetime.now(UTC)
+    ArtifactStore(http_request.app.state.artifact_root).record_operation(
+        OperationResult(
+            operation_id=operation_id,
+            operation="asr",
+            status=OperationStatus.COMPLETED,
+            started_at=started_at,
+            finished_at=finished_at,
+            artifact_ids=[artifact.id],
+        )
+    )
+    _log_operation(
+        operation="asr",
+        status="completed",
+        provider_id=session.provider_id,
+        model=artifact.metadata.get("model") if isinstance(artifact.metadata, dict) else None,
+        artifact_id=artifact.id,
+        elapsed_ms=int((finished_at - started_at).total_seconds() * 1000),
+    )
+    return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
 
 
 def _run_asr_upload(
