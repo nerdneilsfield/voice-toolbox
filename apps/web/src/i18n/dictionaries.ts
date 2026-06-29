@@ -123,7 +123,7 @@ export const en = {
 
   "theme.light": "Light",
   "theme.dark": "Dark",
-  "theme.auto": "Auto",
+  "theme.system": "System",
 
   "lang.en": "EN",
   "lang.zh": "中文",
@@ -259,7 +259,7 @@ export const zh: Record<keyof typeof en, string> = {
 
   "theme.light": "浅色",
   "theme.dark": "深色",
-  "theme.auto": "自动",
+  "theme.system": "跟随系统",
 
   "lang.en": "EN",
   "lang.zh": "中文",

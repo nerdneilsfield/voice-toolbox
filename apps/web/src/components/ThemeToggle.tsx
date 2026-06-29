@@ -1,10 +1,10 @@
 import { useI18n } from "../i18n";
 import { useTheme } from "../theme/useTheme";
 
-const ICONS: Record<"light" | "dark" | "auto", string> = {
+const ICONS: Record<"light" | "dark" | "system", string> = {
   light: "☀️",
   dark: "🌙",
-  auto: "🌓",
+  system: "🌓",
 };
 
 export function ThemeToggle() {

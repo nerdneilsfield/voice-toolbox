@@ -5,7 +5,7 @@
 Add two user-facing preferences to the Voice Toolbox web UI:
 
 1. **Language switching** between English (`en`) and Simplified Chinese (`zh`).
-2. **Theme switching** among Light / Dark / Auto, where Auto follows the OS preference.
+2. **Theme switching** among Light / Dark / System, where System follows the OS preference.
 
 Both preferences persist in `localStorage` and apply immediately without a page reload.
 
@@ -13,11 +13,11 @@ Both preferences persist in `localStorage` and apply immediately without a page 
 
 ### 1. Theme system
 
-- A single `ThemeContext` exposes the stored preference (`light | dark | auto`) and the resolved effective theme (`light | dark`).
+- A single `ThemeContext` exposes the stored preference (`light | dark | system`) and the resolved effective theme (`light | dark`).
 - The resolved theme is written to `document.documentElement.dataset.theme`.
 - CSS variables are kept in `:root` for the light theme. A new `html[data-theme="dark"]` block overrides the variables for dark mode.
 - Hard-coded semantic colors in CSS (success/warning/danger backgrounds, spinner colors, focus rings) are mapped to CSS variables so dark mode can override them cleanly.
-- A `ThemeToggle` component in the topbar lets the user cycle through Light → Dark → Auto → Light.
+- A `ThemeToggle` component in the topbar lets the user cycle through Light → Dark → System → Light.
 
 ### 2. I18n system
 
@@ -39,7 +39,7 @@ Keys are organized by feature area, e.g.:
 - `tts.mode.builtin`, `tts.voice`, `tts.stylePrompt`
 - `asr.audioFile`, `asr.language`
 - `history.title`, `history.empty`
-- `theme.light`, `theme.dark`, `theme.auto`
+- `theme.light`, `theme.dark`, `theme.system`
 - `lang.en`, `lang.zh`
 
 ### 4. Topbar controls
