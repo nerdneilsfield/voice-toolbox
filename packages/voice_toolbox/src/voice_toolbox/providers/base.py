@@ -13,6 +13,7 @@ from voice_toolbox.models import (
     TTSRequest,
     VoiceInfo,
 )
+from voice_toolbox.transcripts import TranscriptPayload
 
 
 class ProviderError(Exception):
@@ -63,4 +64,7 @@ class VoiceProvider(Protocol):
         raise NotImplementedError
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
+        raise NotImplementedError
+
+    def transcribe_payload(self, request: ASRRequest) -> TranscriptPayload:
         raise NotImplementedError

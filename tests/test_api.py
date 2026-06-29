@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import wave
 from collections.abc import Mapping
+from io import BytesIO
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -15,6 +17,7 @@ from voice_toolbox.config import (
     ChunkingConfig,
     LoggingConfig,
     ProviderDefaultModels,
+    ASRChunkingConfig,
     TTSChunkingConfig,
 )
 from voice_toolbox.models import (
@@ -22,6 +25,7 @@ from voice_toolbox.models import (
     ModelInfo,
     ProviderAudioResult,
     ProviderOptionSpec,
+    TranscriptCapabilities,
     TTSRequest,
     VoiceInfo,
 )
@@ -37,6 +41,18 @@ WAV_BYTES = b"RIFF\x00\x00\x00\x00WAVEfmt "
 MP3_BYTES = b"ID3\x04\x00\x00\x00\x00\x00\x00"
 
 
+def _wav_silence(duration_ms: int) -> bytes:
+    sample_rate = 8000
+    frame_count = sample_rate * duration_ms // 1000
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frame_count)
+    return buffer.getvalue()
+
+
 class RecordingMimoProvider(FakeProvider):
     id = "mimo"
     name = "MiMo"
@@ -46,6 +62,8 @@ class RecordingMimoProvider(FakeProvider):
         self.tts_requests: list[TTSRequest] = []
         self.asr_requests: list[ASRRequest] = []
         self.asr_uploaded_bytes: list[bytes] = []
+        self.asr_payloads: list[TranscriptPayload] = []
+        self._inside_transcribe = False
         self.clone_sample_paths: list[Path] = []
         self.clone_sample_bytes: list[bytes] = []
         self.clone_sample_exists_during_call: list[bool] = []
@@ -80,7 +98,25 @@ class RecordingMimoProvider(FakeProvider):
             raise self.asr_error
         self.asr_requests.append(request)
         self.asr_uploaded_bytes.append(request.audio_path.read_bytes())
-        return super().transcribe(request)
+        self._inside_transcribe = True
+        try:
+            return super().transcribe(request)
+        finally:
+            self._inside_transcribe = False
+
+    def transcribe_payload(self, request: ASRRequest) -> TranscriptPayload:
+        if self.asr_error is not None:
+            raise self.asr_error
+        if self._inside_transcribe:
+            return super().transcribe_payload(request)
+        self.asr_requests.append(request)
+        self.asr_uploaded_bytes.append(request.audio_path.read_bytes())
+        payload = (
+            self.asr_payloads.pop(0)
+            if self.asr_payloads
+            else TranscriptPayload(text=f"chunk {len(self.asr_requests)}")
+        )
+        return payload
 
 
 class ExplodingProvider(RecordingMimoProvider):
@@ -102,13 +138,17 @@ def _test_config(
     *,
     host: str = "127.0.0.1",
     tts_chunking: TTSChunkingConfig | None = None,
+    asr_chunking: ASRChunkingConfig | None = None,
     provider_options: list[ProviderOptionSpec] | None = None,
     models: list[ModelInfo] | None = None,
 ) -> AppConfig:
     return AppConfig(
         api=APIConfig(host=host, port=8000),
         logging=LoggingConfig(console=ConsoleLoggingConfig(enabled=False)),
-        chunking=ChunkingConfig(tts=tts_chunking or TTSChunkingConfig()),
+        chunking=ChunkingConfig(
+            tts=tts_chunking or TTSChunkingConfig(),
+            asr=asr_chunking or ASRChunkingConfig(),
+        ),
         providers=[
             ConfiguredProvider(
                 id="mimo",
@@ -457,6 +497,202 @@ def test_asr_upload_converts_non_native_audio_before_provider(
     assert response.status_code == 200
     assert provider.asr_requests[0].mime_type == "audio/wav"
     assert provider.asr_uploaded_bytes == [WAV_BYTES]
+
+
+def test_asr_upload_uses_temp_path_even_when_chunking_off(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client, provider = _client(tmp_path)
+    monkeypatch.setattr(
+        api_main,
+        "_read_upload",
+        lambda upload: (_ for _ in ()).throw(AssertionError("_read_upload used")),
+    )
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        data={"provider_id": "mimo", "chunking_mode": "off"},
+        files={"file": ("private-name.wav", WAV_BYTES, "audio/wav")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert provider.asr_requests[0].audio_path.name.startswith("provider")
+    assert "private-name" not in provider.asr_requests[0].audio_path.name
+
+
+def test_asr_upload_above_configured_limit_returns_413(tmp_path: Path) -> None:
+    config = _test_config(asr_chunking=ASRChunkingConfig(max_upload_mb=1))
+    client, provider = _client(tmp_path, config=config)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        files={"file": ("speech.wav", b"RIFF0000WAVE" + b"x" * (1024 * 1024), "audio/wav")},
+    )
+
+    assert response.status_code == 413
+    assert provider.asr_requests == []
+
+
+def test_asr_whole_file_path_when_converted_payload_fits(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client, provider = _client(tmp_path)
+    monkeypatch.setattr(
+        api_main,
+        "plan_asr_audio_chunks",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("chunked")),
+    )
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        data={"provider_id": "mimo", "chunking_mode": "auto"},
+        files={"file": ("speech.wav", WAV_BYTES, "audio/wav")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(provider.asr_requests) == 1
+    assert "chunking_enabled" not in response.json()["artifact"]["metadata"]
+
+
+def test_asr_auto_chunks_when_provider_payload_exceeds_limit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _test_config(
+        asr_chunking=ASRChunkingConfig(
+            target_seconds=10,
+            overlap_ms=100,
+            max_chunks=10,
+            dedupe_min_chars=3,
+        )
+    )
+    client, provider = _client(tmp_path, config=config)
+    provider.asr_payloads = [
+        TranscriptPayload(text="hello overlap"),
+        TranscriptPayload(text="overlap world"),
+    ]
+
+    def fake_convert_upload_for_provider(*args, **kwargs):
+        raise api_main.HTTPException(status_code=413, detail="too large")
+
+    monkeypatch.setattr(api_main, "_convert_upload_for_provider", fake_convert_upload_for_provider)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        data={"provider_id": "mimo", "chunking_mode": "auto"},
+        files={"file": ("speech.wav", _wav_silence(18000), "audio/wav")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(provider.asr_requests) == 2
+    artifact = response.json()["artifact"]
+    assert artifact["metadata"]["chunking_enabled"] is True
+    assert artifact["metadata"]["chunking_chunk_count"] == 2
+    assert artifact["metadata"]["chunking_dedupe_removed_chars"] == len("overlap")
+    listed = client.get("/v1/artifacts").json()["artifacts"]
+    assert [item["id"] for item in listed] == [artifact["id"]]
+    transcript = client.get(f"/v1/artifacts/{artifact['id']}/transcript?format=json").json()
+    assert transcript["text"] == "hello overlap world"
+
+
+def test_asr_force_chunks_and_copies_options_to_each_chunk(tmp_path: Path) -> None:
+    config = _test_config(
+        asr_chunking=ASRChunkingConfig(target_seconds=10, overlap_ms=0, max_chunks=10),
+        provider_options=[
+            ProviderOptionSpec(
+                key="hint",
+                label="Hint",
+                type="string",
+                capability="asr.transcribe",
+                safe_metadata=False,
+            )
+        ],
+    )
+    client, provider = _client(tmp_path, config=config)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        data={
+            "provider_id": "mimo",
+            "chunking_mode": "force",
+            "provider_options": json.dumps({"hint": "secret"}),
+        },
+        files={"file": ("speech.wav", _wav_silence(21000), "audio/wav")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(provider.asr_requests) == 3
+    assert {request.provider_options["hint"] for request in provider.asr_requests} == {"secret"}
+    metadata = response.json()["artifact"]["metadata"]
+    assert metadata["provider_option_keys"] == ["hint"]
+    assert "secret" not in json.dumps(metadata)
+
+
+def test_asr_richness_flags_are_validated_and_passed_to_chunks(tmp_path: Path) -> None:
+    supported = _test_config(
+        asr_chunking=ASRChunkingConfig(target_seconds=10, overlap_ms=0, max_chunks=10),
+        models=[
+            ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
+            ModelInfo(
+                id="fake-asr",
+                name="Fake ASR",
+                capability="asr.transcribe",
+                transcript_capabilities=TranscriptCapabilities(
+                    timestamps=True,
+                    speakers=True,
+                    segments=True,
+                ),
+            ),
+        ],
+    )
+    client, provider = _client(tmp_path, config=supported)
+    provider.asr_payloads = [
+        TranscriptPayload(
+            text="hello",
+            segments=[
+                TranscriptSegment(text="hello", start_seconds=0, end_seconds=0.25, speaker="A")
+            ],
+        ),
+        TranscriptPayload(
+            text="world",
+            segments=[
+                TranscriptSegment(text="world", start_seconds=0, end_seconds=0.25, speaker="B")
+            ],
+        ),
+    ]
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        data={
+            "provider_id": "mimo",
+            "chunking_mode": "force",
+            "chunk_seconds": "10",
+            "chunk_overlap_ms": "0",
+            "transcript_timestamps": "true",
+            "transcript_speakers": "true",
+        },
+        files={"file": ("speech.wav", _wav_silence(12000), "audio/wav")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert all(request.transcript_timestamps for request in provider.asr_requests)
+    assert all(request.transcript_speakers for request in provider.asr_requests)
+    artifact = response.json()["artifact"]
+    assert artifact["metadata"]["transcript_has_timestamps"] is True
+    assert artifact["metadata"]["transcript_has_speakers"] is True
+    rendered = client.get(f"/v1/artifacts/{artifact['id']}/transcript?format=json").json()
+    assert rendered["segments"][1]["start_seconds"] == 10
+
+    unsupported_client, unsupported_provider = _client(tmp_path / "unsupported")
+    rejected = unsupported_client.post(
+        "/v1/asr/transcribe",
+        data={"provider_id": "mimo", "transcript_timestamps": "true"},
+        files={"file": ("speech.wav", WAV_BYTES, "audio/wav")},
+    )
+    assert rejected.status_code == 422
+    assert unsupported_provider.asr_requests == []
 
 
 def test_tts_builtin_design_and_clone_routes_normalize_requests(tmp_path: Path) -> None:

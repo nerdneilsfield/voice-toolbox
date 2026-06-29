@@ -22,6 +22,7 @@ from voice_toolbox.models import (
 )
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES
+from voice_toolbox.transcripts import TranscriptPayload
 
 
 class FakeProvider:
@@ -158,11 +159,13 @@ class FakeProvider:
 
         operation_id = self._next_operation_id("asr")
         started_at = datetime.now(UTC)
+        payload = self.transcribe_payload(request)
         artifact = self._artifact_store.write_transcript(
             operation_id=operation_id,
             provider_id=self.id,
             operation="asr",
-            text="fake transcript",
+            text=payload.text,
+            payload=payload,
             metadata={
                 "base64_size": request.base64_size,
                 "language": request.language,
@@ -185,6 +188,14 @@ class FakeProvider:
             )
         )
         return artifact
+
+    def transcribe_payload(self, request: ASRRequest) -> TranscriptPayload:
+        self._ensure_open()
+        if ASR_CAPABILITY not in self._capabilities:
+            raise UnsupportedCapability(
+                f"fake provider does not support capability: {ASR_CAPABILITY}"
+            )
+        return TranscriptPayload(text="fake transcript")
 
     def _audio_bytes(self, request: TTSRequest) -> bytes:
         if request.mode == TTSMode.BUILTIN:

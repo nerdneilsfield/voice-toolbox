@@ -1,21 +1,49 @@
 from __future__ import annotations
 
+import wave
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 
 from typer.testing import CliRunner
 
+from voice_toolbox.config import (
+    APIConfig,
+    AppConfig,
+    ConfiguredProvider,
+    ConsoleLoggingConfig,
+    ChunkingConfig,
+    LoggingConfig,
+    ProviderDefaultModels,
+    ASRChunkingConfig,
+)
 from voice_toolbox import cli
 from voice_toolbox.models import (
     ASRRequest,
     ArtifactKind,
     AudioArtifact,
+    ModelInfo,
     ProviderAudioResult,
+    TranscriptCapabilities,
     TranscriptArtifact,
     TTSRequest,
+    VoiceInfo,
 )
 from voice_toolbox.providers.registry import ProviderRegistry
+from voice_toolbox.transcripts import TranscriptPayload
+
+
+def _wav_silence(duration_ms: int) -> bytes:
+    sample_rate = 8000
+    frame_count = sample_rate * duration_ms // 1000
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frame_count)
+    return buffer.getvalue()
 
 
 class RecordingProvider:
@@ -80,12 +108,49 @@ class RecordingProvider:
             metadata={"language": request.language},
         )
 
+    def transcribe_payload(self, request: ASRRequest) -> TranscriptPayload:
+        self.asr_requests.append(request)
+        return TranscriptPayload(text=f"chunk {len(self.asr_requests)}")
+
 
 def _install_recording_provider(monkeypatch: object, tmp_path: Path) -> RecordingProvider:
     provider = RecordingProvider(tmp_path)
     registry = ProviderRegistry([provider])
     monkeypatch.setattr(cli, "build_provider_registry", lambda: registry)
     return provider
+
+
+def _install_cli_config(monkeypatch: object, *, asr_chunking: ASRChunkingConfig | None = None):
+    config = AppConfig(
+        api=APIConfig(host="127.0.0.1", port=8000),
+        logging=LoggingConfig(console=ConsoleLoggingConfig(enabled=False)),
+        chunking=ChunkingConfig(asr=asr_chunking or ASRChunkingConfig()),
+        providers=[
+            ConfiguredProvider(
+                id="mimo",
+                type="mimo",
+                name="MiMo",
+                base_url="https://api.xiaomimimo.com/v1",
+                api_key_env="MIMO_API_KEY",
+                default_models=ProviderDefaultModels(asr="fake-asr"),
+                models=[
+                    ModelInfo(
+                        id="fake-asr",
+                        name="Fake ASR",
+                        capability="asr.transcribe",
+                        transcript_capabilities=TranscriptCapabilities(
+                            timestamps=True,
+                            speakers=True,
+                            segments=True,
+                        ),
+                    )
+                ],
+                voices=[VoiceInfo(id="Mia", name="Mia")],
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "_load_cli_context", lambda *, refresh=False: (config, {}))
+    return config
 
 
 def test_tts_synthesize_prints_audio_artifact(monkeypatch, tmp_path: Path) -> None:
@@ -493,3 +558,60 @@ def test_cli_asr_model_can_be_omitted(monkeypatch, tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert provider.asr_requests[0].model is None
+
+
+def test_cli_asr_accepts_chunking_flags(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    _install_cli_config(
+        monkeypatch,
+        asr_chunking=ASRChunkingConfig(target_seconds=10, overlap_ms=0, max_chunks=10),
+    )
+    audio = tmp_path / "speech.wav"
+    audio.write_bytes(_wav_silence(21_000))
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "asr",
+            "transcribe",
+            "--file",
+            str(audio),
+            "--chunking",
+            "force",
+            "--chunk-seconds",
+            "10",
+            "--chunk-overlap-ms",
+            "0",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(provider.asr_requests) == 3
+    assert all(
+        request.audio_path.name.startswith("asr-chunk-") for request in provider.asr_requests
+    )
+
+
+def test_cli_asr_accepts_timestamps_and_speakers_flags(monkeypatch, tmp_path: Path) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    _install_cli_config(monkeypatch)
+    audio = tmp_path / "speech.wav"
+    audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "asr",
+            "transcribe",
+            "--file",
+            str(audio),
+            "--timestamps",
+            "--speakers",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.asr_requests[0].transcript_timestamps is True
+    assert provider.asr_requests[0].transcript_speakers is True

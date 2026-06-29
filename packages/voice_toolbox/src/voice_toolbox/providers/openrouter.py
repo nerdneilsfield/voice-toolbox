@@ -36,6 +36,7 @@ from voice_toolbox.models import (
 )
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES
+from voice_toolbox.transcripts import TranscriptPayload
 
 GENERATION_TIMEOUT_SECONDS = 300.0
 TTS_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
@@ -231,18 +232,13 @@ class OpenRouterProvider:
         operation_id = self._next_operation_id("asr")
         started_at = datetime.now(UTC)
         body = self._build_asr_body(request)
-        response = self._post_json(
-            "/audio/transcriptions",
-            body,
-            timeout=ASR_TIMEOUT_SECONDS,
-        )
-        transcript = _extract_transcript(response)
-
+        payload = self.transcribe_payload(request)
         artifact = self._artifact_store.write_transcript(
             operation_id=operation_id,
             provider_id=self.id,
             operation="asr",
-            text=transcript,
+            text=payload.text,
+            payload=payload,
             metadata={
                 "base64_size": request.base64_size,
                 "language": request.language,
@@ -266,6 +262,16 @@ class OpenRouterProvider:
             )
         )
         return artifact
+
+    def transcribe_payload(self, request: ASRRequest) -> TranscriptPayload:
+        self._ensure_open()
+        body = self._build_asr_body(request)
+        response = self._post_json(
+            "/audio/transcriptions",
+            body,
+            timeout=ASR_TIMEOUT_SECONDS,
+        )
+        return TranscriptPayload(text=_extract_transcript(response))
 
     def _post_json(
         self,

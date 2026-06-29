@@ -31,7 +31,9 @@ from voice_toolbox.audio_conversion import (
 )
 from voice_toolbox.artifacts import SAFE_OPERATION_ID_PATTERN
 from voice_toolbox.artifacts import ArtifactStore
+from voice_toolbox.chunking.audio import ASRAudioChunkingError, plan_asr_audio_chunks
 from voice_toolbox.chunking.merge import merge_audio_results
+from voice_toolbox.chunking.merge import TranscriptChunk, merge_transcript_chunks
 from voice_toolbox.chunking.models import TextSource
 from voice_toolbox.chunking.options import (
     build_provider_option_metadata,
@@ -59,6 +61,7 @@ from voice_toolbox.models import (
     OperationResult,
     OperationStatus,
     ProviderAudioResult,
+    TranscriptCapabilities,
     TranscriptArtifact,
     TTSMode,
     TTSRequest,
@@ -70,7 +73,7 @@ from voice_toolbox.logging_config import configure_logging, sanitize_log_metadat
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.factory import build_provider_registry
 from voice_toolbox.providers.mimo import MAX_BASE64_AUDIO_SIZE
-from voice_toolbox.providers.registry import TTS_MODE_CAPABILITIES, ProviderRegistry
+from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES, ProviderRegistry
 from voice_toolbox.transcripts import render_json, render_srt, render_txt, render_vtt
 
 CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
@@ -466,60 +469,71 @@ def create_app(
         provider_id: Annotated[str, Form()] = "mimo",
         model: Annotated[str | None, Form()] = None,
         language: Annotated[Literal["auto", "zh", "en"], Form()] = "auto",
+        chunking_mode: Annotated[Literal["off", "auto", "force"] | None, Form()] = None,
+        chunk_seconds: Annotated[int | None, Form()] = None,
+        chunk_overlap_ms: Annotated[int | None, Form()] = None,
+        transcript_timestamps: Annotated[bool, Form()] = False,
+        transcript_speakers: Annotated[bool, Form()] = False,
+        provider_options: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
-        contents = _read_upload(file)
-        mime_type = _normalize_mime_type(file.content_type)
-        suffix = _suffix_for_upload(file.filename)
-        source_format = _validate_upload_signature(contents, mime_type, suffix)
-        provider_audio = _convert_upload_for_provider(
-            contents,
-            source_format=source_format,
+        model = (model or "").strip() or None
+        config = _config_from_request(http_request)
+        validated_options, option_metadata = _validate_asr_provider_options(
+            http_request,
             provider_id=provider_id,
-            operation="asr",
+            model_id=model,
+            raw_provider_options=provider_options,
+        )
+        _ensure_transcript_richness_supported(
+            http_request,
+            provider_id=provider_id,
+            model_id=model,
+            timestamps=transcript_timestamps,
+            speakers=transcript_speakers,
         )
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir) / _safe_upload_filename(
-                file.filename,
-                provider_audio.suffix,
+            temp_root = Path(temp_dir)
+            source_path = _save_upload_to_temp(
+                file,
+                output_dir=temp_root,
+                max_upload_mb=config.chunking.asr.max_upload_mb,
             )
-            temp_path.write_bytes(provider_audio.data)
-            request = _build_asr_request(
+            mime_type = _normalize_mime_type(file.content_type)
+            suffix = _suffix_for_upload(file.filename)
+            source_bytes = source_path.read_bytes()
+            if len(source_bytes) > MAX_UPLOAD_RAW_BYTES and not (
+                source_bytes.startswith(b"RIFF")
+                or source_bytes.startswith(b"ID3")
+                or (
+                    len(source_bytes) >= 2
+                    and source_bytes[0] == 0xFF
+                    and source_bytes[1] & 0xE0 == 0xE0
+                )
+            ):
+                raise HTTPException(
+                    status_code=413,
+                    detail="audio base64 payload exceeds 10 MiB",
+                )
+            source_format = _validate_upload_signature(source_bytes, mime_type, suffix)
+            return _run_asr_upload(
+                http_request=http_request,
                 provider_id=provider_id,
                 model=model,
-                audio_path=temp_path,
-                mime_type=provider_audio.mime_type,
-                raw_byte_size=len(provider_audio.data),
-                base64_size=_base64_size(provider_audio.data),
                 language=language,
+                source_path=source_path,
+                source_bytes=source_bytes,
+                source_format=source_format,
+                source_mime_type=mime_type,
+                source_suffix=suffix,
+                chunking_mode=chunking_mode,
+                chunk_seconds=chunk_seconds,
+                chunk_overlap_ms=chunk_overlap_ms,
+                transcript_timestamps=transcript_timestamps,
+                transcript_speakers=transcript_speakers,
+                provider_options=validated_options,
+                option_metadata=option_metadata,
             )
-            provider_registry = _registry_from_request(http_request)
-            provider = _ensure_asr_provider(provider_registry, provider_id, request)
-            _ensure_model_allowed(provider, request.model, expected_capability="asr.transcribe")
-            started_at = datetime.now(UTC)
-            try:
-                artifact = provider.transcribe(request)
-            except ProviderError as exc:
-                _log_operation(
-                    operation="asr",
-                    status="failed",
-                    provider_id=provider_id,
-                    model=request.model,
-                    error_summary=str(exc),
-                )
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
-            finished_at = datetime.now(UTC)
-            _log_operation(
-                operation="asr",
-                status="completed",
-                provider_id=provider_id,
-                model=artifact.metadata.get("model")
-                if isinstance(artifact.metadata, dict)
-                else None,
-                artifact_id=artifact.id,
-                elapsed_ms=int((finished_at - started_at).total_seconds() * 1000),
-            )
-            return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
 
     @app.get("/v1/artifacts")
     def list_artifacts(
@@ -908,6 +922,85 @@ def _validate_tts_provider_options(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _validate_asr_provider_options(
+    request: Request,
+    *,
+    provider_id: str,
+    model_id: str | None,
+    raw_provider_options: str | None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    try:
+        submitted = parse_provider_options_json(raw_provider_options)
+        provider_config = _configured_provider_for_id(_config_from_request(request), provider_id)
+        model_options: list[Any] = []
+        resolved_model_id = (
+            model_id
+            if model_id is not None
+            else _default_model_for_capability(provider_config, ASR_CAPABILITY)
+        )
+        if provider_config is not None and resolved_model_id is not None:
+            configured_model = next(
+                (model for model in provider_config.models if model.id == resolved_model_id),
+                None,
+            )
+            if configured_model is not None:
+                model_options = list(configured_model.options)
+        specs = merge_provider_options(
+            provider_config.options if provider_config is not None else [],
+            model_options,
+            capability=ASR_CAPABILITY,
+        )
+        validated = validate_provider_options(submitted, specs, capability=ASR_CAPABILITY)
+        metadata = build_provider_option_metadata(validated, specs)
+        return validated, metadata
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _ensure_transcript_richness_supported(
+    request: Request,
+    *,
+    provider_id: str,
+    model_id: str | None,
+    timestamps: bool,
+    speakers: bool,
+) -> None:
+    if not timestamps and not speakers:
+        return
+    capabilities = _transcript_capabilities_for_model(
+        _config_from_request(request),
+        provider_id=provider_id,
+        model_id=model_id,
+    )
+    if timestamps and not capabilities.timestamps:
+        raise HTTPException(status_code=422, detail="model does not support transcript timestamps")
+    if speakers and not capabilities.speakers:
+        raise HTTPException(status_code=422, detail="model does not support transcript speakers")
+
+
+def _transcript_capabilities_for_model(
+    config: AppConfig,
+    *,
+    provider_id: str,
+    model_id: str | None,
+) -> TranscriptCapabilities:
+    provider_config = _configured_provider_for_id(config, provider_id)
+    resolved_model_id = (
+        model_id
+        if model_id is not None
+        else _default_model_for_capability(provider_config, ASR_CAPABILITY)
+    )
+    if provider_config is None or resolved_model_id is None:
+        return TranscriptCapabilities()
+    configured_model = next(
+        (model for model in provider_config.models if model.id == resolved_model_id),
+        None,
+    )
+    if configured_model is None or configured_model.transcript_capabilities is None:
+        return TranscriptCapabilities()
+    return configured_model.transcript_capabilities
+
+
 def _default_model_for_capability(
     provider_config: ConfiguredProvider | None,
     capability: str,
@@ -1152,6 +1245,238 @@ def _run_chunked_tts(
     return artifact
 
 
+def _run_asr_upload(
+    *,
+    http_request: Request,
+    provider_id: str,
+    model: str | None,
+    language: Literal["auto", "zh", "en"],
+    source_path: Path,
+    source_bytes: bytes,
+    source_format: AudioFormat,
+    source_mime_type: str,
+    source_suffix: str,
+    chunking_mode: Literal["off", "auto", "force"] | None,
+    chunk_seconds: int | None,
+    chunk_overlap_ms: int | None,
+    transcript_timestamps: bool,
+    transcript_speakers: bool,
+    provider_options: dict[str, object],
+    option_metadata: Mapping[str, object],
+) -> dict[str, Any]:
+    config = _config_from_request(http_request)
+    resolved_mode = chunking_mode or config.chunking.asr.mode
+    if chunk_seconds is not None and not 10 <= chunk_seconds <= 600:
+        raise HTTPException(status_code=422, detail="chunk_seconds must be between 10 and 600")
+    if chunk_overlap_ms is not None and not 0 <= chunk_overlap_ms <= 10000:
+        raise HTTPException(status_code=422, detail="chunk_overlap_ms must be between 0 and 10000")
+    provider_registry = _registry_from_request(http_request)
+    provider = _get_provider(provider_registry, provider_id)
+    try:
+        provider_registry.ensure_asr_capability(provider_id)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _ensure_model_allowed(provider, model, expected_capability=ASR_CAPABILITY)
+    started_at = datetime.now(UTC)
+    try:
+        provider_audio = _convert_upload_for_provider(
+            source_bytes,
+            source_format=source_format,
+            provider_id=provider_id,
+            operation="asr",
+        )
+        if resolved_mode != "force":
+            request_path = source_path.with_name(f"provider{provider_audio.suffix}")
+            request_path.write_bytes(provider_audio.data)
+            request = _build_asr_request(
+                provider_id=provider_id,
+                model=model,
+                audio_path=request_path,
+                mime_type=provider_audio.mime_type,
+                raw_byte_size=len(provider_audio.data),
+                base64_size=_base64_size(provider_audio.data),
+                language=language,
+                provider_options=provider_options,
+                transcript_timestamps=transcript_timestamps,
+                transcript_speakers=transcript_speakers,
+            )
+            provider = _ensure_asr_provider(provider_registry, provider_id, request)
+            artifact = provider.transcribe(request)
+            finished_at = datetime.now(UTC)
+            _log_operation(
+                operation="asr",
+                status="completed",
+                provider_id=provider_id,
+                model=artifact.metadata.get("model")
+                if isinstance(artifact.metadata, dict)
+                else None,
+                artifact_id=artifact.id,
+                elapsed_ms=int((finished_at - started_at).total_seconds() * 1000),
+            )
+            return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
+    except HTTPException as exc:
+        if resolved_mode == "off" or exc.status_code != 413:
+            raise
+    except ProviderError as exc:
+        _log_operation(
+            operation="asr",
+            status="failed",
+            provider_id=provider_id,
+            model=model,
+            error_summary=str(exc),
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    try:
+        artifact = _run_chunked_asr(
+            provider=provider,
+            provider_id=provider_id,
+            model=model,
+            language=language,
+            source_path=source_path,
+            source_format=source_format,
+            source_mime_type=source_mime_type,
+            source_suffix=source_suffix,
+            chunk_seconds=chunk_seconds,
+            chunk_overlap_ms=chunk_overlap_ms,
+            transcript_timestamps=transcript_timestamps,
+            transcript_speakers=transcript_speakers,
+            provider_options=provider_options,
+            option_metadata=option_metadata,
+            artifact_root=http_request.app.state.artifact_root,
+            started_at=started_at,
+            chunking_mode=resolved_mode,
+            config=config,
+        )
+    except ASRAudioChunkingError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except (ProviderError, AudioConversionError) as exc:
+        _log_operation(
+            operation="asr",
+            status="failed",
+            provider_id=provider_id,
+            model=model,
+            error_summary=str(exc),
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finished_at = datetime.now(UTC)
+    _log_operation(
+        operation="asr",
+        status="completed",
+        provider_id=provider_id,
+        model=artifact.metadata.get("model") if isinstance(artifact.metadata, dict) else None,
+        artifact_id=artifact.id,
+        elapsed_ms=int((finished_at - started_at).total_seconds() * 1000),
+    )
+    return _operation_payload(artifact, started_at=started_at, finished_at=finished_at)
+
+
+def _run_chunked_asr(
+    *,
+    provider: Any,
+    provider_id: str,
+    model: str | None,
+    language: Literal["auto", "zh", "en"],
+    source_path: Path,
+    source_format: AudioFormat,
+    source_mime_type: str,
+    source_suffix: str,
+    chunk_seconds: int | None,
+    chunk_overlap_ms: int | None,
+    transcript_timestamps: bool,
+    transcript_speakers: bool,
+    provider_options: dict[str, object],
+    option_metadata: Mapping[str, object],
+    artifact_root: Path,
+    started_at: datetime,
+    chunking_mode: str,
+    config: AppConfig,
+) -> TranscriptArtifact:
+    chunk_dir = source_path.parent / "asr-chunks"
+    chunks = plan_asr_audio_chunks(
+        source_path,
+        source_format=source_format,
+        output_dir=chunk_dir,
+        config=config.chunking.asr,
+        target_seconds=chunk_seconds,
+        overlap_ms=chunk_overlap_ms,
+        max_raw_bytes=MAX_UPLOAD_RAW_BYTES,
+        max_base64_bytes=MAX_BASE64_AUDIO_SIZE,
+    )
+    transcript_chunks: list[TranscriptChunk] = []
+    model_used = model
+    for chunk in chunks:
+        request = _build_asr_request(
+            provider_id=provider_id,
+            model=model,
+            audio_path=chunk.path,
+            mime_type=chunk.mime_type,
+            raw_byte_size=chunk.raw_byte_size,
+            base64_size=chunk.base64_size,
+            language=language,
+            provider_options=provider_options,
+            transcript_timestamps=transcript_timestamps,
+            transcript_speakers=transcript_speakers,
+        )
+        payload = provider.transcribe_payload(request)
+        transcript_chunks.append(
+            TranscriptChunk(payload=payload, start_seconds=chunk.start_ms / 1000)
+        )
+        model_used = request.model or model_used
+    merged = merge_transcript_chunks(
+        transcript_chunks,
+        dedupe_min_chars=config.chunking.asr.dedupe_min_chars,
+        dedupe_max_chars=config.chunking.asr.dedupe_max_chars,
+    )
+    operation_id = f"asr-{uuid4().hex}"
+    store = ArtifactStore(artifact_root)
+    artifact = store.write_transcript(
+        operation_id=operation_id,
+        provider_id=provider_id,
+        operation="asr",
+        text=merged.payload.text,
+        payload=merged.payload,
+        metadata={
+            **dict(option_metadata),
+            "base64_size": sum(chunk.base64_size for chunk in chunks),
+            "chunking_audio_durations_ms": [chunk.duration_ms for chunk in chunks],
+            "chunking_chunk_count": len(chunks),
+            "chunking_dedupe_removed_chars": merged.dedupe_removed_chars,
+            "chunking_enabled": True,
+            "chunking_mode": chunking_mode,
+            "chunking_operation": "asr",
+            "chunking_overlap_ms": (
+                config.chunking.asr.overlap_ms if chunk_overlap_ms is None else chunk_overlap_ms
+            ),
+            "chunking_strategy": "audio_overlap",
+            "chunking_target_seconds": (
+                config.chunking.asr.target_seconds if chunk_seconds is None else chunk_seconds
+            ),
+            "chunking_transcript_lengths": [len(chunk.payload.text) for chunk in transcript_chunks],
+            "language": language,
+            "model": model_used,
+            "operation": "asr",
+            "provider_id": provider_id,
+            "raw_byte_size": sum(chunk.raw_byte_size for chunk in chunks),
+            "source_file_name_hash": _file_name_hash(source_path.name),
+            "source_file_suffix": source_suffix,
+            "uploaded_file_mime_type": source_mime_type,
+            "uploaded_file_suffix": source_suffix,
+        },
+    )
+    store.record_operation(
+        OperationResult(
+            operation_id=operation_id,
+            operation="asr",
+            status=OperationStatus.COMPLETED,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+            artifact_ids=[artifact.id],
+        )
+    )
+    return artifact
+
+
 def _operation_payload(
     artifact: Artifact,
     *,
@@ -1203,6 +1528,34 @@ def _read_upload(upload: UploadFile) -> bytes:
     if len(contents) > MAX_UPLOAD_RAW_BYTES or _base64_size(contents) > MAX_BASE64_AUDIO_SIZE:
         raise HTTPException(status_code=413, detail="audio base64 payload exceeds 10 MiB")
     return contents
+
+
+def _save_upload_to_temp(
+    upload: UploadFile,
+    *,
+    output_dir: Path,
+    max_upload_mb: int,
+) -> Path:
+    suffix = _suffix_for_upload(upload.filename)
+    output_path = output_dir / _safe_upload_filename(upload.filename, suffix)
+    max_bytes = max_upload_mb * 1024 * 1024
+    total = 0
+    with output_path.open("xb") as output_file:
+        while True:
+            chunk = upload.file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"audio upload exceeds {max_upload_mb} MiB",
+                )
+            output_file.write(chunk)
+    if total == 0:
+        raise HTTPException(status_code=422, detail="upload file is empty")
+    output_path.chmod(0o600)
+    return output_path
 
 
 def _normalize_mime_type(mime_type: str | None) -> str:
@@ -1326,6 +1679,10 @@ def _safe_upload_filename(filename: str | None, suffix: str) -> str:
 
 def _base64_size(contents: bytes) -> int:
     return ((len(contents) + 2) // 3) * 4
+
+
+def _file_name_hash(filename: str) -> str:
+    return sha1(filename.encode("utf-8")).hexdigest()
 
 
 def _read_artifact_sidecar(root: Path, artifact_id: str) -> Artifact:

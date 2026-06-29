@@ -38,6 +38,7 @@ from voice_toolbox.models import (
 )
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES
+from voice_toolbox.transcripts import TranscriptPayload
 
 MIMO_MODELS = _defaults.MIMO_MODELS
 MIMO_VOICES = _defaults.MIMO_VOICES
@@ -273,33 +274,22 @@ class MimoProvider:
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
         self._ensure_open()
-        _validate_base64_size(request.base64_size)
         operation_id = self._next_operation_id("asr")
         started_at = datetime.now(UTC)
-        audio_data_url, raw_size, base64_size = _audio_file_to_data_url(
-            request.audio_path,
-            request.mime_type,
-        )
-        body = self._build_asr_body(request, audio_data_url)
-        completion = self._create_completion(
-            body,
-            timeout=ASR_TIMEOUT_SECONDS,
-            extra_body={"asr_options": {"language": request.language}},
-        )
-        transcript = _message_content(completion)
-
+        payload = self.transcribe_payload(request)
         artifact = self._artifact_store.write_transcript(
             operation_id=operation_id,
             provider_id=self.id,
             operation="asr",
-            text=transcript,
+            text=payload.text,
+            payload=payload,
             metadata={
-                "base64_size": base64_size,
+                "base64_size": request.base64_size,
                 "language": request.language,
-                "model": body["model"],
+                "model": self._resolve_asr_model(request),
                 "operation": "asr",
                 "provider_id": self.id,
-                "raw_byte_size": raw_size,
+                "raw_byte_size": request.raw_byte_size,
                 "uploaded_file_mime_type": request.mime_type,
                 "uploaded_file_name_hash": _file_name_hash(request.audio_path.name),
                 "uploaded_file_suffix": request.audio_path.suffix,
@@ -316,6 +306,21 @@ class MimoProvider:
             )
         )
         return artifact
+
+    def transcribe_payload(self, request: ASRRequest) -> TranscriptPayload:
+        self._ensure_open()
+        _validate_base64_size(request.base64_size)
+        audio_data_url, _raw_size, _base64_size = _audio_file_to_data_url(
+            request.audio_path,
+            request.mime_type,
+        )
+        body = self._build_asr_body(request, audio_data_url)
+        completion = self._create_completion(
+            body,
+            timeout=ASR_TIMEOUT_SECONDS,
+            extra_body={"asr_options": {"language": request.language}},
+        )
+        return TranscriptPayload(text=_message_content(completion))
 
     def _create_completion(
         self,
