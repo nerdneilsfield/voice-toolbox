@@ -79,7 +79,7 @@ class TranscriptPayload(BaseModel):
         return formats
 
     def _segments_cover_text(self) -> bool:
-        segment_text = "".join(segment.text for segment in self.segments)
+        segment_text = " ".join(segment.text for segment in self.segments)
         return _compact_text(segment_text) == _compact_text(self.text)
 
 
@@ -152,10 +152,7 @@ def render_json(payload: TranscriptPayload) -> dict[str, object]:
 
 
 def format_txt_timestamp(seconds: float | None) -> str:
-    total_ms = _total_milliseconds(seconds)
-    minutes, remainder = divmod(total_ms, 60_000)
-    seconds_part, milliseconds = divmod(remainder, 1000)
-    return f"{minutes:02d}:{seconds_part:02d}.{milliseconds:03d}"
+    return _format_caption_timestamp(seconds, decimal=".")
 
 
 def format_srt_timestamp(seconds: float | None) -> str:
@@ -186,4 +183,4 @@ def _require_complete_timestamps(payload: TranscriptPayload, format_name: str) -
 
 
 def _compact_text(value: str) -> str:
-    return re.sub(r"\s+", "", value)
+    return re.sub(r"[ \t\r\n\f\v]+", " ", value).strip()

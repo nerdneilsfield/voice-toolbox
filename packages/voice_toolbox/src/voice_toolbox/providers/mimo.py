@@ -297,6 +297,7 @@ class MimoProvider:
             payload=payload,
             metadata={
                 "base64_size": request.base64_size,
+                **request.artifact_metadata,
                 "language": request.language,
                 "model": self._resolve_asr_model(request),
                 "operation": "asr",
@@ -503,13 +504,16 @@ def _tts_metadata(
         "operation": "tts",
         "output_format": request.output_format,
         "provider_id": provider_id,
-        "clone_reference_text": request.clone_reference_text,
-        "source_text": request.text,
-        "style_instruction": request.style_instruction,
+        "source_text_length": len(request.text or ""),
         "tts_mode": request.mode.value,
-        "voice_description": request.voice_description,
         "voice_id": request.voice_id,
     }
+    if request.style_instruction:
+        metadata["style_instruction_length"] = len(request.style_instruction)
+    if request.voice_description:
+        metadata["voice_description_length"] = len(request.voice_description)
+    if request.clone_reference_text:
+        metadata["clone_reference_text_length"] = len(request.clone_reference_text)
     if request.mode == TTSMode.CLONE:
         if request.clone_sample_path is not None:
             metadata["uploaded_file_name_hash"] = _file_name_hash(request.clone_sample_path.name)

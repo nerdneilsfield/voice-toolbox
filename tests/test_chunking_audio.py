@@ -14,7 +14,7 @@ from voice_toolbox.chunking.merge import merge_transcript_chunks
 from voice_toolbox.chunking.sessions import ASRChunkSessionError, ASRChunkSessionStore
 from voice_toolbox.config_models import ASRChunkingConfig
 from voice_toolbox.models import ProviderAudioResult
-from voice_toolbox.transcripts import TranscriptPayload, TranscriptSegment
+from voice_toolbox.transcripts import TranscriptPayload, TranscriptSegment, render_txt
 
 
 def _wav_silence(duration_ms: int) -> bytes:
@@ -85,6 +85,46 @@ def test_transcript_merge_exact_dedupe_newline_and_bounds() -> None:
         )
         == 0
     )
+
+
+def test_transcript_merge_dedupes_collapsed_whitespace_and_keeps_timestamps() -> None:
+    merged = merge_transcript_chunks(
+        [
+            TranscriptChunk(
+                TranscriptPayload(
+                    text="alpha overlap",
+                    segments=[
+                        TranscriptSegment(text="alpha overlap", start_seconds=0, end_seconds=1)
+                    ],
+                ),
+                start_seconds=0,
+            ),
+            TranscriptChunk(
+                TranscriptPayload(
+                    text="overlap\n beta",
+                    segments=[
+                        TranscriptSegment(text="overlap\n beta", start_seconds=0, end_seconds=1)
+                    ],
+                ),
+                start_seconds=0.8,
+            ),
+        ],
+        dedupe_min_chars=7,
+        dedupe_max_chars=20,
+    )
+
+    assert merged.payload.text == "alpha overlap\n beta"
+    assert merged.payload.has_complete_timestamps is True
+    assert render_txt(merged.payload, timestamps=True).startswith("[00:00:00.000 - ")
+
+
+def test_txt_timestamp_renders_hours() -> None:
+    payload = TranscriptPayload(
+        text="later",
+        segments=[TranscriptSegment(text="later", start_seconds=3661.25, end_seconds=3662.5)],
+    )
+
+    assert render_txt(payload, timestamps=True) == "[01:01:01.250 - 01:01:02.500] later"
 
 
 def test_transcript_merge_offsets_segments_and_preserves_speakers() -> None:
@@ -259,6 +299,7 @@ def test_asr_chunk_session_store_validates_uploads_and_privacy(tmp_path: Path) -
     assert "speech.wav" not in store.metadata_path(session.session_id).read_text(encoding="utf-8")
     metadata_json = store.metadata_path(session.session_id).read_text(encoding="utf-8")
     assert "secret" not in metadata_json
+    assert '"provider_options":' not in metadata_json
     assert "provider_options_hash" in metadata_json
     assert store.load(session.session_id).provider_options == {"hint": "secret"}
     reloaded_store = ASRChunkSessionStore(tmp_path, ttl_seconds=3600, max_upload_mb=1)

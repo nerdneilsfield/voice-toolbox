@@ -231,3 +231,6 @@ def test_normalized_provider_options_compare_sorted_keys_and_numeric_equality() 
     assert normalize_provider_options({"b": 2.0, "a": 1}) == normalize_provider_options(
         {"a": 1.0, "b": 2}
     )
+    assert normalize_provider_options({"tags": ["b", "a"]}) == normalize_provider_options(
+        {"tags": ["a", "b"]}
+    )

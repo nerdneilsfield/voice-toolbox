@@ -538,7 +538,7 @@ def test_asr_transcribe_auto_language_succeeds(monkeypatch, tmp_path: Path) -> N
 
     assert result.exit_code == 0, result.output
     assert "transcript-1" in result.output
-    assert "fake transcript" in result.output
+    assert "fake transcript" not in result.output
     request = provider.asr_requests[0]
     assert request.audio_path == audio
     assert request.mime_type == "audio/mpeg"

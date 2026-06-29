@@ -29,6 +29,9 @@ export async function sliceWavFile(
   const wav = parseWav(buffer);
   const bytesPerMs = wav.byteRate / 1000 || 1;
   const chunkMs = Math.max(1000, targetSeconds * 1000);
+  if (overlapMs >= chunkMs / 2) {
+    throw new Error("ASR chunk overlap must be less than half of chunk duration.");
+  }
   const strideMs = Math.max(1, chunkMs - Math.max(0, overlapMs));
   const chunks: BrowserAudioChunk[] = [];
   let offsetMs = 0;

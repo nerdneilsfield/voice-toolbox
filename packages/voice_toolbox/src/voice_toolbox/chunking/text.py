@@ -246,7 +246,7 @@ def _pack(pieces: list[str], *, max_chars: int, separator: str) -> list[str]:
     for piece in pieces:
         if not piece:
             continue
-        joiner = "" if not current else _separator_between(current, piece, separator)
+        joiner = "" if not current else _separator_between(current, separator)
         candidate = piece if not current else f"{current}{joiner}{piece}"
         if current and len(candidate) > max_chars:
             packed.append(current)
@@ -258,8 +258,7 @@ def _pack(pieces: list[str], *, max_chars: int, separator: str) -> list[str]:
     return packed
 
 
-def _separator_between(current: str, piece: str, separator: str) -> str:
-    del piece
+def _separator_between(current: str, separator: str) -> str:
     if separator == " " and current[-1] in "。！？；、：，":
         return ""
     return separator

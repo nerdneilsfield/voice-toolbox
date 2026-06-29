@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 from hashlib import sha1
+from hashlib import sha256
 from uuid import uuid4
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -630,6 +631,8 @@ def create_app(
         audio_format = _validate_upload_signature(contents, mime_type, suffix)
         if audio_format != "wav":
             raise HTTPException(status_code=422, detail="browser ASR chunks must be wav")
+        if not _is_pcm_wav(contents):
+            raise HTTPException(status_code=422, detail="browser ASR chunks must be PCM WAV")
         with tempfile.NamedTemporaryFile(suffix=".wav") as temp_chunk:
             temp_chunk.write(contents)
             temp_chunk.flush()
@@ -686,18 +689,23 @@ def create_app(
                 transcript_speakers=transcript_speakers,
                 provider_options=provider_options,
             )
+            finish_provider_options, _finish_option_metadata = _validate_asr_provider_options(
+                http_request,
+                provider_id=session.provider_id,
+                model_id=session.model,
+                raw_provider_options=json.dumps(finish_provider_options),
+            )
             session = session.model_copy(update={"provider_options": finish_provider_options})
             chunks = store.finish_chunks(session_id)
         except ASRChunkSessionError as exc:
             raise _chunk_session_http_error(exc) from exc
-        try:
-            return _run_asr_chunk_session_finish(
-                http_request=http_request,
-                session=session,
-                chunks=chunks,
-            )
-        finally:
-            store.delete(session_id)
+        result = _run_asr_chunk_session_finish(
+            http_request=http_request,
+            session=session,
+            chunks=chunks,
+        )
+        store.delete(session_id)
+        return result
 
     @app.delete("/v1/asr/chunk-sessions/{session_id}")
     def delete_asr_chunk_session(session_id: str, http_request: Request) -> dict[str, bool]:
@@ -1650,6 +1658,7 @@ def _run_asr_upload(
                 base64_size=_base64_size(provider_audio.data),
                 language=language,
                 provider_options=provider_options,
+                artifact_metadata=dict(option_metadata),
                 transcript_timestamps=transcript_timestamps,
                 transcript_speakers=transcript_speakers,
             )
@@ -1901,6 +1910,10 @@ def _read_upload_stream_limited(
     max_bytes: int,
     too_large_detail: str,
 ) -> bytes:
+    if max_bytes <= 0:
+        if upload.file.read(1):
+            raise HTTPException(status_code=413, detail=too_large_detail)
+        raise HTTPException(status_code=422, detail="upload file is empty")
     chunks: list[bytes] = []
     total = 0
     while True:
@@ -1995,6 +2008,24 @@ def _validate_upload_signature(contents: bytes, mime_type: str, suffix: str) -> 
     ):
         raise HTTPException(status_code=422, detail="mp3 upload must start with ID3 or frame sync")
     return audio_format
+
+
+def _is_pcm_wav(contents: bytes) -> bool:
+    if not (contents.startswith(b"RIFF") and contents[8:12] == b"WAVE"):
+        return False
+    offset = 12
+    while offset + 8 <= len(contents):
+        chunk_id = contents[offset : offset + 4]
+        chunk_size = int.from_bytes(contents[offset + 4 : offset + 8], "little")
+        payload_offset = offset + 8
+        if payload_offset + chunk_size > len(contents):
+            return False
+        if chunk_id == b"fmt ":
+            if chunk_size < 16:
+                return False
+            return int.from_bytes(contents[payload_offset : payload_offset + 2], "little") == 1
+        offset = payload_offset + chunk_size + (chunk_size % 2)
+    return False
 
 
 def _convert_upload_for_provider(
@@ -2094,7 +2125,7 @@ def _base64_size_by_length(raw_byte_size: int) -> int:
 
 
 def _file_name_hash(filename: str) -> str:
-    return sha1(filename.encode("utf-8")).hexdigest()
+    return sha256(filename.encode("utf-8")).hexdigest()[:12]
 
 
 def _read_artifact_sidecar(root: Path, artifact_id: str) -> Artifact:

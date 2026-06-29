@@ -53,11 +53,17 @@ export function sanitizeOptionValues(values: ProviderOptionValues, specs: Provid
     if (!spec || value === null || value === "" || value === undefined) {
       continue;
     }
-    sanitized[key] = coerceOptionValue(spec, value);
+    const coerced = coerceOptionValue(spec, value);
+    if (validateOptionValues({ [key]: coerced }, [spec]).length === 0) {
+      sanitized[key] = coerced;
+    }
   }
   for (const spec of specs) {
     if (sanitized[spec.key] === undefined && spec.default !== undefined && spec.default !== null) {
-      sanitized[spec.key] = coerceOptionValue(spec, spec.default);
+      const coercedDefault = coerceOptionValue(spec, spec.default);
+      if (validateOptionValues({ [spec.key]: coercedDefault }, [spec]).length === 0) {
+        sanitized[spec.key] = coercedDefault;
+      }
     }
   }
   return sanitized;
@@ -137,7 +143,7 @@ function definedFields(spec: ProviderOptionSpec): Partial<ProviderOptionSpec> {
 
 function coerceOptionValue(spec: ProviderOptionSpec, value: ProviderOptionValue): ProviderOptionValue {
   if (spec.type === "integer") {
-    return typeof value === "number" ? Math.trunc(value) : Number.parseInt(String(value), 10);
+    return typeof value === "number" ? value : Number(value);
   }
   if (spec.type === "number") {
     return typeof value === "number" ? value : Number(value);

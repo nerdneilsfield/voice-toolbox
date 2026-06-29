@@ -242,8 +242,8 @@ export function cloneVoice(formData: FormData): Promise<OperationResponse> {
   return requestForm("/v1/tts/clone", formData);
 }
 
-export function transcribe(formData: FormData): Promise<OperationResponse> {
-  return requestForm("/v1/asr/transcribe", formData);
+export function transcribe(formData: FormData, signal?: AbortSignal): Promise<OperationResponse> {
+  return requestForm("/v1/asr/transcribe", formData, signal);
 }
 
 export function createAsrChunkSession(form: ASRChunkSessionCreate): Promise<ASRChunkSession> {

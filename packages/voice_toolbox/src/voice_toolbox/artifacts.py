@@ -15,6 +15,7 @@ from voice_toolbox.transcripts import TranscriptPayload
 ALLOWED_METADATA_KEYS = {
     "base64_size",
     "capability",
+    "clone_reference_text_length",
     "chunking_audio_durations_ms",
     "chunking_chunk_count",
     "chunking_dedupe_removed_chars",
@@ -51,7 +52,10 @@ ALLOWED_METADATA_KEYS = {
     "source_file_name_hash",
     "source_file_suffix",
     "source_kind",
+    "source_text_length",
     "source_text_raw_char_count",
+    "source_text_preview",
+    "style_instruction_length",
     "transcript_download_formats",
     "transcript_has_speakers",
     "transcript_has_timestamps",
@@ -64,11 +68,11 @@ ALLOWED_METADATA_KEYS = {
     "uploaded_text_file_size_bytes",
     "uploaded_text_file_suffix",
     "voice_id",
+    "voice_description_length",
 }
 LENGTH_METADATA_KEYS = {
     "clone_reference_text",
     "source_text",
-    "source_text_preview",
     "style_instruction",
     "voice_description",
 }

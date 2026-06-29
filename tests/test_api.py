@@ -54,6 +54,31 @@ def _wav_silence(duration_ms: int) -> bytes:
     return buffer.getvalue()
 
 
+def _wav_non_pcm() -> bytes:
+    fmt = b"".join(
+        [
+            (3).to_bytes(2, "little"),
+            (1).to_bytes(2, "little"),
+            (8000).to_bytes(4, "little"),
+            (16000).to_bytes(4, "little"),
+            (2).to_bytes(2, "little"),
+            (16).to_bytes(2, "little"),
+        ]
+    )
+    data = b"\x00" * 16
+    return (
+        b"RIFF"
+        + (4 + 8 + len(fmt) + 8 + len(data)).to_bytes(4, "little")
+        + b"WAVE"
+        + b"fmt "
+        + len(fmt).to_bytes(4, "little")
+        + fmt
+        + b"data"
+        + len(data).to_bytes(4, "little")
+        + data
+    )
+
+
 class RecordingMimoProvider(FakeProvider):
     id = "mimo"
     name = "MiMo"
@@ -772,6 +797,7 @@ def test_asr_chunk_session_create_contract_and_validation(tmp_path: Path) -> Non
     assert "private" not in raw_metadata
     assert "speech.wav" not in raw_metadata
     assert "secret" not in raw_metadata
+    assert '"provider_options":' not in raw_metadata
 
     disabled_client, _ = _client(
         tmp_path / "disabled",
@@ -806,6 +832,11 @@ def test_asr_chunk_session_upload_validation_and_quota(tmp_path: Path) -> None:
         data={"chunk_index": "2", "offset_ms": "0", "duration_ms": "1000"},
         files={"file": ("chunk.wav", _wav_silence(1000), "audio/wav")},
     )
+    non_pcm = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/chunks",
+        data={"chunk_index": "0", "offset_ms": "0", "duration_ms": "1000"},
+        files={"file": ("chunk.wav", _wav_non_pcm(), "audio/wav")},
+    )
     bad_offset = client.post(
         f"/v1/asr/chunk-sessions/{session_id}/chunks",
         data={"chunk_index": "0", "offset_ms": "-1", "duration_ms": "1000"},
@@ -828,6 +859,8 @@ def test_asr_chunk_session_upload_validation_and_quota(tmp_path: Path) -> None:
     )
 
     assert invalid_signature.status_code == 422
+    assert non_pcm.status_code == 422
+    assert "PCM WAV" in non_pcm.text
     assert bad_index.status_code == 422
     assert bad_offset.status_code == 422
     assert first.status_code == 200, first.text
@@ -908,6 +941,15 @@ def test_asr_chunk_session_finish_mismatch_coverage_and_success(tmp_path: Path) 
     missing_options_after_restart = client.post(f"/v1/asr/chunk-sessions/{session_id}/finish")
     assert missing_options_after_restart.status_code == 409
     assert "provider_options" in missing_options_after_restart.text
+
+    provider.asr_error = ProviderError("temporary upstream failure")
+    failed = client.post(
+        f"/v1/asr/chunk-sessions/{session_id}/finish",
+        data={"provider_options": json.dumps({"hint": "secret"})},
+    )
+    assert failed.status_code == 502
+    assert client.app.state.asr_chunk_sessions.session_dir(session_id).exists()
+    provider.asr_error = None
 
     provider.asr_payloads = [TranscriptPayload(text="hello "), TranscriptPayload(text="world")]
     finished = client.post(
@@ -1629,7 +1671,9 @@ def test_transcript_endpoint_renders_txt_srt_and_vtt(tmp_path: Path) -> None:
     vtt = client.get(f"/v1/artifacts/{artifact_id}/transcript?format=vtt")
 
     assert txt.status_code == 200
-    assert txt.text == "[00:00.000 - 00:01.250] A: hello\n[00:01.250 - 00:02.500] B: world"
+    assert (
+        txt.text == "[00:00:00.000 - 00:00:01.250] A: hello\n[00:00:01.250 - 00:00:02.500] B: world"
+    )
     assert srt.status_code == 200
     assert "00:00:00,000 --> 00:00:01,250" in srt.text
     assert vtt.status_code == 200

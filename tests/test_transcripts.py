@@ -28,7 +28,7 @@ def test_txt_can_render_timestamps_and_speakers() -> None:
     )
 
     assert render_txt(payload, timestamps=True, speakers=True) == (
-        "[00:00.000 - 00:01.250] A: hello\n[00:01.250 - 00:02.500] B: world"
+        "[00:00:00.000 - 00:00:01.250] A: hello\n[00:00:01.250 - 00:00:02.500] B: world"
     )
 
 

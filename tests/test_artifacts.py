@@ -84,6 +84,7 @@ def test_redact_metadata_preserves_allowed_direct_keys_and_text_lengths() -> Non
             "language": "auto",
             "consent_confirmed": True,
             "source_text": "hello",
+            "source_text_preview": "hello",
             "style_instruction": "warm",
             "voice_description": "calm voice",
             "arbitrary_unknown": "drop",
@@ -105,6 +106,7 @@ def test_redact_metadata_preserves_allowed_direct_keys_and_text_lengths() -> Non
         "language": "auto",
         "consent_confirmed": True,
         "source_text_length": 5,
+        "source_text_preview": "hello",
         "style_instruction_length": 4,
         "voice_description_length": 10,
     }

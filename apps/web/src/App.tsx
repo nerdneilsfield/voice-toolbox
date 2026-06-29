@@ -39,6 +39,7 @@ import {
 
 type MainTab = "tts" | "asr";
 type TtsMode = "builtin" | "design" | "clone";
+type TtsSourceKind = "text" | "file";
 type RequestState = "idle" | "loading" | "success" | "error";
 type DownloadFormat = "source" | "wav" | "mp3" | "pcm" | "m4a" | "aac" | "flac" | "ogg" | "webm";
 type TranscriptDownloadFormat = "txt" | "srt" | "vtt" | "json";
@@ -69,6 +70,7 @@ function App() {
   const [cloneModel, setCloneModel] = useState<string | null>(null);
   const [asrModel, setAsrModel] = useState<string | null>(null);
   const [textFormat, setTextFormat] = useState<TextFormat>("plain");
+  const [ttsSourceKind, setTtsSourceKind] = useState<TtsSourceKind>("text");
   const [ttsTextFile, setTtsTextFile] = useState<File | null>(null);
   const [ttsChunkingMode, setTtsChunkingMode] = useState<ChunkingMode>("auto");
   const [ttsChunkMaxChars, setTtsChunkMaxChars] = useState(1500);
@@ -238,6 +240,9 @@ function App() {
   const asrTranscriptCapabilities = activeAsrModel?.transcript_capabilities;
   const supportsTimestamps = Boolean(asrTranscriptCapabilities?.timestamps);
   const supportsSpeakers = Boolean(asrTranscriptCapabilities?.speakers);
+  const ttsFileAllowed = !(ttsMode === "design" && optimizePreview);
+  const activeTtsTextFile = ttsSourceKind === "file" ? ttsTextFile : null;
+  const ttsScriptDisabled = ttsSourceKind === "file";
 
   useEffect(() => {
     if (!selectedProvider || activeTtsSupported) {
@@ -279,6 +284,13 @@ function App() {
     }
   }, [supportsTimestamps, supportsSpeakers]);
 
+  useEffect(() => {
+    if (!ttsFileAllowed && ttsSourceKind === "file") {
+      setTtsSourceKind("text");
+      setTtsTextFile(null);
+    }
+  }, [ttsFileAllowed, ttsSourceKind]);
+
   function insertTag(tag: string) {
     const target = textAreaRef.current;
     if (!target) {
@@ -305,12 +317,31 @@ function App() {
     return cloneText;
   }
 
+  function updateTtsSourceKind(value: TtsSourceKind) {
+    if (value === "file" && !ttsFileAllowed) {
+      return;
+    }
+    setTtsSourceKind(value);
+    if (value === "text") {
+      setTtsTextFile(null);
+    }
+  }
+
+  function updateTtsTextFile(file: File | null) {
+    setTtsTextFile(file);
+    if (!file) {
+      return;
+    }
+    setTtsSourceKind("file");
+    setTextFormat(inferTextFormatFromFile(file));
+  }
+
   async function previewCleanedText() {
     setPreviewError("");
     setPreviewState("loading");
     setCleanedPreview("");
     try {
-      const content = ttsTextFile ? await ttsTextFile.text() : activeScriptText();
+      const content = activeTtsTextFile ? await activeTtsTextFile.text() : activeScriptText();
       const result = await normalizeText({ content, input_format: textFormat });
       setCleanedPreview(result.text);
       setPreviewState("success");
@@ -331,7 +362,7 @@ function App() {
           ? await synthesizeBuiltin({
               providerId: selectedProviderId,
               text: builtinText,
-              textFile: ttsTextFile,
+              textFile: activeTtsTextFile,
               textFormat,
               voiceId,
               styleInstruction: builtinStyle,
@@ -346,7 +377,7 @@ function App() {
                 providerId: selectedProviderId,
                 voiceDescription: designDescription,
                 text: designText,
-                textFile: ttsTextFile,
+                textFile: activeTtsTextFile,
                 textFormat,
                 optimizeTextPreview: optimizePreview,
                 model: designModel ?? undefined,
@@ -381,8 +412,8 @@ function App() {
     body.set("chunking_mode", ttsChunkingMode);
     body.set("chunk_max_chars", String(ttsChunkMaxChars));
     body.set("chunk_silence_ms", String(ttsChunkSilenceMs));
-    if (ttsTextFile) {
-      body.set("text_file", ttsTextFile);
+    if (activeTtsTextFile) {
+      body.set("text_file", activeTtsTextFile);
     }
     const providerOptions = sanitizedOptionsOrThrow(cloneOptionValues(), cloneOptionSpecs);
     if (Object.keys(providerOptions).length > 0) {
@@ -476,7 +507,7 @@ function App() {
             message: err instanceof Error ? err.message : t("errors.asrRequestFailed"),
           }),
         );
-        return transcribe(buildAsrBackendForm(file, providerOptions));
+        return transcribe(buildAsrBackendForm(file, providerOptions), abortController.signal);
       } finally {
         if (asrAbortControllerRef.current === abortController) {
           asrAbortControllerRef.current = null;
@@ -645,10 +676,13 @@ function App() {
             {!activeTtsSupported ? <div className="notice error compact">{t("tts.unsupportedMode")}</div> : null}
 
             <TextTools
+              sourceKind={ttsSourceKind}
+              setSourceKind={updateTtsSourceKind}
               textFormat={textFormat}
               setTextFormat={setTextFormat}
               textFile={ttsTextFile}
-              setTextFile={setTtsTextFile}
+              setTextFile={updateTtsTextFile}
+              fileDisabled={!ttsFileAllowed}
               chunkingMode={ttsChunkingMode}
               setChunkingMode={setTtsChunkingMode}
               chunkMaxChars={ttsChunkMaxChars}
@@ -674,6 +708,7 @@ function App() {
                   setStyle={setBuiltinStyle}
                   insertTag={insertTag}
                   textAreaRef={textAreaRef}
+                  scriptDisabled={ttsScriptDisabled}
                 />
                 <div className="card">
                   <AdvancedSettings
@@ -702,6 +737,7 @@ function App() {
                   setText={setDesignText}
                   optimizePreview={optimizePreview}
                   setOptimizePreview={setOptimizePreview}
+                  scriptDisabled={ttsScriptDisabled}
                 />
                 <div className="card">
                   <AdvancedSettings
@@ -736,6 +772,7 @@ function App() {
                   setConsent={setCloneConsent}
                   base64Size={cloneBase64Size}
                   overLimit={cloneOverLimit}
+                  scriptDisabled={ttsScriptDisabled}
                 />
                 <div className="card">
                   <AdvancedSettings
@@ -1018,10 +1055,13 @@ function StatusItem({ label, value }: { label: string; value: string }) {
 }
 
 function TextTools({
+  sourceKind,
+  setSourceKind,
   textFormat,
   setTextFormat,
   textFile,
   setTextFile,
+  fileDisabled,
   chunkingMode,
   setChunkingMode,
   chunkMaxChars,
@@ -1033,10 +1073,13 @@ function TextTools({
   cleanedPreview,
   onPreview,
 }: {
+  sourceKind: TtsSourceKind;
+  setSourceKind: (value: TtsSourceKind) => void;
   textFormat: TextFormat;
   setTextFormat: (value: TextFormat) => void;
   textFile: File | null;
   setTextFile: (value: File | null) => void;
+  fileDisabled: boolean;
   chunkingMode: ChunkingMode;
   setChunkingMode: (value: ChunkingMode) => void;
   chunkMaxChars: number;
@@ -1070,14 +1113,30 @@ function TextTools({
       </div>
       <div className="two-col-fields">
         <label className="field">
-          <span className="field-title">{t("tts.textFile")}</span>
-          <input
-            type="file"
-            accept=".txt,.md,.markdown,text/plain,text/markdown"
-            onChange={(event) => setTextFile(event.target.files?.[0] ?? null)}
-          />
-          {textFile ? <span className="field-hint">{textFile.name}</span> : null}
+          <span className="field-title">{t("tts.sourceKind")}</span>
+          <select value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TtsSourceKind)}>
+            <option value="text">{t("tts.sourceKind.text")}</option>
+            <option value="file" disabled={fileDisabled}>
+              {t("tts.sourceKind.file")}
+            </option>
+          </select>
+          {fileDisabled ? <span className="field-hint">{t("tts.fileDisabledOptimize")}</span> : null}
         </label>
+        {sourceKind === "file" ? (
+          <label className="field">
+            <span className="field-title">{t("tts.textFile")}</span>
+            <input
+              type="file"
+              accept=".txt,.md,.markdown,text/plain,text/markdown"
+              onChange={(event) => setTextFile(event.target.files?.[0] ?? null)}
+              required
+            />
+            {textFile ? <span className="field-hint">{textFile.name}</span> : null}
+          </label>
+        ) : null}
+      </div>
+      <div className="two-col-fields">
+        <div />
         <ChunkingControls
           mode={chunkingMode}
           setMode={setChunkingMode}
@@ -1089,6 +1148,7 @@ function TextTools({
           setSecondaryValue={setChunkSilenceMs}
         />
       </div>
+      {sourceKind === "file" && !textFile ? <div className="notice compact">{t("tts.chooseTextFile")}</div> : null}
       {previewError ? <div className="notice error compact">{previewError}</div> : null}
       {cleanedPreview ? <pre className="cleaned-preview">{cleanedPreview}</pre> : null}
     </section>
@@ -1158,6 +1218,7 @@ function BuiltinControls({
   setStyle,
   insertTag,
   textAreaRef,
+  scriptDisabled,
 }: {
   voices: Voice[];
   voicesState: RequestState;
@@ -1169,6 +1230,7 @@ function BuiltinControls({
   setStyle: (value: string) => void;
   insertTag: (tag: string) => void;
   textAreaRef: MutableRefObject<HTMLTextAreaElement | null>;
+  scriptDisabled: boolean;
 }) {
   const { t } = useI18n();
   const [customTag, setCustomTag] = useState("");
@@ -1228,7 +1290,8 @@ function BuiltinControls({
           value={text}
           rows={6}
           onChange={(event) => setText(event.target.value)}
-          required
+          disabled={scriptDisabled}
+          required={!scriptDisabled}
         />
         <div className="tag-row">
           {INLINE_TAGS.map((tag) => (
@@ -1262,6 +1325,7 @@ function DesignControls({
   setText,
   optimizePreview,
   setOptimizePreview,
+  scriptDisabled,
 }: {
   description: string;
   setDescription: (value: string) => void;
@@ -1269,6 +1333,7 @@ function DesignControls({
   setText: (value: string) => void;
   optimizePreview: boolean;
   setOptimizePreview: (value: boolean) => void;
+  scriptDisabled: boolean;
 }) {
   const { t } = useI18n();
   return (
@@ -1315,7 +1380,8 @@ function DesignControls({
           rows={5}
           onChange={(event) => setText(event.target.value)}
           placeholder={t("tts.previewTextPlaceholder")}
-          required={!optimizePreview}
+          disabled={scriptDisabled}
+          required={!optimizePreview && !scriptDisabled}
         />
       </div>
     </>
@@ -1335,6 +1401,7 @@ function CloneControls({
   setConsent,
   base64Size,
   overLimit,
+  scriptDisabled,
 }: {
   text: string;
   setText: (value: string) => void;
@@ -1348,6 +1415,7 @@ function CloneControls({
   setConsent: (value: boolean) => void;
   base64Size: number;
   overLimit: boolean;
+  scriptDisabled: boolean;
 }) {
   const { t } = useI18n();
   return (
@@ -1400,7 +1468,8 @@ function CloneControls({
           value={text}
           rows={6}
           onChange={(event) => setText(event.target.value)}
-          required
+          disabled={scriptDisabled}
+          required={!scriptDisabled}
         />
       </div>
       <div className="card">
@@ -1605,7 +1674,7 @@ function TranscriptPanel({
                 <option value="json">{t("transcriptFormat.json")}</option>
               </select>
             </label>
-            {downloadFormat === "txt" ? (
+            {effectiveDownloadFormat === "txt" ? (
               <>
                 {hasTimestamps ? (
                   <label className="checkbox-line compact-line">
@@ -1769,6 +1838,17 @@ function downloadUrlForFormat(url: string, format: DownloadFormat) {
     return url;
   }
   return `${url}?format=${encodeURIComponent(format)}`;
+}
+
+function inferTextFormatFromFile(file: File): TextFormat {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".md") || name.endsWith(".markdown")) {
+    return "markdown";
+  }
+  if (name.endsWith(".txt")) {
+    return "plain";
+  }
+  return "auto";
 }
 
 function HistoryPanel({

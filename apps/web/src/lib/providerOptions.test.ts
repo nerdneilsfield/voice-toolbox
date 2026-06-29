@@ -103,4 +103,27 @@ describe("provider option helpers", () => {
     expect(validateOptionValues({ speed: Number.NaN }, specs)).toEqual(["speed must be a finite number"]);
     expect(validateOptionValues({ speed: Number.POSITIVE_INFINITY }, specs)).toEqual(["speed must be a finite number"]);
   });
+
+  it("drops stale invalid values during provider/model migration", () => {
+    const specs = optionsForCapability(provider, provider.models[0], "tts.builtin");
+
+    expect(sanitizeOptionValues({ speed: 2.5, voice_style: "loud", tags: ["bad"] }, specs)).toEqual({
+      speed: 1.25,
+      voice_style: "calm",
+    });
+  });
+
+  it("does not truncate decimal numbers for integer options", () => {
+    const specs = [
+      {
+        key: "seed",
+        label: "Seed",
+        type: "integer" as const,
+        capability: "tts.builtin",
+      },
+    ];
+
+    expect(sanitizeOptionValues({ seed: 1.5 }, specs)).toEqual({});
+    expect(validateOptionValues({ seed: 1.5 }, specs)).toEqual(["seed must be an integer"]);
+  });
 });

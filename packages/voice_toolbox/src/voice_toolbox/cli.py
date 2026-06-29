@@ -316,6 +316,10 @@ def transcribe(
         timestamps=timestamps,
         speakers=speakers,
     )
+    if chunk_seconds is not None and not 10 <= chunk_seconds <= 600:
+        _fail("chunk_seconds must be between 10 and 600")
+    if chunk_overlap_ms is not None and not 0 <= chunk_overlap_ms <= 10000:
+        _fail("chunk_overlap_ms must be between 0 and 10000")
     try:
         request = ASRRequest(
             provider_id=provider_id,
@@ -788,12 +792,9 @@ def _print_audio_artifact(artifact: AudioArtifact) -> None:
 def _print_transcript_artifact(artifact: TranscriptArtifact) -> None:
     typer.echo(f"id: {artifact.id}")
     typer.echo(f"mime: {artifact.mime_type}")
-    try:
-        text = artifact.path.read_text(encoding="utf-8").strip()
-    except OSError:
-        text = ""
-    if text:
-        typer.echo(f"text: {text}")
+    chunk_count = artifact.metadata.get("chunking_chunk_count")
+    if artifact.metadata.get("chunking_enabled") is True and isinstance(chunk_count, int):
+        typer.echo(f"chunks: {chunk_count}")
 
 
 app.add_typer(tts_app, name="tts")

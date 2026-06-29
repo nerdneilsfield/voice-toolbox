@@ -239,10 +239,12 @@ def _validate_range(key: str, value: float, spec: ProviderOptionSpec) -> None:
 def _normalize_value(value: object) -> Any:
     if isinstance(value, bool):
         return value
-    if isinstance(value, int | float):
-        return float(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
     if isinstance(value, list):
-        return tuple(_normalize_value(item) for item in value)
+        return tuple(sorted(_normalize_value(item) for item in value))
     if isinstance(value, dict):
         return tuple(
             (str(item_key), _normalize_value(item_value))

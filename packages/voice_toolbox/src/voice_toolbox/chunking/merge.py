@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from voice_toolbox.audio_conversion import DownloadAudioFormat
 from voice_toolbox.chunking.audio import concat_audio_results, export_audio_segment
@@ -43,7 +43,7 @@ def merge_transcript_chunks(
     merged_text = chunks[0].payload.text
     removed_chars = 0
     overlap_by_chunk: dict[int, int] = {}
-    for chunk in chunks[1:]:
+    for index, chunk in enumerate(chunks[1:], start=1):
         overlap = exact_suffix_prefix_overlap(
             merged_text,
             chunk.payload.text,
@@ -51,7 +51,7 @@ def merge_transcript_chunks(
             max_chars=dedupe_max_chars,
         )
         if overlap:
-            overlap_by_chunk[id(chunk)] = overlap
+            overlap_by_chunk[index] = overlap
             merged_text += chunk.payload.text[overlap:]
             removed_chars += overlap
         else:
@@ -60,9 +60,9 @@ def merge_transcript_chunks(
             merged_text += chunk.payload.text
 
     segments: list[TranscriptSegment] = []
-    for chunk in chunks:
+    for index, chunk in enumerate(chunks):
         offset = chunk.start_seconds
-        overlap_remaining = overlap_by_chunk.get(id(chunk), 0)
+        overlap_remaining = overlap_by_chunk.get(index, 0)
         for segment in chunk.payload.segments:
             original_segment_text_length = len(segment.text)
             segment = _trim_segment_prefix(segment, overlap_remaining)
@@ -97,10 +97,12 @@ def exact_suffix_prefix_overlap(
     min_chars: int,
     max_chars: int,
 ) -> int:
-    upper = min(len(previous), len(current), max_chars)
+    previous_view, _previous_offsets = _normalized_text_view(previous)
+    current_view, current_offsets = _normalized_text_view(current)
+    upper = min(len(previous_view), len(current_view), max_chars)
     for size in range(upper, min_chars - 1, -1):
-        if previous[-size:] == current[:size]:
-            return size
+        if previous_view[-size:] == current_view[:size]:
+            return current_offsets[size - 1]
     return 0
 
 
@@ -126,3 +128,21 @@ def _trim_segment_prefix(
         end_seconds=segment.end_seconds,
         speaker=segment.speaker,
     )
+
+
+def _normalized_text_view(value: str) -> tuple[str, list[int]]:
+    chars: list[str] = []
+    offsets: list[int] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char in " \t\r\n\f\v":
+            while index < len(value) and value[index] in " \t\r\n\f\v":
+                index += 1
+            chars.append(" ")
+            offsets.append(index)
+            continue
+        chars.append(char)
+        index += 1
+        offsets.append(index)
+    return "".join(chars), offsets

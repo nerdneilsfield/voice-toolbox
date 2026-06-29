@@ -56,7 +56,7 @@ class ASRChunkSessionMetadata(BaseModel):
     source_file_suffix: str = ""
     transcript_timestamps: bool = False
     transcript_speakers: bool = False
-    provider_options: dict[str, object] = Field(default_factory=dict)
+    provider_options: dict[str, object] = Field(default_factory=dict, exclude=True)
     provider_options_hash: str | None = None
     option_metadata: dict[str, object] = Field(default_factory=dict)
     uploaded_bytes: int = Field(default=0, ge=0)
@@ -296,7 +296,7 @@ class ASRChunkSessionStore:
             raise ASRChunkSessionError("offset_ms must be greater than or equal to 0")
         if duration_ms <= 0:
             raise ASRChunkSessionError("duration_ms must be greater than 0")
-        if offset_ms + duration_ms > metadata.source_duration_ms:
+        if offset_ms + duration_ms > metadata.source_duration_ms + 1500:
             raise ASRChunkSessionError("chunk timing exceeds source_duration_ms")
         for existing in metadata.chunks.values():
             if existing.index < chunk_index and offset_ms <= existing.offset_ms:

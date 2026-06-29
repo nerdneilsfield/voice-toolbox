@@ -77,7 +77,9 @@ describe("api client", () => {
     });
 
     const body = fetchMock.mock.calls[0][1]?.body as FormData;
-    expect(body.get("text_file")).toBe(file);
+    const uploaded = body.get("text_file") as File;
+    expect(uploaded.name).toBe("script.md");
+    expect(uploaded.type).toBe("text/markdown");
     expect(body.get("text")).toBeNull();
     expect(body.get("provider_options")).toBe(JSON.stringify({ speed: 1.25, style: "bright" }));
     expect(body.get("chunking_mode")).toBe("force");

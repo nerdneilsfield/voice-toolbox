@@ -307,6 +307,7 @@ class ASRRequest(BaseModel):
     base64_size: int = Field(ge=0)
     language: Literal["auto", "zh", "en"] = "auto"
     provider_options: dict[str, object] = Field(default_factory=dict)
+    artifact_metadata: dict[str, object] = Field(default_factory=dict)
     transcript_timestamps: bool = False
     transcript_speakers: bool = False
 

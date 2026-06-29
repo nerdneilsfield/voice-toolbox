@@ -242,6 +242,7 @@ class OpenRouterProvider:
             payload=payload,
             metadata={
                 "base64_size": request.base64_size,
+                **request.artifact_metadata,
                 "language": request.language,
                 "model": body["model"],
                 "operation": "asr",
@@ -484,13 +485,15 @@ def _tts_metadata(
     *,
     provider_id: str,
 ) -> dict[str, Any]:
-    return {
+    metadata: dict[str, Any] = {
         "model": body["model"],
         "operation": "tts",
         "output_format": body["response_format"],
         "provider_id": provider_id,
-        "source_text": request.text,
-        "style_instruction": request.style_instruction,
+        "source_text_length": len(request.text or ""),
         "tts_mode": request.mode.value,
         "voice_id": request.voice_id,
     }
+    if request.style_instruction:
+        metadata["style_instruction_length"] = len(request.style_instruction)
+    return metadata

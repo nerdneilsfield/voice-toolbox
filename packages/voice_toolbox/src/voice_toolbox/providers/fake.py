@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from types import TracebackType
 from uuid import uuid4
@@ -111,12 +112,17 @@ class FakeProvider:
             "operation": "tts",
             "output_format": request.output_format,
             "provider_id": self.id,
-            "source_text": request.text,
+            "source_text_length": len(request.text or ""),
             "tts_mode": request.mode.value,
-            "voice_description": request.voice_description,
             "voice_id": request.voice_id,
             **dict(artifact_metadata or {}),
         }
+        if request.voice_description:
+            metadata["voice_description_length"] = len(request.voice_description)
+        if request.style_instruction:
+            metadata["style_instruction_length"] = len(request.style_instruction)
+        if request.clone_reference_text:
+            metadata["clone_reference_text_length"] = len(request.clone_reference_text)
         artifact = self._artifact_store.write_audio(
             operation_id=operation_id,
             provider_id=self.id,
@@ -168,13 +174,15 @@ class FakeProvider:
             payload=payload,
             metadata={
                 "base64_size": request.base64_size,
+                **request.artifact_metadata,
                 "language": request.language,
                 "model": request.model or "fake-asr",
                 "operation": "asr",
                 "provider_id": self.id,
                 "raw_byte_size": request.raw_byte_size,
                 "uploaded_file_mime_type": request.mime_type,
-                "uploaded_file_name": request.audio_path.name,
+                "uploaded_file_name_hash": _file_name_hash(request.audio_path.name),
+                "uploaded_file_suffix": request.audio_path.suffix,
             },
         )
         self._artifact_store.record_operation(
@@ -211,3 +219,7 @@ class FakeProvider:
     def _ensure_open(self) -> None:
         if self._closed:
             raise ProviderError("fake provider is closed")
+
+
+def _file_name_hash(filename: str) -> str:
+    return sha256(filename.encode("utf-8")).hexdigest()[:12]
