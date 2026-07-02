@@ -36,6 +36,58 @@ pip install "voice-toolbox[mac]"
 
 `dev` remains test/lint-only. It does not imply `mac`.
 
+`mac` is the baseline Apple Silicon install. It deliberately stays close to
+upstream `mlx-audio[tts,stt]`; model-specific extras are handled by model notes,
+docs, and runtime install hints rather than being pulled into every Mac install.
+
+Upstream `mlx-audio` keeps model-specific text dependencies out of its shared
+extras, including `tts` and `all`. Mirror that policy so `voice-toolbox[mac]`
+does not install dependencies for models the user may never run.
+
+## Model-Specific Dependencies
+
+Research against `Blaizzy/mlx-audio` main as of 2026-07-02 found these extra
+dependency cases beyond `mlx-audio[tts,stt]`:
+
+- Kokoro TTS needs `misaki` for text processing. Japanese voices may need
+  `misaki[ja]`; Mandarin voices may need `misaki[zh]`. Kokoro is not in the
+  initial built-in model list, but user-configured Kokoro models should surface
+  this hint when `misaki` is missing.
+- Qwen3 ForcedAligner needs `nagisa` for Japanese tokenization and `soynlp` for
+  Korean tokenization. The first version supports ASR transcription, not forced
+  alignment, so these are documented as future/advanced hints rather than part
+  of `mac`.
+- Ming Omni TTS (BailingMM) can need `onnx` when a downloaded model contains
+  `campplus.onnx` without a prebuilt `campplus.safetensors`; its converter also
+  imports `safetensors`. Keep this out of `mac`, but mark the BailingMM model
+  note with `pip install onnx safetensors` if conversion fails.
+- Voxtral TTS uses `mistral-common[audio]` for Tekken speech prompt encoding.
+  That is already included by upstream `mlx-audio[tts]`, so no extra
+  Voice Toolbox dependency is needed.
+- Higgs Audio v3 imports `tokenizers` directly, but `transformers` already
+  brings it in through the upstream core dependency set.
+- OmniVoice README mentions `torchaudio` for voice cloning, but the current MLX
+  runtime path uses `mlx_audio.audio_io` and an internal resampler, with no
+  `torchaudio` import in the inspected runtime. Do not list `torchaudio` as a
+  required dependency unless smoke testing proves a current runtime failure.
+- `ffmpeg` is a host binary for non-WAV audio encode/decode paths
+  (MP3/FLAC/OGG/Opus/WebM and M4A/AAC/WebM decode), not a Python extra. The
+  first smoke path should use WAV so `ffmpeg` remains optional.
+
+Implementation should add a small dependency-hint mapper around lazy model
+loads/generation:
+
+- Missing top-level `mlx_audio`: `install voice-toolbox[mac]`.
+- Missing `misaki`: `pip install misaki` plus language-specific extras when
+  the request uses Kokoro `j` or `z`.
+- Missing `nagisa` or `soynlp`: mention Qwen3 ForcedAligner Japanese/Korean
+  tokenization and the package to install.
+- Missing `onnx` or `safetensors`: mention Ming Omni BailingMM campplus
+  conversion and `pip install onnx safetensors`.
+- Missing `mistral_common`: mention Voxtral TTS and `mlx-audio[tts]`.
+- Any unknown `ModuleNotFoundError`: include the model id, missing module name,
+  and the original error text.
+
 ## Provider Configuration
 
 Add provider type `mlx_audio`.
@@ -73,13 +125,16 @@ Built-in model list should include:
 - `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` as default TTS/clone.
 - `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit`.
 - `mlx-community/LongCat-AudioDiT-1B-bf16`.
-- `mlx-community/Ming-omni-tts-16.8B-A3B-bf16`.
+- `mlx-community/Ming-omni-tts-16.8B-A3B-bf16`, with a note that `onnx` and
+  `safetensors` may be needed if campplus conversion runs.
 - `bosonai/higgs-audio-v3-tts-4b`.
 - `mlx-community/Qwen3-ASR-0.6B-8bit` as default ASR.
 - `mlx-community/Qwen3-ASR-1.7B-8bit`.
 
 Default voices can start with Qwen3 examples (`Ryan`, `Aiden`, `Vivian`,
 `Serena`) plus a generic `default` voice for models that ignore voice names.
+Use `ModelInfo.note` for model-specific dependency or memory warnings; avoid
+adding new API fields for this first pass.
 
 ## Provider Architecture
 
@@ -155,6 +210,8 @@ Broader multilingual UI/API support is a later change.
 Wrap provider failures in `ProviderError` with local, actionable messages:
 
 - Missing dependency: install `voice-toolbox[mac]`.
+- Missing model-specific dependency: include the selected model id and the
+  package hint from the dependency mapper.
 - Unsupported platform: `mlx_audio provider requires Apple Silicon macOS`.
 - Unknown model id: existing unsupported-model pattern.
 - Empty generation: `mlx_audio generated no audio`.
@@ -183,6 +240,9 @@ Update:
 - `voice_toolbox.toml.example`: add a commented MLX Audio provider block.
 - `README.md`: document `rtk uv sync --extra mac` and local provider usage.
 - `docs/smoke/mlx-audio.md`: add real smoke commands for TTS, clone, and ASR.
+- `docs/smoke/mlx-audio.md`: include a compact model-specific dependency
+  matrix for Kokoro, Ming Omni BailingMM, Qwen3 ForcedAligner, Voxtral TTS, and
+  non-WAV `ffmpeg` paths.
 
 Fallback config remains MiMo. MLX Audio is opt-in through TOML because it is
 platform-specific and has large model downloads.
@@ -194,11 +254,16 @@ Unit tests should not import or download real MLX models.
 Add focused tests for:
 
 - `mac` extra exists and is not part of `dev`.
+- `mac` extra contains `mlx-audio[tts,stt]` but does not contain
+  model-specific packages such as `misaki`, `nagisa`, `soynlp`, or `onnx`.
 - `ConfiguredProvider` accepts `base_url = None` and `api_key_env = None` for
   `mlx_audio`.
 - provider factory builds `MlxAudioProvider`.
 - provider summary marks `mlx_audio` as not requiring an API key.
 - key readiness check does not block local provider operations.
+- missing model-specific imports are converted to `ProviderError` messages with
+  model id and install hint.
+- Ming Omni BailingMM model metadata exposes the `onnx`/`safetensors` note.
 - TTS builtin calls fake model with expected kwargs and writes WAV bytes.
 - TTS clone passes `ref_audio` and `ref_text`.
 - ASR maps language and returns transcript text.
