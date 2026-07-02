@@ -683,39 +683,46 @@ def test_mlx_audio_provider_rejects_local_url_and_key_env() -> None:
 
 
 def test_network_provider_still_requires_url_and_key_env() -> None:
+    network_provider_base_urls = {
+        "mimo": "https://api.xiaomimimo.com/v1",
+        "fish_audio": "https://api.fish.audio",
+        "openrouter": "https://openrouter.ai/api/v1",
+    }
+
     provider = ConfiguredProvider(
         id="mimo",
         type="mimo",
         name="MiMo",
-        base_url="https://api.xiaomimimo.com/v1",
+        base_url=network_provider_base_urls["mimo"],
         api_key_env="  MIMO_API_KEY  ",
     )
     assert provider.api_key_env == "MIMO_API_KEY"
 
-    with pytest.raises(ValueError, match="base_url is required"):
-        ConfiguredProvider(
-            id="mimo",
-            type="mimo",
-            name="MiMo",
-            base_url=None,
-            api_key_env="MIMO_API_KEY",
-        )
-
-    with pytest.raises(ValueError, match="api_key_env is required"):
-        ConfiguredProvider(
-            id="mimo",
-            type="mimo",
-            name="MiMo",
-            base_url="https://api.xiaomimimo.com/v1",
-            api_key_env=None,
-        )
-
-    for api_key_env in ("", "   "):
-        with pytest.raises(ValueError, match="api_key_env must not be empty"):
+    for provider_type, base_url in network_provider_base_urls.items():
+        with pytest.raises(ValueError, match="base_url is required"):
             ConfiguredProvider(
-                id="mimo",
-                type="mimo",
-                name="MiMo",
-                base_url="https://api.xiaomimimo.com/v1",
-                api_key_env=api_key_env,
+                id=provider_type,
+                type=provider_type,
+                name=provider_type,
+                base_url=None,
+                api_key_env="MIMO_API_KEY",
             )
+
+        with pytest.raises(ValueError, match="api_key_env is required"):
+            ConfiguredProvider(
+                id=provider_type,
+                type=provider_type,
+                name=provider_type,
+                base_url=base_url,
+                api_key_env=None,
+            )
+
+        for api_key_env in ("", "   "):
+            with pytest.raises(ValueError, match="api_key_env must not be empty"):
+                ConfiguredProvider(
+                    id=provider_type,
+                    type=provider_type,
+                    name=provider_type,
+                    base_url=base_url,
+                    api_key_env=api_key_env,
+                )

@@ -7,7 +7,7 @@ import pytest
 
 from voice_toolbox.artifacts import ArtifactStore, redact_metadata
 from voice_toolbox.models import AudioArtifact, OperationResult, OperationStatus
-from voice_toolbox.settings import has_mimo_api_key, load_settings
+from voice_toolbox.settings import get_mimo_api_key, has_mimo_api_key, load_settings
 from voice_toolbox.storage import MetadataStore
 from voice_toolbox.transcripts import TranscriptPayload, TranscriptSegment
 
@@ -538,6 +538,33 @@ api_key_env = "MIMO_API_KEY"
     assert settings.provider_id == "mimo"
     assert settings.base_url == "https://api.xiaomimimo.com/v1"
     assert settings.api_key_env == "MIMO_API_KEY"
+
+
+def test_mimo_api_key_uses_mimo_provider_when_local_provider_is_first(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("MIMO_API_KEY=secret\n", encoding="utf-8")
+    (tmp_path / "voice_toolbox.toml").write_text(
+        """
+[[providers]]
+id = "mlx-audio"
+type = "mlx_audio"
+name = "MLX Audio"
+
+[[providers]]
+id = "mimo"
+type = "mimo"
+name = "MiMo"
+base_url = "https://api.xiaomimimo.com/v1"
+api_key_env = "MIMO_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert get_mimo_api_key() == "secret"
+    assert has_mimo_api_key() is True
 
 
 def test_has_mimo_api_key_detects_env_file_key(tmp_path, monkeypatch) -> None:
