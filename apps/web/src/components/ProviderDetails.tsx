@@ -14,8 +14,8 @@ export function ProviderDetails({ provider }: { provider: Provider | null }) {
   }
   const keyMissing = providerHasMissingApiKey(provider);
   const keyValue = providerRequiresApiKey(provider)
-    ? provider.api_key_preview ??
-      (provider.has_api_key ? t("providerDetails.configured") : t("providerDetails.missing"))
+    ? (provider.api_key_preview ??
+      (provider.has_api_key ? t("providerDetails.configured") : t("providerDetails.missing")))
     : t("providerDetails.notRequired");
   return (
     <details className={`provider-details${keyMissing ? " key-missing" : ""}`} open={keyMissing}>
