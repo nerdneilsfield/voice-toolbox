@@ -25,6 +25,7 @@ from voice_toolbox.chunking.text import TextSourceError, resolve_text_source
 from voice_toolbox.config import AppConfig, load_app_config, load_env_values, replay_config_warnings
 from voice_toolbox.logging_config import configure_logging, sanitize_log_metadata
 from voice_toolbox.models import (
+    ASRLanguage,
     ASRRequest,
     AudioArtifact,
     OperationResult,
@@ -285,10 +286,7 @@ def clone(
 @asr_app.command()
 def transcribe(
     file: Annotated[Path | None, typer.Option("--file", help="Audio file wav/mp3.")] = None,
-    language: Annotated[
-        Literal["auto", "zh", "en"],
-        typer.Option("--language", help="Language hint."),
-    ] = "auto",
+    language: Annotated[ASRLanguage, typer.Option("--language", help="Language hint.")] = "auto",
     provider: ProviderOption = None,
     model: Annotated[str | None, typer.Option("--model", help="Provider ASR model id.")] = None,
     chunking: ASRChunkingOption = None,

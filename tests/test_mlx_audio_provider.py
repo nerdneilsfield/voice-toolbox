@@ -10,7 +10,11 @@ from typing import Any, Iterable, cast
 import pytest
 
 from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
-from voice_toolbox.defaults import MLX_AUDIO_QWEN3_VOICES, MLX_AUDIO_TTS_OPTIONS
+from voice_toolbox.defaults import (
+    MLX_AUDIO_QWEN3_VOICES,
+    MLX_AUDIO_TTS_OPTIONS,
+    make_default_mlx_audio_provider_config,
+)
 from voice_toolbox.models import ASRRequest, ModelInfo, TTSMode, TTSRequest
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.mlx_audio import (
@@ -171,6 +175,7 @@ def _provider(
     config: ConfiguredProvider | None = None,
     tts_model: Any | None = None,
     asr_model: Any | None = None,
+    reference_audio: Any | None = None,
 ):
     tts = tts_model or FakeTTSModel()
     asr = asr_model or FakeASRModel()
@@ -191,6 +196,9 @@ def _provider(
         tts_loader=tts_loader,
         stt_loader=asr_loader,
         wav_writer=_writer,
+        reference_audio_loader=lambda path, sample_rate: (
+            reference_audio if reference_audio is not None else ["loaded", str(path), sample_rate]
+        ),
         platform_check=lambda: None,
     )
     return provider, tts, asr, tts_calls, asr_calls
@@ -350,6 +358,91 @@ def test_tts_clone_passes_reference_audio_and_text(tmp_path: Path) -> None:
     assert model.calls[0]["ref_audio"] == str(sample)
     assert model.calls[0]["ref_text"] == "reference words"
     assert "voice" not in model.calls[0]
+
+
+def test_tts_clone_supports_longcat_alias_and_model_options(tmp_path: Path) -> None:
+    provider, model, _, tts_calls, _ = _provider(
+        tmp_path,
+        config=make_default_mlx_audio_provider_config(),
+        reference_audio=[0.0, 0.1],
+    )
+    sample = tmp_path / "voice.wav"
+    sample.write_bytes(b"RIFF0000WAVEfmt ")
+
+    result = provider.synthesize_bytes(
+        TTSRequest(
+            provider_id="mlx-audio",
+            mode=TTSMode.CLONE,
+            model="longcat-audiodit-1b-clone",
+            text="hello",
+            clone_sample_path=sample,
+            clone_mime_type="audio/wav",
+            clone_reference_text="reference words",
+            provider_options={
+                "guidance_method": "apg",
+                "cfg_strength": 4.0,
+                "steps": 16,
+            },
+            consent_confirmed=True,
+        )
+    )
+
+    assert result.model == "longcat-audiodit-1b-clone"
+    assert tts_calls[0]["model_id"] == "mlx-community/LongCat-AudioDiT-1B-bf16"
+    assert model.calls[0]["ref_audio"] == [0.0, 0.1]
+    assert model.calls[0]["ref_text"] == "reference words"
+    assert model.calls[0]["guidance_method"] == "apg"
+    assert model.calls[0]["cfg_strength"] == 4.0
+    assert model.calls[0]["steps"] == 16
+
+
+@pytest.mark.parametrize(
+    ("model_id", "upstream_model_id", "provider_options"),
+    [
+        (
+            "ming-omni-tts-16.8b-a3b-clone",
+            "mlx-community/Ming-omni-tts-16.8B-A3B-bf16",
+            {"prompt": "Please generate speech.\n", "cfg_scale": 2.0, "sigma": 0.25},
+        ),
+        (
+            "higgs-audio-v3-tts-4b-clone",
+            "bosonai/higgs-audio-v3-tts-4b",
+            {"max_new_tokens": 2048},
+        ),
+    ],
+)
+def test_tts_clone_supports_ming_and_higgs_aliases(
+    tmp_path: Path,
+    model_id: str,
+    upstream_model_id: str,
+    provider_options: dict[str, object],
+) -> None:
+    provider, model, _, tts_calls, _ = _provider(
+        tmp_path,
+        config=make_default_mlx_audio_provider_config(),
+    )
+    sample = tmp_path / "voice.wav"
+    sample.write_bytes(b"RIFF0000WAVEfmt ")
+
+    result = provider.synthesize_bytes(
+        TTSRequest(
+            provider_id="mlx-audio",
+            mode=TTSMode.CLONE,
+            model=model_id,
+            text="hello",
+            clone_sample_path=sample,
+            clone_mime_type="audio/wav",
+            clone_reference_text="reference words",
+            provider_options=provider_options,
+            consent_confirmed=True,
+        )
+    )
+
+    assert result.model == model_id
+    assert tts_calls[0]["model_id"] == upstream_model_id
+    assert model.calls[0]["ref_audio"] == str(sample)
+    assert model.calls[0]["ref_text"] == "reference words"
+    assert provider_options.items() <= model.calls[0].items()
 
 
 def test_tts_builtin_and_clone_aliases_share_upstream_cache(tmp_path: Path) -> None:
@@ -654,6 +747,25 @@ def test_asr_maps_language_and_segments(tmp_path: Path) -> None:
     assert payload.text == "hello world"
     assert payload.segments[0].start_seconds == 0.0
     assert payload.segments[0].end_seconds == 1.2
+
+
+def test_asr_maps_qwen3_extended_languages(tmp_path: Path) -> None:
+    provider, _, asr, _, _ = _provider(tmp_path)
+    audio = tmp_path / "speech.wav"
+    audio.write_bytes(b"RIFF0000WAVEfmt ")
+
+    provider.transcribe_payload(
+        ASRRequest(
+            provider_id="mlx-audio",
+            audio_path=audio,
+            mime_type="audio/wav",
+            raw_byte_size=16,
+            base64_size=24,
+            language="ja",
+        )
+    )
+
+    assert asr.calls[0]["language"] == "Japanese"
 
 
 def test_asr_artifact_metadata_keeps_trusted_values(tmp_path: Path) -> None:

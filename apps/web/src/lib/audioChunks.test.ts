@@ -21,6 +21,24 @@ describe("browser audio chunk helpers", () => {
     expect(chunks[0].blob.type).toBe("audio/wav");
   });
 
+  it("caps browser chunk duration so each WAV upload fits provider payload limit", async () => {
+    const wav = makeWavFile("studio.wav", {
+      sampleRate: 48000,
+      channels: 8,
+      bitsPerSample: 32,
+      frames: 576000,
+    });
+
+    const { chunks } = await sliceWavFile(wav, { targetSeconds: 10, overlapMs: 0 });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    await Promise.all(
+      chunks.map(async (chunk) => {
+        expect(chunk.blob.size).toBeLessThanOrEqual(Math.floor((10 * 1024 * 1024) / 4) * 3);
+      }),
+    );
+  });
+
   it("throws for non-WAV input so callers can fallback to backend upload", async () => {
     const file = new File(["not wav"], "meeting.mp3", { type: "audio/mpeg" });
 

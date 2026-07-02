@@ -8,6 +8,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TTSOutputFormat = Literal["wav", "mp3"]
+ASRLanguage = Literal[
+    "auto",
+    "zh",
+    "yue",
+    "en",
+    "de",
+    "es",
+    "fr",
+    "it",
+    "pt",
+    "ru",
+    "ko",
+    "ja",
+]
 ProviderOptionType = Literal[
     "boolean",
     "integer",
@@ -304,7 +318,7 @@ class ASRRequest(BaseModel):
     mime_type: Literal["audio/wav", "audio/mpeg", "audio/mp3"]
     raw_byte_size: int = Field(ge=0)
     base64_size: int = Field(ge=0)
-    language: Literal["auto", "zh", "en"] = "auto"
+    language: ASRLanguage = "auto"
     provider_options: dict[str, object] = Field(default_factory=dict)
     artifact_metadata: dict[str, object] = Field(default_factory=dict)
     transcript_timestamps: bool = False

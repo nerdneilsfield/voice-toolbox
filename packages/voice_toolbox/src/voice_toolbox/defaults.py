@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
-from voice_toolbox.models import ModelInfo, ProviderOptionSpec, VoiceInfo
+from voice_toolbox.models import (
+    ModelInfo,
+    ProviderOptionChoice,
+    ProviderOptionOverride,
+    ProviderOptionSpec,
+    VoiceInfo,
+)
 
 DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
 DEFAULT_FISH_AUDIO_BASE_URL = "https://api.fish.audio"
@@ -158,10 +164,16 @@ DEFAULT_OPENROUTER_MODELS = ProviderDefaultModels(
 MLX_AUDIO_MODEL_ALIASES = {
     "qwen3-tts-0.6b-base": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
     "qwen3-tts-0.6b-base-clone": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+    "qwen3-tts-1.7b-base": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+    "qwen3-tts-1.7b-base-clone": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
     "qwen3-tts-1.7b-base-8bit": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+    "qwen3-tts-1.7b-base-8bit-clone": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
     "longcat-audiodit-1b": "mlx-community/LongCat-AudioDiT-1B-bf16",
+    "longcat-audiodit-1b-clone": "mlx-community/LongCat-AudioDiT-1B-bf16",
     "ming-omni-tts-16.8b-a3b": "mlx-community/Ming-omni-tts-16.8B-A3B-bf16",
+    "ming-omni-tts-16.8b-a3b-clone": "mlx-community/Ming-omni-tts-16.8B-A3B-bf16",
     "higgs-audio-v3-tts-4b": "bosonai/higgs-audio-v3-tts-4b",
+    "higgs-audio-v3-tts-4b-clone": "bosonai/higgs-audio-v3-tts-4b",
 }
 
 MLX_AUDIO_DEFAULT_VOICE_ID = "Ryan"
@@ -202,10 +214,139 @@ MLX_AUDIO_TTS_OPTIONS: list[ProviderOptionSpec] = [
     )
     for capability in ("tts.builtin", "tts.clone")
     for key, label, default, min_value, max_value in (
-        ("temperature", "Temperature", 0.7, 0.0, 2.0),
+        ("temperature", "Temperature", None, 0.0, 2.0),
         ("speed", "Speed", 1.0, 0.25, 4.0),
     )
 ]
+
+
+def _mlx_longcat_options(
+    capability: str,
+    *,
+    guidance_method_default: str = "cfg",
+) -> list[ProviderOptionSpec | ProviderOptionOverride]:
+    return [
+        ProviderOptionSpec(
+            key="guidance_method",
+            label="Guidance method",
+            type="select",
+            capability=capability,
+            default=guidance_method_default,
+            choices=[
+                ProviderOptionChoice(value="cfg", label="CFG"),
+                ProviderOptionChoice(value="apg", label="APG"),
+            ],
+            advanced=True,
+            safe_metadata=True,
+        ),
+        ProviderOptionSpec(
+            key="cfg_strength",
+            label="CFG strength",
+            type="number",
+            capability=capability,
+            default=4.0,
+            min_value=0.0,
+            max_value=20.0,
+            step=0.1,
+            advanced=True,
+            safe_metadata=True,
+        ),
+        ProviderOptionSpec(
+            key="steps",
+            label="Steps",
+            type="integer",
+            capability=capability,
+            default=16,
+            min_value=1,
+            max_value=100,
+            step=1,
+            advanced=True,
+            safe_metadata=True,
+        ),
+    ]
+
+
+def _mlx_ming_omni_options(capability: str) -> list[ProviderOptionSpec | ProviderOptionOverride]:
+    return [
+        ProviderOptionSpec(
+            key="prompt",
+            label="Prompt",
+            type="text",
+            capability=capability,
+            advanced=True,
+            safe_metadata=False,
+        ),
+        ProviderOptionSpec(
+            key="instruct",
+            label="Instruction",
+            type="text",
+            capability=capability,
+            advanced=True,
+            safe_metadata=False,
+        ),
+        ProviderOptionSpec(
+            key="cfg_scale",
+            label="CFG scale",
+            type="number",
+            capability=capability,
+            default=2.0,
+            min_value=0.0,
+            max_value=20.0,
+            step=0.1,
+            advanced=True,
+            safe_metadata=True,
+        ),
+        ProviderOptionSpec(
+            key="sigma",
+            label="Sigma",
+            type="number",
+            capability=capability,
+            default=0.25,
+            min_value=0.0,
+            max_value=5.0,
+            step=0.05,
+            advanced=True,
+            safe_metadata=True,
+        ),
+        ProviderOptionSpec(
+            key="max_tokens",
+            label="Max tokens",
+            type="integer",
+            capability=capability,
+            default=200,
+            min_value=1,
+            max_value=4000,
+            step=1,
+            advanced=True,
+            safe_metadata=True,
+        ),
+        ProviderOptionSpec(
+            key="use_zero_spk_emb",
+            label="Zero speaker embedding",
+            type="boolean",
+            capability=capability,
+            advanced=True,
+            safe_metadata=True,
+        ),
+    ]
+
+
+def _mlx_higgs_options(capability: str) -> list[ProviderOptionSpec | ProviderOptionOverride]:
+    return [
+        ProviderOptionSpec(
+            key="max_new_tokens",
+            label="Max new tokens",
+            type="integer",
+            capability=capability,
+            default=2048,
+            min_value=1,
+            max_value=8192,
+            step=1,
+            advanced=True,
+            safe_metadata=True,
+        )
+    ]
+
 
 MLX_AUDIO_MODELS: list[ModelInfo] = [
     ModelInfo(
@@ -221,27 +362,70 @@ MLX_AUDIO_MODELS: list[ModelInfo] = [
         note="uses upstream Qwen3 TTS base model with clone_reference_text",
     ),
     ModelInfo(
+        id="qwen3-tts-1.7b-base",
+        name="Qwen3 TTS 1.7B Base",
+        capability="tts.builtin",
+        voices=[voice.model_copy() for voice in MLX_AUDIO_QWEN3_VOICES],
+    ),
+    ModelInfo(
+        id="qwen3-tts-1.7b-base-clone",
+        name="Qwen3 TTS 1.7B Clone",
+        capability="tts.clone",
+        note="uses upstream Qwen3 TTS 1.7B base model with clone_reference_text",
+    ),
+    ModelInfo(
         id="qwen3-tts-1.7b-base-8bit",
         name="Qwen3 TTS 1.7B 8-bit",
         capability="tts.builtin",
         voices=[voice.model_copy() for voice in MLX_AUDIO_QWEN3_VOICES],
     ),
     ModelInfo(
+        id="qwen3-tts-1.7b-base-8bit-clone",
+        name="Qwen3 TTS 1.7B 8-bit Clone",
+        capability="tts.clone",
+        note="uses upstream Qwen3 TTS 1.7B 8-bit base model with clone_reference_text",
+    ),
+    ModelInfo(
         id="longcat-audiodit-1b",
         name="LongCat AudioDiT 1B",
         capability="tts.builtin",
+        note="supports zero-shot voice cloning with ref_audio and ref_text",
+        options=_mlx_longcat_options("tts.builtin"),
+    ),
+    ModelInfo(
+        id="longcat-audiodit-1b-clone",
+        name="LongCat AudioDiT 1B Clone",
+        capability="tts.clone",
+        note="supports ref_audio/ref_text; upstream recommends guidance_method=apg for clone",
+        options=_mlx_longcat_options("tts.clone", guidance_method_default="apg"),
     ),
     ModelInfo(
         id="ming-omni-tts-16.8b-a3b",
         name="Ming Omni TTS 16.8B A3B",
         capability="tts.builtin",
         note="requires onnx and safetensors conversion artifacts",
+        options=_mlx_ming_omni_options("tts.builtin"),
+    ),
+    ModelInfo(
+        id="ming-omni-tts-16.8b-a3b-clone",
+        name="Ming Omni TTS 16.8B A3B Clone",
+        capability="tts.clone",
+        note="uses ref_audio/ref_text; requires onnx and safetensors conversion artifacts",
+        options=_mlx_ming_omni_options("tts.clone"),
     ),
     ModelInfo(
         id="higgs-audio-v3-tts-4b",
         name="Higgs Audio v3 TTS 4B",
         capability="tts.builtin",
-        note="large model; expect higher memory and startup cost",
+        note="large model; supports inline controls and zero-shot voice cloning",
+        options=_mlx_higgs_options("tts.builtin"),
+    ),
+    ModelInfo(
+        id="higgs-audio-v3-tts-4b-clone",
+        name="Higgs Audio v3 TTS 4B Clone",
+        capability="tts.clone",
+        note="uses ref_audio/ref_text; large model with higher memory and startup cost",
+        options=_mlx_higgs_options("tts.clone"),
     ),
     ModelInfo(
         id="mlx-community/Qwen3-ASR-0.6B-8bit",

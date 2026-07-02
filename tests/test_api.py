@@ -21,6 +21,7 @@ from voice_toolbox.config import (
     ASRChunkingConfig,
     TTSChunkingConfig,
 )
+from voice_toolbox.chunking.audio import ASRAudioChunk
 from voice_toolbox.models import (
     ASRRequest,
     ModelInfo,
@@ -754,6 +755,59 @@ def test_asr_auto_chunks_when_provider_payload_exceeds_limit(
     assert [item["id"] for item in listed] == [artifact["id"]]
     transcript = client.get(f"/v1/artifacts/{artifact['id']}/transcript?format=json").json()
     assert transcript["text"] == "hello overlap world"
+
+
+def test_asr_auto_chunks_valid_large_container_audio_before_provider_limit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client, provider = _client(tmp_path)
+    chunk_path = tmp_path / "chunk.wav"
+    chunk_path.write_bytes(WAV_BYTES)
+
+    def fake_plan_asr_audio_chunks(source_path: Path, **kwargs: object) -> list[ASRAudioChunk]:
+        assert source_path.stat().st_size > (MAX_BASE64_AUDIO_SIZE // 4) * 3
+        return [
+            ASRAudioChunk(
+                path=chunk_path,
+                start_ms=0,
+                end_ms=1000,
+                raw_byte_size=len(WAV_BYTES),
+                base64_size=api_main._base64_size(WAV_BYTES),
+                mime_type="audio/wav",
+                suffix=".wav",
+            )
+        ]
+
+    monkeypatch.setattr(api_main, "plan_asr_audio_chunks", fake_plan_asr_audio_chunks)
+
+    large_m4a = b"\x00\x00\x00\x18ftypM4A " + b"\x00" * ((MAX_BASE64_AUDIO_SIZE // 4) * 3 + 1)
+    response = client.post(
+        "/v1/asr/transcribe",
+        data={"provider_id": "mimo", "chunking_mode": "auto"},
+        files={"file": ("speech.m4a", large_m4a, "audio/mp4")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(provider.asr_requests) == 1
+    assert provider.asr_requests[0].audio_path == chunk_path
+    assert response.json()["artifact"]["metadata"]["chunking_enabled"] is True
+
+
+def test_asr_auto_chunk_rejects_corrupt_large_container_as_bad_input(
+    tmp_path: Path,
+) -> None:
+    client, provider = _client(tmp_path)
+    large_m4a = b"\x00\x00\x00\x18ftypM4A " + b"\x00" * ((MAX_BASE64_AUDIO_SIZE // 4) * 3 + 1)
+
+    response = client.post(
+        "/v1/asr/transcribe",
+        data={"provider_id": "mimo", "chunking_mode": "auto"},
+        files={"file": ("speech.m4a", large_m4a, "audio/mp4")},
+    )
+
+    assert response.status_code == 422
+    assert provider.asr_requests == []
 
 
 def test_asr_force_chunks_and_copies_options_to_each_chunk(tmp_path: Path) -> None:

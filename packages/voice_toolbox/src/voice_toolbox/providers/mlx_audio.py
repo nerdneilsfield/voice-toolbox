@@ -57,10 +57,12 @@ KOKORO_MODEL_MARKERS = ("kokoro",)
 TTS_CORE_OPTION_KEYS = {"text", "voice", "ref_audio", "ref_text"}
 ASR_CORE_OPTION_KEYS = {"audio", "language"}
 FORCED_ALIGNER_MARKERS = ("forcedaligner", "forced-aligner", "qwen3-forcedaligner")
+LONGCAT_MODEL_MARKERS = ("longcat-audiodit",)
 
 TTSLoader = Callable[..., Any]
 STTLoader = Callable[..., Any]
 WavWriter = Callable[[Any, int], bytes]
+ReferenceAudioLoader = Callable[[Path, int], Any]
 PlatformCheck = Callable[[], None]
 TTSCacheKey = tuple[str, tuple[str, ...]]
 
@@ -94,6 +96,19 @@ def _write_wav_bytes(audio: Any, sample_rate: int) -> bytes:
     return buffer.getvalue()
 
 
+def _load_reference_audio(path: Path, sample_rate: int) -> Any:
+    try:
+        module = importlib.import_module("mlx_audio.utils")
+    except ImportError as exc:
+        raise _dependency_error(
+            exc,
+            selected_model="utils",
+            upstream_model="utils",
+        ) from exc
+    load_audio = getattr(module, "load_audio")
+    return load_audio(str(path), sample_rate=sample_rate)
+
+
 class MlxAudioProvider:
     def __init__(
         self,
@@ -104,6 +119,7 @@ class MlxAudioProvider:
         tts_loader: TTSLoader = _load_tts_model,
         stt_loader: STTLoader = _load_stt_model,
         wav_writer: WavWriter = _write_wav_bytes,
+        reference_audio_loader: ReferenceAudioLoader = _load_reference_audio,
         platform_check: PlatformCheck | None = None,
     ) -> None:
         self._config = config or make_default_mlx_audio_provider_config()
@@ -127,6 +143,7 @@ class MlxAudioProvider:
         self._tts_loader = tts_loader
         self._stt_loader = stt_loader
         self._wav_writer = wav_writer
+        self._reference_audio_loader = reference_audio_loader
         self._platform_check = platform_check or _ensure_apple_silicon_macos
         if artifact_store is not None:
             self._artifact_store = artifact_store
@@ -288,6 +305,8 @@ class MlxAudioProvider:
         kwargs = self._tts_kwargs(
             request,
             selected=selected,
+            upstream=upstream,
+            model=model,
             capability=TTS_MODE_CAPABILITIES[request.mode],
         )
         kwargs = _validated_generate_kwargs(model.generate, kwargs)
@@ -430,6 +449,8 @@ class MlxAudioProvider:
         self._validate_model_id(model, expected_capability=capability)
         if request.mode == TTSMode.CLONE and not request.clone_reference_text:
             raise ProviderError("mlx_audio clone mode requires clone_reference_text")
+        if request.mode == TTSMode.CLONE and request.clone_sample_path is None:
+            raise ProviderError("mlx_audio clone mode requires clone_sample_path")
         return model
 
     def _resolve_asr_model(self, request: ASRRequest) -> str:
@@ -464,6 +485,8 @@ class MlxAudioProvider:
         request: TTSRequest,
         *,
         selected: str,
+        upstream: str,
+        model: Any,
         capability: str,
     ) -> dict[str, object]:
         kwargs = _provider_options_without_core_collisions(
@@ -483,7 +506,16 @@ class MlxAudioProvider:
         if "lang_code" not in kwargs:
             kwargs["lang_code"] = "auto"
         if request.mode == TTSMode.CLONE:
-            kwargs["ref_audio"] = str(request.clone_sample_path)
+            sample_path = request.clone_sample_path
+            if sample_path is None:
+                raise ProviderError("mlx_audio clone mode requires clone_sample_path")
+            if _is_longcat_model(selected, upstream):
+                kwargs["ref_audio"] = self._reference_audio_loader(
+                    sample_path,
+                    _model_sample_rate(model, default=24000),
+                )
+            else:
+                kwargs["ref_audio"] = str(sample_path)
             kwargs["ref_text"] = request.clone_reference_text
         return kwargs
 
@@ -547,6 +579,24 @@ def _is_kokoro_model(selected_model: str, upstream_model: str) -> bool:
     return any(marker in lowered for marker in KOKORO_MODEL_MARKERS)
 
 
+def _is_longcat_model(selected_model: str, upstream_model: str) -> bool:
+    lowered = f"{selected_model} {upstream_model}".lower()
+    return any(marker in lowered for marker in LONGCAT_MODEL_MARKERS)
+
+
+def _model_sample_rate(model: Any, *, default: int) -> int:
+    sample_rate = getattr(model, "sample_rate", None)
+    if sample_rate is None:
+        config = getattr(model, "config", None)
+        sample_rate = getattr(config, "sampling_rate", None)
+    if sample_rate is None:
+        return default
+    try:
+        return int(sample_rate)
+    except (TypeError, ValueError):
+        return default
+
+
 def _tts_cache_key(selected: str, upstream: str) -> tuple[TTSCacheKey, dict[str, object]]:
     allow_patterns: list[str] = []
     if _is_bailingmm_model(selected, upstream):
@@ -558,7 +608,20 @@ def _tts_cache_key(selected: str, upstream: str) -> tuple[TTSCacheKey, dict[str,
 
 
 def _asr_language(language: str) -> str | None:
-    return {"auto": None, "zh": "Chinese", "en": "English"}[language]
+    return {
+        "auto": None,
+        "zh": "Chinese",
+        "yue": "Cantonese",
+        "en": "English",
+        "de": "German",
+        "es": "Spanish",
+        "fr": "French",
+        "it": "Italian",
+        "pt": "Portuguese",
+        "ru": "Russian",
+        "ko": "Korean",
+        "ja": "Japanese",
+    }[language]
 
 
 def _file_name_hash(filename: str) -> str:

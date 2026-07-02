@@ -262,6 +262,25 @@ def test_plan_asr_audio_chunks_overlap_bounds_and_limits(tmp_path: Path) -> None
         )
 
 
+def test_plan_asr_audio_chunks_caps_duration_to_provider_payload_limit(tmp_path: Path) -> None:
+    source = tmp_path / "source.wav"
+    source.write_bytes(_wav_silence(21_000))
+    config = ASRChunkingConfig(target_seconds=10, overlap_ms=0, max_chunks=10)
+
+    chunks = plan_asr_audio_chunks(
+        source,
+        source_format="wav",
+        output_dir=tmp_path / "byte-capped",
+        config=config,
+        max_raw_bytes=80_100,
+        max_base64_bytes=120_000,
+    )
+
+    assert len(chunks) > 3
+    assert all(chunk.raw_byte_size <= 80_100 for chunk in chunks)
+    assert all(chunk.base64_size <= 120_000 for chunk in chunks)
+
+
 def test_asr_chunk_session_store_validates_uploads_and_privacy(tmp_path: Path) -> None:
     store = ASRChunkSessionStore(tmp_path, ttl_seconds=3600, max_upload_mb=1)
     with pytest.raises(ASRChunkSessionError, match="plain filename"):

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from voice_toolbox.audio_conversion import AudioConversionError, format_from_suffix
 from voice_toolbox.chunking.options import normalize_provider_options
+from voice_toolbox.models import ASRLanguage
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,96}$")
 
@@ -49,7 +50,7 @@ class ASRChunkSessionMetadata(BaseModel):
     expires_at: datetime
     provider_id: str
     model: str | None = None
-    language: Literal["auto", "zh", "en"] = "auto"
+    language: ASRLanguage = "auto"
     total_chunks: int = Field(gt=0)
     source_duration_ms: int = Field(gt=0)
     source_file_name_hash: str | None = None
@@ -88,7 +89,7 @@ class ASRChunkSessionStore:
         *,
         provider_id: str,
         model: str | None,
-        language: Literal["auto", "zh", "en"],
+        language: ASRLanguage,
         total_chunks: int,
         source_duration_ms: int,
         source_file_name: str | None,

@@ -10,6 +10,10 @@ export type WavInfo = {
   sampleRate: number;
 };
 
+const MAX_PROVIDER_BASE64_BYTES = 10 * 1024 * 1024;
+const MAX_PROVIDER_RAW_BYTES = Math.floor(MAX_PROVIDER_BASE64_BYTES / 4) * 3;
+const WAV_HEADER_BYTES = 44;
+
 export async function inspectWavFile(file: File): Promise<WavInfo> {
   const buffer = await file.arrayBuffer();
   return inspectWavBuffer(buffer);
@@ -28,9 +32,13 @@ export async function sliceWavFile(
   const buffer = await file.arrayBuffer();
   const wav = parseWav(buffer);
   const bytesPerMs = wav.byteRate / 1000 || 1;
-  const chunkMs = Math.max(1000, targetSeconds * 1000);
-  if (overlapMs >= chunkMs / 2) {
+  const requestedChunkMs = Math.max(1000, targetSeconds * 1000);
+  if (overlapMs >= requestedChunkMs / 2) {
     throw new Error("ASR chunk overlap must be less than half of chunk duration.");
+  }
+  const chunkMs = providerLimitedChunkMs(wav, requestedChunkMs);
+  if (overlapMs >= chunkMs / 2) {
+    throw new Error("ASR chunk payload limit requires smaller chunk duration or overlap.");
   }
   const strideMs = Math.max(1, chunkMs - Math.max(0, overlapMs));
   const chunks: BrowserAudioChunk[] = [];
@@ -144,6 +152,15 @@ function buildWav(payload: Uint8Array, source: ParsedWav): ArrayBuffer {
   view.setUint32(40, payload.byteLength, true);
   new Uint8Array(buffer, 44).set(payload);
   return buffer;
+}
+
+function providerLimitedChunkMs(wav: ParsedWav, requestedChunkMs: number): number {
+  const payloadBudget = alignBlock(MAX_PROVIDER_RAW_BYTES - WAV_HEADER_BYTES, wav.blockAlign);
+  if (payloadBudget <= 0) {
+    throw new Error("ASR chunk payload limit is too small for WAV chunks.");
+  }
+  const maxChunkMs = Math.floor((payloadBudget / wav.byteRate) * 1000);
+  return Math.max(1, Math.min(requestedChunkMs, maxChunkMs));
 }
 
 function readAscii(view: DataView, offset: number, length: number): string {

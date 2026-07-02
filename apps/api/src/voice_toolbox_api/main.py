@@ -68,6 +68,7 @@ from voice_toolbox.config import (
     replay_config_warnings,
 )
 from voice_toolbox.models import (
+    ASRLanguage,
     ASRRequest,
     Artifact,
     OperationResult,
@@ -490,7 +491,7 @@ def create_app(
         file: Annotated[UploadFile, File()],
         provider_id: Annotated[str, Form()] = "mimo",
         model: Annotated[str | None, Form()] = None,
-        language: Annotated[Literal["auto", "zh", "en"], Form()] = "auto",
+        language: Annotated[ASRLanguage, Form()] = "auto",
         chunking_mode: Annotated[Literal["off", "auto", "force"] | None, Form()] = None,
         chunk_seconds: Annotated[int | None, Form()] = None,
         chunk_overlap_ms: Annotated[int | None, Form()] = None,
@@ -524,8 +525,12 @@ def create_app(
             mime_type = _normalize_mime_type(file.content_type)
             suffix = _suffix_for_upload(file.filename)
             source_prefix = _read_file_prefix(source_path, 16)
-            if not _file_fits_provider_limit(source_path) and not _looks_like_audio_header(
-                source_prefix
+            if not _file_fits_provider_limit(
+                source_path
+            ) and not _looks_like_supported_audio_upload(
+                source_prefix,
+                mime_type,
+                suffix,
             ):
                 raise HTTPException(status_code=413, detail="audio base64 payload exceeds 10 MiB")
             source_format = _validate_upload_signature(
@@ -558,7 +563,7 @@ def create_app(
         total_chunks: Annotated[int, Form()],
         provider_id: Annotated[str, Form()] = "mimo",
         model: Annotated[str | None, Form()] = None,
-        language: Annotated[Literal["auto", "zh", "en"], Form()] = "auto",
+        language: Annotated[ASRLanguage, Form()] = "auto",
         source_file_name: Annotated[str | None, Form()] = None,
         transcript_timestamps: Annotated[bool, Form()] = False,
         transcript_speakers: Annotated[bool, Form()] = False,
@@ -673,7 +678,7 @@ def create_app(
         http_request: Request,
         provider_id: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
-        language: Annotated[Literal["auto", "zh", "en"] | None, Form()] = None,
+        language: Annotated[ASRLanguage | None, Form()] = None,
         transcript_timestamps: Annotated[bool | None, Form()] = None,
         transcript_speakers: Annotated[bool | None, Form()] = None,
         provider_options: Annotated[str | None, Form()] = None,
@@ -1476,7 +1481,7 @@ def _reject_mismatched_session_finish(
     *,
     provider_id: str | None,
     model: str | None,
-    language: Literal["auto", "zh", "en"] | None,
+    language: ASRLanguage | None,
     transcript_timestamps: bool | None,
     transcript_speakers: bool | None,
     provider_options: str | None,
@@ -1628,7 +1633,7 @@ def _run_asr_upload(
     http_request: Request,
     provider_id: str,
     model: str | None,
-    language: Literal["auto", "zh", "en"],
+    language: ASRLanguage,
     source_path: Path,
     source_format: AudioFormat,
     source_mime_type: str,
@@ -1730,7 +1735,9 @@ def _run_asr_upload(
         )
     except ASRAudioChunkingError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    except (ProviderError, AudioConversionError) as exc:
+    except AudioConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProviderError as exc:
         _log_operation(
             operation="asr",
             status="failed",
@@ -1766,7 +1773,7 @@ def _run_chunked_asr(
     provider: Any,
     provider_id: str,
     model: str | None,
-    language: Literal["auto", "zh", "en"],
+    language: ASRLanguage,
     source_path: Path,
     source_format: AudioFormat,
     source_mime_type: str,
@@ -1959,12 +1966,30 @@ def _file_fits_provider_limit(path: Path) -> bool:
     )
 
 
-def _looks_like_audio_header(contents: bytes) -> bool:
-    return (
-        contents.startswith(b"RIFF")
-        or contents.startswith(b"ID3")
-        or (len(contents) >= 2 and contents[0] == 0xFF and contents[1] & 0xE0 == 0xE0)
-    )
+def _looks_like_supported_audio_upload(contents: bytes, mime_type: str, suffix: str) -> bool:
+    try:
+        audio_format = validate_mime_suffix_match(mime_type, suffix)
+    except AudioConversionError:
+        return False
+    if audio_format == "wav":
+        return contents.startswith(b"RIFF") and contents[8:12] == b"WAVE"
+    if audio_format == "mp3":
+        return contents.startswith(b"ID3") or _looks_like_adts_or_mpeg_frame(contents)
+    if audio_format == "flac":
+        return contents.startswith(b"fLaC")
+    if audio_format == "m4a":
+        return len(contents) >= 12 and contents[4:8] == b"ftyp"
+    if audio_format == "ogg":
+        return contents.startswith(b"OggS")
+    if audio_format == "webm":
+        return contents.startswith(b"\x1a\x45\xdf\xa3")
+    if audio_format == "aac":
+        return _looks_like_adts_or_mpeg_frame(contents)
+    return audio_format == "pcm"
+
+
+def _looks_like_adts_or_mpeg_frame(contents: bytes) -> bool:
+    return len(contents) >= 2 and contents[0] == 0xFF and contents[1] & 0xE0 == 0xE0
 
 
 def _save_upload_to_temp(

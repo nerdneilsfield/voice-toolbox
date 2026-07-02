@@ -56,6 +56,7 @@ export function AsrWorkspace({
   const modelObj = selectedModel(provider, model);
   const specs = useMemo(() => optionsForCapability(provider, modelObj, "asr.transcribe"), [provider, modelObj]);
   const [optionValues, setOptionValues] = useProviderOptions(providerId, "asr.transcribe", specs);
+  const languageOptions = provider?.type === "mlx_audio" ? MLX_ASR_LANGUAGE_OPTIONS : BASIC_ASR_LANGUAGE_OPTIONS;
   const supportsTimestamps = Boolean(modelObj?.transcript_capabilities?.timestamps);
   const supportsSpeakers = Boolean(modelObj?.transcript_capabilities?.speakers);
 
@@ -125,9 +126,11 @@ export function AsrWorkspace({
         <label className="field">
           <span className="field-title">{t("asr.language")}</span>
           <select value={language} onChange={(event) => setLanguage(event.target.value)}>
-            <option value="auto">{t("asr.languageOption.auto")}</option>
-            <option value="zh">{t("asr.languageOption.zh")}</option>
-            <option value="en">{t("asr.languageOption.en")}</option>
+            {languageOptions.map((value) => (
+              <option key={value} value={value}>
+                {t(`asr.languageOption.${value}`)}
+              </option>
+            ))}
           </select>
         </label>
         <ChunkingControls
@@ -216,3 +219,6 @@ export function AsrWorkspace({
     </form>
   );
 }
+
+const BASIC_ASR_LANGUAGE_OPTIONS = ["auto", "zh", "en"] as const;
+const MLX_ASR_LANGUAGE_OPTIONS = ["auto", "zh", "yue", "en", "de", "es", "fr", "it", "pt", "ru", "ko", "ja"] as const;

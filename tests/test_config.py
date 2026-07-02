@@ -773,21 +773,34 @@ name = "MLX Audio"
     assert MLX_AUDIO_MODEL_ALIASES == {
         "qwen3-tts-0.6b-base": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
         "qwen3-tts-0.6b-base-clone": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+        "qwen3-tts-1.7b-base": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+        "qwen3-tts-1.7b-base-clone": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
         "qwen3-tts-1.7b-base-8bit": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+        "qwen3-tts-1.7b-base-8bit-clone": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
         "longcat-audiodit-1b": "mlx-community/LongCat-AudioDiT-1B-bf16",
+        "longcat-audiodit-1b-clone": "mlx-community/LongCat-AudioDiT-1B-bf16",
         "ming-omni-tts-16.8b-a3b": "mlx-community/Ming-omni-tts-16.8B-A3B-bf16",
+        "ming-omni-tts-16.8b-a3b-clone": "mlx-community/Ming-omni-tts-16.8B-A3B-bf16",
         "higgs-audio-v3-tts-4b": "bosonai/higgs-audio-v3-tts-4b",
+        "higgs-audio-v3-tts-4b-clone": "bosonai/higgs-audio-v3-tts-4b",
     }
 
     model_ids = {model.id for model in provider.models}
     assert model_ids >= {
         "qwen3-tts-0.6b-base",
         "qwen3-tts-0.6b-base-clone",
+        "qwen3-tts-1.7b-base",
+        "qwen3-tts-1.7b-base-clone",
         "qwen3-tts-1.7b-base-8bit",
+        "qwen3-tts-1.7b-base-8bit-clone",
         "longcat-audiodit-1b",
+        "longcat-audiodit-1b-clone",
         "ming-omni-tts-16.8b-a3b",
+        "ming-omni-tts-16.8b-a3b-clone",
         "higgs-audio-v3-tts-4b",
+        "higgs-audio-v3-tts-4b-clone",
         "mlx-community/Qwen3-ASR-0.6B-8bit",
+        "mlx-community/Qwen3-ASR-1.7B-8bit",
     }
     assert provider.voices == []
     qwen3 = next(model for model in provider.models if model.id == "qwen3-tts-0.6b-base")
@@ -806,10 +819,47 @@ name = "MLX Audio"
     assert longcat.voices == []
     option_keys = {option.key for option in provider.options}
     assert option_keys >= {"lang_code", "temperature", "speed"}
+    temperature = next(option for option in provider.options if option.key == "temperature")
+    assert temperature.default is None
+    clone_model_ids = {model.id for model in provider.models if model.capability == "tts.clone"}
+    assert clone_model_ids >= {
+        "qwen3-tts-0.6b-base-clone",
+        "qwen3-tts-1.7b-base-clone",
+        "qwen3-tts-1.7b-base-8bit-clone",
+        "longcat-audiodit-1b-clone",
+        "ming-omni-tts-16.8b-a3b-clone",
+        "higgs-audio-v3-tts-4b-clone",
+    }
+    longcat_clone = next(
+        model for model in provider.models if model.id == "longcat-audiodit-1b-clone"
+    )
+    assert {option.key for option in longcat_clone.options} >= {
+        "cfg_strength",
+        "guidance_method",
+        "steps",
+    }
+    longcat_guidance = next(
+        option for option in longcat_clone.options if option.key == "guidance_method"
+    )
+    assert longcat_guidance.default == "apg"
     ming = next(model for model in provider.models if model.id == "ming-omni-tts-16.8b-a3b")
     assert ming.note is not None
     assert "onnx" in ming.note
     assert "safetensors" in ming.note
+    ming_clone = next(
+        model for model in provider.models if model.id == "ming-omni-tts-16.8b-a3b-clone"
+    )
+    assert {option.key for option in ming_clone.options} >= {
+        "cfg_scale",
+        "instruct",
+        "max_tokens",
+        "prompt",
+        "sigma",
+    }
+    higgs_clone = next(
+        model for model in provider.models if model.id == "higgs-audio-v3-tts-4b-clone"
+    )
+    assert {option.key for option in higgs_clone.options} == {"max_new_tokens"}
 
 
 def test_mlx_audio_default_voice_can_reference_model_scoped_voice(tmp_path: Path) -> None:

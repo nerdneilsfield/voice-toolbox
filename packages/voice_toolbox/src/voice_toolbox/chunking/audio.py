@@ -96,13 +96,13 @@ def plan_asr_audio_chunks(
     max_raw_bytes: int,
     max_base64_bytes: int,
 ) -> list[ASRAudioChunk]:
-    target_ms = (target_seconds or config.target_seconds) * 1000
+    requested_target_ms = (target_seconds or config.target_seconds) * 1000
     resolved_overlap_ms = config.overlap_ms if overlap_ms is None else overlap_ms
-    if target_ms <= 0:
+    if requested_target_ms <= 0:
         raise ASRAudioChunkingError("target_seconds must be greater than 0")
     if resolved_overlap_ms < 0:
         raise ASRAudioChunkingError("overlap_ms must be greater than or equal to 0")
-    if resolved_overlap_ms >= target_ms / 2:
+    if resolved_overlap_ms >= requested_target_ms / 2:
         raise ASRAudioChunkingError("overlap_ms must be less than half target_seconds")
     try:
         source = _decode_source_audio(source_path, source_format=source_format)
@@ -114,6 +114,17 @@ def plan_asr_audio_chunks(
     duration_ms = len(source)
     if duration_ms <= 0:
         raise ASRAudioChunkingError("audio duration is empty")
+    target_ms = _provider_limited_target_ms(
+        source,
+        requested_target_ms=requested_target_ms,
+        max_raw_bytes=max_raw_bytes,
+        max_base64_bytes=max_base64_bytes,
+    )
+    if resolved_overlap_ms >= target_ms / 2:
+        raise ASRAudioChunkingError(
+            "audio chunk payload limit requires smaller target_seconds or overlap_ms",
+            status_code=413,
+        )
     ranges = _chunk_ranges(
         duration_ms=duration_ms,
         target_ms=target_ms,
@@ -189,6 +200,25 @@ def _chunk_ranges(
             break
         start_ms += step_ms
     return ranges
+
+
+def _provider_limited_target_ms(
+    source,
+    *,
+    requested_target_ms: int,
+    max_raw_bytes: int,
+    max_base64_bytes: int,
+) -> int:
+    raw_byte_limit = min(max_raw_bytes, (max_base64_bytes // 4) * 3)
+    payload_limit = raw_byte_limit - 44
+    byte_rate = int(getattr(source, "frame_rate", 0)) * int(getattr(source, "frame_width", 0))
+    if payload_limit <= 0 or byte_rate <= 0:
+        raise ASRAudioChunkingError(
+            "audio chunk exceeds provider payload limit",
+            status_code=413,
+        )
+    max_target_ms = max(1, (payload_limit * 1000) // byte_rate)
+    return min(requested_target_ms, max_target_ms)
 
 
 def _base64_size(raw_byte_size: int) -> int:

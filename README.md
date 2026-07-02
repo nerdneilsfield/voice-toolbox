@@ -72,8 +72,10 @@ default_voice = "Ryan"
 ```
 
 The first MLX Audio version supports `tts.builtin`, `tts.clone`, and
-`asr.transcribe`. Qwen3 clone requires `clone_reference_text` so the MLX model
-takes its ICL voice-clone path.
+`asr.transcribe`. Voice clone models require `clone_reference_text` so MLX Audio
+can pass `ref_audio` and `ref_text` to the upstream model. Clone-capable defaults
+include Qwen3 TTS Base, LongCat AudioDiT, Ming Omni/BailingMM, and Higgs Audio
+v3.
 
 MLX Audio voices are model-specific. Qwen3 builtin TTS exposes preset speakers
 `Ryan`, `Aiden`, `Vivian`, `Serena`, `Uncle_Fu`, `Dylan`, and `Eric`. LongCat,
@@ -81,6 +83,12 @@ Ming Omni, and Higgs Audio v3 do not use the Qwen3 preset speaker list; they use
 zero-shot generation, reference audio, reference text, and/or inline control
 tokens depending on the model. Ming Omni may need `onnx` and `safetensors` if
 campplus conversion runs.
+
+The built-in MLX ASR list includes Qwen3 ASR 0.6B and 1.7B 8-bit transcription
+models. Language hints include `auto`, `zh`, `yue`, `en`, `de`, `es`, `fr`,
+`it`, `pt`, `ru`, `ko`, and `ja`, matching the Qwen3 ASR language set. Upstream
+also ships Qwen3 ForcedAligner, but that model performs word-level alignment
+with transcript text; Voice Toolbox does not expose it as `asr.transcribe`.
 
 When `voice_toolbox.toml` exists, it is the source of truth for `base_url`,
 `api.host`, and `api.port`. The `.env` values `MIMO_BASE_URL`,
@@ -243,10 +251,16 @@ ASR has two chunking paths:
 - Backend chunking: upload one audio file to `/v1/asr/transcribe` or use the CLI
   `--chunking force|auto`. The backend converts/splits audio, transcribes each
   chunk, then deduplicates overlap text into one transcript artifact.
+  Oversized supported container uploads such as `m4a`, `flac`, `ogg`, `webm`,
+  and `aac` are allowed into this path instead of being rejected by the per-call
+  provider payload limit before chunking. The planner also caps chunk duration
+  by the provider byte budget, so high-bitrate WAV chunks stay under the
+  per-call payload limit.
 - Browser chunking: the web client slices WAV audio in the browser, creates
   `/v1/asr/chunk-sessions`, uploads chunks to
   `/v1/asr/chunk-sessions/{session_id}/chunks`, then calls
   `/v1/asr/chunk-sessions/{session_id}/finish`.
+  Browser chunk duration is also capped by the same byte budget before upload.
 
 Browser chunk session rules:
 
