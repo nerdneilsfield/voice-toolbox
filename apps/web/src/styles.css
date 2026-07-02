@@ -92,7 +92,12 @@ p {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 16px 0;
+  /* Stretch the elevated bar across the app-shell's horizontal padding so its
+     background reaches the shell edges (x=80) instead of starting at the
+     content edge (x=160) — otherwise a strip of page-grey shows on each side
+     and the brand mark appears glued to the grey edge. */
+  margin: 0 -80px;
+  padding: 16px 80px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--accent-border);
 }
@@ -165,12 +170,53 @@ p {
 .provider-details {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px 18px;
-  padding: 8px 0;
+  align-items: center;
+  gap: 8px 18px;
+  /* Match the topbar: stretch across the app-shell padding so the elevated
+     background is continuous with the bar above it. No explicit width — the
+     negative margins already expand the box and width:100% would be relative
+     to the content box, leaving the right edge short. */
+  margin: 0 -80px;
+  padding: 10px 80px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--accent-border);
   font-size: 0.72rem;
   color: var(--muted);
+}
+
+.provider-details:not([open]) {
+  align-items: center;
+}
+
+.provider-details-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 700;
+  color: var(--accent-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.72rem;
+}
+
+.provider-details-summary::-webkit-details-marker {
+  display: none;
+}
+
+.provider-details-summary::before {
+  content: "▸";
+  transition: transform 160ms ease;
+  font-size: 0.8rem;
+}
+
+.provider-details[open] .provider-details-summary::before {
+  transform: rotate(90deg);
+}
+
+.provider-details.key-missing .provider-details-summary {
+  color: var(--danger);
 }
 
 .provider-details span.label {
@@ -935,6 +981,12 @@ p {
 }
 
 input[type="text"],
+input[type="number"],
+input[type="password"],
+input[type="email"],
+input[type="url"],
+input[type="search"],
+input[type="tel"],
 select,
 textarea {
   font: inherit;
@@ -945,6 +997,16 @@ textarea {
   color: var(--text-body);
   padding: 10px 12px;
   outline: none;
+}
+
+/* number inputs: hide spinners for a cleaner look, keep them themeable */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 input[type="file"] {
@@ -1088,8 +1150,28 @@ button:focus-visible,
 .provider-option-grid,
 .chunking-controls {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
+  align-items: start;
+}
+
+/* The generic `.field:not(:last-child) { margin-bottom }` rule assumes fields
+   stack vertically. Inside a horizontal chunking grid it adds bottom margin
+   to the first two columns but not the last, pushing their inputs out of
+   alignment. Neutralise it here and let the grid gap do the spacing. */
+.chunking-controls .field {
+  margin-bottom: 0;
+}
+
+/* Keep each chunking field's label on one line so a longer label (e.g.
+   "重叠毫秒" / "Overlap ms") doesn't wrap and push its input below the
+   others — that was the source of the row looking misaligned. */
+.chunking-controls .field-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+  min-height: 1.2em;
 }
 
 .provider-option-field select[multiple] {
@@ -1216,4 +1298,54 @@ html[data-theme="dark"] .fullscreen-editor {
 
 html[data-theme="dark"] .loading-state span {
   background: linear-gradient(90deg, var(--bg-sunken) 0%, var(--bg-elevated) 45%, var(--bg-sunken) 100%);
+}
+
+/* ==========================================================================
+   Refactored layout helpers (2026-06-30)
+   ========================================================================== */
+
+.advanced-inline {
+  display: grid;
+  gap: 14px;
+}
+
+.import-btn {
+  position: relative;
+  cursor: pointer;
+}
+
+.import-btn.disabled,
+.import-btn input:disabled + span {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.import-btn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.tag-card {
+  padding: 4px 18px 14px;
+}
+
+.action-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.checkbox-line.disabled,
+.checkbox-line.disabled input,
+.checkbox-line.disabled span {
+  opacity: 0.5;
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.3;
 }

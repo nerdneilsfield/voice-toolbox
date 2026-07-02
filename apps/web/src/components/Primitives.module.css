@@ -1,0 +1,90 @@
+.notice {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  color: var(--muted);
+  padding: 10px 12px;
+  font-size: 0.9rem;
+}
+
+.error {
+  border-color: #fecdca;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.empty {
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 48px;
+}
+
+.waveform span {
+  width: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.waveform span:nth-child(1) {
+  height: 18px;
+}
+.waveform span:nth-child(2) {
+  height: 34px;
+}
+.waveform span:nth-child(3) {
+  height: 48px;
+}
+.waveform span:nth-child(4) {
+  height: 30px;
+}
+.waveform span:nth-child(5) {
+  height: 22px;
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.loading span {
+  height: 18px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--bg-sunken) 0%, var(--bg-elevated) 45%, var(--bg-sunken) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1100ms ease-in-out infinite;
+}
+
+.loading span:nth-child(1) {
+  width: 84%;
+}
+.loading span:nth-child(2) {
+  width: 100%;
+}
+.loading span:nth-child(3) {
+  width: 62%;
+}
+.loading span:nth-child(4) {
+  width: 74%;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
