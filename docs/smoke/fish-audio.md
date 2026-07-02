@@ -31,6 +31,10 @@ rtk printf '# Fish Audio Markdown smoke\n\nSpeak **this** cleaned Markdown.\n' >
 
 ## Built-in TTS
 
+Built-in TTS models: `s2.1-pro-free` (free tier, default), `s2.1-pro`, `s2-pro`,
+and `s1`. The model id is passed as the Fish Audio `model:` request header; the
+free model covers 83 languages under Fair Use.
+
 ```bash
 rtk uv run --env-file .env voice-toolbox tts synthesize \
   --provider fish-audio \
@@ -136,4 +140,22 @@ rtk uv run --env-file .env voice-toolbox tts clone \
   --consent
 ```
 
-Expected: `/v1/tts` request encoded as `application/msgpack` with Fish `references[].audio` bytes and `references[].text`.
+Expected: `/v1/tts` request encoded as `application/msgpack` with Fish `references[].audio` bytes and `references[].text`. Clone models `s2.1-pro-clone` and `s2-pro-clone` map to the `s2.1-pro` / `s2-pro` API headers respectively.
+
+## Adding Reference Voices
+
+Built-in TTS picks a voice from the provider's voice list, sent to Fish Audio as
+`reference_id`. Append your own voices in `voice_toolbox.toml` — each entry's
+`id` is a Fish Audio `reference_id` or model id (browse them at
+<https://fish.audio>), and `name` / `note` are local labels shown in the web UI:
+
+```toml
+[[providers.voices]]
+id = "your-fish-audio-reference-id"
+name = "My Custom Voice"
+note = "optional local note"
+```
+
+The first entry becomes `default_voice` unless you set it explicitly. Omitting
+`[[providers.voices]]` keeps the built-in default reference.
+
