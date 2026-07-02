@@ -20,9 +20,9 @@ default_voice = "Ryan"
 
 | Model path | Extra dependency |
 | --- | --- |
-| Kokoro | `pip install misaki`; Japanese `pip install 'misaki[ja]'`; Mandarin `pip install 'misaki[zh]'` |
-| Qwen3 ForcedAligner | Future alignment capability only; Japanese needs `pip install nagisa`, Korean needs `pip install soynlp` |
-| Ming Omni BailingMM | May need `pip install onnx safetensors` if campplus conversion runs |
+| Kokoro | `rtk uv pip install misaki`; Japanese `rtk uv pip install 'misaki[ja]'`; Mandarin `rtk uv pip install 'misaki[zh]'` |
+| Qwen3 ForcedAligner | Future alignment capability only; Japanese needs `rtk uv pip install nagisa`, Korean needs `rtk uv pip install soynlp` |
+| Ming Omni BailingMM | May need `rtk uv pip install onnx safetensors` if campplus conversion runs |
 | Voxtral TTS | Covered by `mlx-audio[tts]` through `mistral-common[audio]` |
 | Non-WAV encode/decode | Install host binary with `brew install ffmpeg` |
 

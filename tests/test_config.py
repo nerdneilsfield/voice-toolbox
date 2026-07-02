@@ -621,8 +621,7 @@ def test_mac_extra_installs_mlx_audio_without_model_specific_deps() -> None:
     joined = "\n".join(mac_deps)
 
     assert mac_deps == [
-        "mlx-audio[tts,stt]>=0.4.4 ; "
-        "sys_platform == 'darwin' and platform_machine == 'arm64'"
+        "mlx-audio[tts,stt]>=0.4.4 ; sys_platform == 'darwin' and platform_machine == 'arm64'"
     ]
     assert "misaki" not in joined
     assert "nagisa" not in joined
@@ -673,7 +672,9 @@ def test_mlx_audio_provider_rejects_local_url_and_key_env() -> None:
             api_key_env=None,
         )
 
-    with pytest.raises(ValueError, match="api_key_env is not used by local provider type mlx_audio"):
+    with pytest.raises(
+        ValueError, match="api_key_env is not used by local provider type mlx_audio"
+    ):
         ConfiguredProvider(
             id="mlx-audio",
             type="mlx_audio",

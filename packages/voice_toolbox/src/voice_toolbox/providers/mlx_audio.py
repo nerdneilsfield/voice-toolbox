@@ -234,7 +234,9 @@ class MlxAudioProvider:
             metadata["clone_reference_text_length"] = len(request.clone_reference_text)
         if request.mode == TTSMode.CLONE:
             if request.clone_sample_path is not None:
-                metadata["uploaded_file_name_hash"] = _file_name_hash(request.clone_sample_path.name)
+                metadata["uploaded_file_name_hash"] = _file_name_hash(
+                    request.clone_sample_path.name
+                )
                 metadata["uploaded_file_suffix"] = request.clone_sample_path.suffix
             metadata.update(
                 {
@@ -394,7 +396,9 @@ class MlxAudioProvider:
             except ProviderError:
                 raise
             except Exception as exc:
-                raise _dependency_error(exc, selected_model=selected, upstream_model=upstream) from exc
+                raise _dependency_error(
+                    exc, selected_model=selected, upstream_model=upstream
+                ) from exc
             return self._tts_models[cache_key], self._tts_inference_locks[cache_key]
 
     def _load_stt(self, selected: str, upstream: str) -> tuple[Any, threading.Lock]:
@@ -407,7 +411,9 @@ class MlxAudioProvider:
             except ProviderError:
                 raise
             except Exception as exc:
-                raise _dependency_error(exc, selected_model=selected, upstream_model=upstream) from exc
+                raise _dependency_error(
+                    exc, selected_model=selected, upstream_model=upstream
+                ) from exc
             return self._stt_models[upstream], self._stt_inference_locks[upstream]
 
     def _resolve_tts_model(self, request: TTSRequest) -> str:
@@ -487,17 +493,11 @@ class MlxAudioProvider:
         selected: str,
         capability: str,
     ) -> None:
-        allowed = {
-            option.key
-            for option in self._config.options
-            if option.capability == capability
-        }
+        allowed = {option.key for option in self._config.options if option.capability == capability}
         model_info = self._models_by_id.get(selected)
         if model_info is not None:
             allowed.update(
-                option.key
-                for option in model_info.options
-                if option.capability == capability
+                option.key for option in model_info.options if option.capability == capability
             )
         unsupported = sorted(set(options) - allowed)
         if unsupported:
@@ -553,7 +553,9 @@ def _provider_options_without_core_collisions(
 ) -> dict[str, object]:
     collisions = sorted(set(options) & core_keys)
     if collisions:
-        raise ProviderError(f"provider option {collisions[0]} collides with mlx_audio core argument")
+        raise ProviderError(
+            f"provider option {collisions[0]} collides with mlx_audio core argument"
+        )
     return dict(options)
 
 

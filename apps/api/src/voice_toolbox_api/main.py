@@ -938,9 +938,7 @@ def _provider_summary(
         "requires_api_key": requires_api_key,
         "has_api_key": bool(api_key),
         "api_key_preview": (
-            mask_api_key_preview(api_key, trusted_local=trusted_local)
-            if requires_api_key
-            else None
+            mask_api_key_preview(api_key, trusted_local=trusted_local) if requires_api_key else None
         ),
         "config_path_preview": preview_config_path(config.config_path),
         "default_voice": provider_config.default_voice,

@@ -8,7 +8,9 @@ from voice_toolbox.defaults import DEFAULT_MIMO_BASE_URL
 from voice_toolbox.models import ProviderConfig
 
 
-def _first_network_provider(providers: list[ConfiguredProvider]) -> tuple[ConfiguredProvider, str, str]:
+def _first_network_provider(
+    providers: list[ConfiguredProvider],
+) -> tuple[ConfiguredProvider, str, str]:
     for provider in providers:
         base_url = provider.base_url
         api_key_env = provider.api_key_env
@@ -47,11 +49,17 @@ def get_mimo_api_key(env_path: Path | str | None = None) -> str | None:
     app_config = load_app_config(env_path=env_path)
     env = load_env_values(env_path)
     provider = next(
-        (item for item in app_config.providers if item.id == "mimo" and item.api_key_env is not None),
+        (
+            item
+            for item in app_config.providers
+            if item.id == "mimo" and item.api_key_env is not None
+        ),
         None,
     )
     if provider is None:
-        provider = next((item for item in app_config.providers if item.api_key_env is not None), None)
+        provider = next(
+            (item for item in app_config.providers if item.api_key_env is not None), None
+        )
     if provider is None or provider.api_key_env is None:
         return None
     value = env.get(provider.api_key_env)
