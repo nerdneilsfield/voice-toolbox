@@ -44,7 +44,7 @@ export function voicesForModel(
   modelId?: string | null,
 ): Voice[] {
   const model = provider?.models.find((item) => item.id === modelId);
-  if (model?.voices !== undefined) {
+  if (model?.voices !== undefined && model.voices.length > 0) {
     return model.voices;
   }
   if (provider?.type === "mlx_audio") {

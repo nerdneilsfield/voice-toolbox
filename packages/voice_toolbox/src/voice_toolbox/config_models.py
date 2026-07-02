@@ -181,22 +181,24 @@ def validate_configured_provider(provider: ConfiguredProvider) -> None:
     voice_ids = {voice.id for voice in provider.voices}
     if len(voice_ids) != len(provider.voices):
         raise ValueError(f"provider {provider.id} has duplicate voice ids")
-    if provider.default_voice is not None and provider.default_voice not in voice_ids:
+    if provider.default_voice is not None and (
+        provider.type == "mlx_audio" or provider.default_voice not in voice_ids
+    ):
         default_tts_model = (
-            provider.default_models.tts_builtin
-            if provider.default_models is not None
-            else None
+            provider.default_models.tts_builtin if provider.default_models is not None else None
         )
         if default_tts_model is None:
             default_tts_model = next(
                 (model.id for model in provider.models if model.capability == "tts.builtin"),
                 None,
             )
-        default_model_voice_ids = {
-            voice.id
-            for voice in model_by_id.get(default_tts_model).voices
-        } if default_tts_model in model_by_id else set()
-        if provider.default_voice not in default_model_voice_ids:
+        default_model = model_by_id.get(default_tts_model)
+        default_model_voice_ids = (
+            {voice.id for voice in default_model.voices} if default_model is not None else set()
+        )
+        if provider.default_voice not in default_model_voice_ids and (
+            provider.type == "mlx_audio" or provider.default_voice not in voice_ids
+        ):
             raise ValueError(f"provider {provider.id} default_voice is not configured")
     provider_option_ids = [(option.capability, option.key) for option in provider.options]
     if len(provider_option_ids) != len(set(provider_option_ids)):
@@ -204,9 +206,7 @@ def validate_configured_provider(provider: ConfiguredProvider) -> None:
     for model in provider.models:
         model_voice_ids_for_model = {voice.id for voice in model.voices}
         if len(model_voice_ids_for_model) != len(model.voices):
-            raise ValueError(
-                f"provider {provider.id} model {model.id} has duplicate voice ids"
-            )
+            raise ValueError(f"provider {provider.id} model {model.id} has duplicate voice ids")
         for option in model.options:
             if model.capability is not None and option.capability != model.capability:
                 raise ValueError(

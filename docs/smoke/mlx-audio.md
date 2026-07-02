@@ -32,10 +32,10 @@ of the Qwen3 speaker list.
 
 | Model path | Extra dependency |
 | --- | --- |
-| Kokoro | `rtk uv pip install misaki`; Japanese `rtk uv pip install 'misaki[ja]'`; Mandarin `rtk uv pip install 'misaki[zh]'` |
-| Qwen3 ForcedAligner | Future alignment capability only; Japanese needs `rtk uv pip install nagisa`, Korean needs `rtk uv pip install soynlp` |
+| Kokoro (upstream-only; not in default Voice Toolbox model list) | `rtk uv pip install misaki`; Japanese `rtk uv pip install 'misaki[ja]'`; Mandarin `rtk uv pip install 'misaki[zh]'` |
+| Qwen3 ForcedAligner (future alignment capability; not in default model list) | Japanese needs `rtk uv pip install nagisa`, Korean needs `rtk uv pip install soynlp` |
 | Ming Omni BailingMM | May need `rtk uv pip install onnx safetensors` if campplus conversion runs |
-| Voxtral TTS | Covered by `mlx-audio[tts]` through `mistral-common[audio]` |
+| Voxtral TTS (upstream-only; not in default Voice Toolbox model list) | Covered by `mlx-audio[tts]` through `mistral-common[audio]` |
 | Non-WAV encode/decode | Install host binary with `brew install ffmpeg` |
 
 ## Required Smoke Matrix

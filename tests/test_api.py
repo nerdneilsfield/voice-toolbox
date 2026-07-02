@@ -395,10 +395,15 @@ def test_mlx_audio_tts_route_skips_api_key_readiness(tmp_path: Path) -> None:
                 default_voice="Mia",
                 default_models=ProviderDefaultModels(tts_builtin="fake-tts", asr="fake-asr"),
                 models=[
-                    ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
+                    ModelInfo(
+                        id="fake-tts",
+                        name="Fake TTS",
+                        capability="tts.builtin",
+                        voices=[VoiceInfo(id="Mia", name="Mia")],
+                    ),
                     ModelInfo(id="fake-asr", name="Fake ASR", capability="asr.transcribe"),
                 ],
-                voices=[VoiceInfo(id="Mia", name="Mia")],
+                voices=[],
             )
         ],
     )

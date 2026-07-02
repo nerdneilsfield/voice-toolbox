@@ -107,14 +107,16 @@ gender = "female"
 
 
 def test_model_info_accepts_model_scoped_voices() -> None:
-    model = ModelInfo(
-        id="qwen3-tts",
-        name="Qwen3 TTS",
-        capability="tts.builtin",
-        voices=[
-            VoiceInfo(id="Ryan", name="Ryan", language="en", gender="male"),
-            {"id": "Vivian", "name": "Vivian", "language": "zh", "gender": "female"},
-        ],
+    model = ModelInfo.model_validate(
+        {
+            "id": "qwen3-tts",
+            "name": "Qwen3 TTS",
+            "capability": "tts.builtin",
+            "voices": [
+                {"id": "Ryan", "name": "Ryan", "language": "en", "gender": "male"},
+                {"id": "Vivian", "name": "Vivian", "language": "zh", "gender": "female"},
+            ],
+        }
     )
 
     assert [voice.id for voice in model.voices] == ["Ryan", "Vivian"]
@@ -840,6 +842,32 @@ default_voice = "Ryan"
 
 [providers.default_models]
 tts_builtin = "longcat-audiodit-1b"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="default_voice"):
+        load_app_config(path)
+
+
+def test_mlx_audio_default_voice_cannot_hide_in_provider_level_voices(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "mlx-audio"
+type = "mlx_audio"
+name = "MLX Audio"
+default_voice = "Ryan"
+
+[providers.default_models]
+tts_builtin = "longcat-audiodit-1b"
+
+[[providers.voices]]
+id = "Ryan"
+name = "Ryan"
 """.strip(),
         encoding="utf-8",
     )

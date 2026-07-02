@@ -88,15 +88,32 @@ describe("provider selection", () => {
     expect(voicesForModel(mlxProvider, [], "longcat")).toEqual([]);
   });
 
-  it("respects empty model voices for non-mlx providers", () => {
+  it("uses non-empty model voices for non-mlx providers", () => {
     const providerWithModelVoices: Provider = {
       id: "future",
       name: "Future",
       capabilities: ["tts.builtin"],
-      models: [{ id: "plain", name: "Plain", capability: "tts.builtin", voices: [] }],
+      models: [
+        { id: "plain", name: "Plain", capability: "tts.builtin", voices: [{ id: "model-voice", name: "Model Voice" }] },
+      ],
       voices: [{ id: "provider-voice", name: "Provider Voice" }],
     };
 
-    expect(voicesForModel(providerWithModelVoices, providerWithModelVoices.voices ?? [], "plain")).toEqual([]);
+    expect(voicesForModel(providerWithModelVoices, providerWithModelVoices.voices ?? [], "plain")).toEqual([
+      { id: "model-voice", name: "Model Voice" },
+    ]);
+  });
+
+  it("keeps provider voices for legacy provider models serialized with empty voices", () => {
+    const mimoProvider: Provider = {
+      id: "mimo",
+      name: "MiMo",
+      type: "mimo",
+      capabilities: ["tts.builtin"],
+      models: [{ id: "mimo-tts", name: "MiMo TTS", capability: "tts.builtin", voices: [] }],
+      voices: [{ id: "Mia", name: "Mia" }],
+    };
+
+    expect(voicesForModel(mimoProvider, mimoProvider.voices ?? [], "mimo-tts")).toEqual([{ id: "Mia", name: "Mia" }]);
   });
 });

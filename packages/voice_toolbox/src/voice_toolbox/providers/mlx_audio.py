@@ -229,7 +229,11 @@ class MlxAudioProvider:
             "source_text_length": len(request.text or ""),
             "tts_mode": request.mode.value,
         }
-        applied_voice_id = self._applied_voice_id(request, selected=result.model)
+        applied_voice_id = (
+            self._applied_voice_id(request, selected=result.model)
+            if result.model is not None
+            else None
+        )
         if applied_voice_id is not None:
             metadata["voice_id"] = applied_voice_id
         if request.clone_reference_text:
@@ -472,7 +476,9 @@ class MlxAudioProvider:
         model_voice_ids = {voice.id for voice in model_info.voices} if model_info else set()
         if model_voice_ids:
             if request.voice_id not in model_voice_ids:
-                raise ProviderError(f"unsupported MLX Audio voice for {selected}: {request.voice_id}")
+                raise ProviderError(
+                    f"unsupported MLX Audio voice for {selected}: {request.voice_id}"
+                )
             kwargs["voice"] = request.voice_id
         if "lang_code" not in kwargs:
             kwargs["lang_code"] = "auto"
