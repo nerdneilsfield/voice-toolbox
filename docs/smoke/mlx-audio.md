@@ -18,6 +18,18 @@ default_voice = "Ryan"
 
 ## Model-Specific Dependencies
 
+MLX Audio voices are model-specific. Qwen3 builtin TTS has preset speakers;
+LongCat, Ming Omni, and Higgs Audio v3 use zero-shot/reference workflows instead
+of the Qwen3 speaker list.
+
+| Model | Voice behavior |
+| --- | --- |
+| Qwen3 TTS builtin | Preset speakers: `Ryan`, `Aiden`, `Vivian`, `Serena`, `Uncle_Fu`, `Dylan`, `Eric` |
+| Qwen3 TTS clone | Reference audio plus exact `--reference-text`; preset `--voice` is not required |
+| LongCat AudioDiT | Zero-shot generation or reference audio/text; do not pass Qwen3 speaker names |
+| Ming Omni BailingMM | Reference audio/text, prompts, and style instructions; do not pass Qwen3 speaker names |
+| Higgs Audio v3 | Reference clips/transcripts and inline control tokens; do not pass Qwen3 speaker names |
+
 | Model path | Extra dependency |
 | --- | --- |
 | Kokoro | `rtk uv pip install misaki`; Japanese `rtk uv pip install 'misaki[ja]'`; Mandarin `rtk uv pip install 'misaki[zh]'` |
@@ -49,17 +61,17 @@ rtk uv run voice-toolbox asr transcribe --file ./speech.wav --provider mlx-audio
 Run LongCat short WAV:
 
 ```bash
-rtk uv run voice-toolbox tts synthesize --provider mlx-audio --model longcat-audiodit-1b --text "Short LongCat smoke test." --voice default
+rtk uv run voice-toolbox tts synthesize --provider mlx-audio --model longcat-audiodit-1b --text "Short LongCat smoke test."
 ```
 
 Run Higgs Audio v3 only when memory allows:
 
 ```bash
-rtk uv run voice-toolbox tts synthesize --provider mlx-audio --model higgs-audio-v3-tts-4b --text "Short Higgs smoke test." --voice default
+rtk uv run voice-toolbox tts synthesize --provider mlx-audio --model higgs-audio-v3-tts-4b --text "Short Higgs smoke test."
 ```
 
 Run Ming Omni load/generate only on a machine with enough memory:
 
 ```bash
-rtk uv run voice-toolbox tts synthesize --provider mlx-audio --model ming-omni-tts-16.8b-a3b --text "Short Ming Omni smoke test." --voice default
+rtk uv run voice-toolbox tts synthesize --provider mlx-audio --model ming-omni-tts-16.8b-a3b --text "Short Ming Omni smoke test."
 ```

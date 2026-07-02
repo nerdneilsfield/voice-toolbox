@@ -106,6 +106,7 @@ StyleOption = Annotated[
     str | None,
     typer.Option("--style", help="Optional style instruction."),
 ]
+VoiceOption = Annotated[str | None, typer.Option("--voice", help="Voice id.")]
 
 
 def build_provider_registry() -> ProviderRegistry:
@@ -125,7 +126,7 @@ def main() -> None:
 
 @tts_app.command()
 def synthesize(
-    voice: Annotated[str, typer.Option("--voice", help="Voice id.")],
+    voice: VoiceOption = None,
     text: OptionalTextOption = None,
     file: TextFileOption = None,
     provider: ProviderOption = None,

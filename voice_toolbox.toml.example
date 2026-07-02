@@ -101,6 +101,7 @@ capability = "asr.transcribe"
 # id = "mlx-audio"
 # type = "mlx_audio"
 # name = "MLX Audio"
+# default_voice points at the default Qwen3 builtin model's model-scoped voices.
 # default_voice = "Ryan"
 
 # To add another provider, copy the [[providers]] block and use another api_key_env,

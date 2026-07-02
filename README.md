@@ -75,6 +75,13 @@ The first MLX Audio version supports `tts.builtin`, `tts.clone`, and
 `asr.transcribe`. Qwen3 clone requires `clone_reference_text` so the MLX model
 takes its ICL voice-clone path.
 
+MLX Audio voices are model-specific. Qwen3 builtin TTS exposes preset speakers
+`Ryan`, `Aiden`, `Vivian`, `Serena`, `Uncle_Fu`, `Dylan`, and `Eric`. LongCat,
+Ming Omni, and Higgs Audio v3 do not use the Qwen3 preset speaker list; they use
+zero-shot generation, reference audio, reference text, and/or inline control
+tokens depending on the model. Ming Omni may need `onnx` and `safetensors` if
+campplus conversion runs.
+
 When `voice_toolbox.toml` exists, it is the source of truth for `base_url`,
 `api.host`, and `api.port`. The `.env` values `MIMO_BASE_URL`,
 `VOICE_TOOLBOX_API_HOST`, and `VOICE_TOOLBOX_API_PORT` are fallback-only aliases
@@ -183,7 +190,10 @@ rtk uv run --env-file .env voice-toolbox asr transcribe \
   --chunk-overlap-ms 1200
 ```
 
-More real-provider checks live in [docs/smoke/mimo.md](docs/smoke/mimo.md).
+More real-provider checks live in [docs/smoke/mimo.md](docs/smoke/mimo.md),
+[docs/smoke/fish-audio.md](docs/smoke/fish-audio.md),
+[docs/smoke/openrouter.md](docs/smoke/openrouter.md), and
+[docs/smoke/mlx-audio.md](docs/smoke/mlx-audio.md).
 
 Fish Audio provider support:
 

@@ -176,6 +176,23 @@ def test_tts_synthesize_prints_audio_artifact(monkeypatch, tmp_path: Path) -> No
     assert provider.tts_requests[0].output_format == "wav"
 
 
+def test_tts_synthesize_allows_omitted_voice_for_model_without_picker(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    provider = _install_recording_provider(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli.app,
+        ["tts", "synthesize", "--text", "hello", "--model", "longcat-audiodit-1b"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.tts_requests[0].voice_id is None
+    assert provider.tts_requests[0].model == "longcat-audiodit-1b"
+
+
 def test_tts_synthesize_accepts_format_wav(monkeypatch, tmp_path: Path) -> None:
     provider = _install_recording_provider(monkeypatch, tmp_path)
     runner = CliRunner()
