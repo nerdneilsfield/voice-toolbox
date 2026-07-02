@@ -1486,7 +1486,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.18" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.54" },
-    { name = "typer", specifier = ">=0.26.8" },
+    { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 provides-extras = ["dev", "mac"]
