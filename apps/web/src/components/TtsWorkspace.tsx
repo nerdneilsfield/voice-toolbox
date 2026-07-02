@@ -234,19 +234,23 @@ export function TtsWorkspace({
       {ttsMode === "builtin" ? (
         <>
           <section className="card">
-            <div className="card-header">
-              <span className="card-label">{t("tts.voice")}</span>
-            </div>
-            <label className="field">
-              <select value={voiceId} onChange={(event) => onVoiceIdChange(event.target.value)}>
-                {voices.map((voice) => (
-                  <option key={voice.id} value={voice.id}>
-                    {voice.name || voice.id}
-                  </option>
-                ))}
-              </select>
-              {selectedVoice?.note ? <span className="field-hint">{selectedVoice.note}</span> : null}
-            </label>
+            {voices.length > 0 ? (
+              <>
+                <div className="card-header">
+                  <span className="card-label">{t("tts.voice")}</span>
+                </div>
+                <label className="field">
+                  <select value={voiceId} onChange={(event) => onVoiceIdChange(event.target.value)}>
+                    {voices.map((voice) => (
+                      <option key={voice.id} value={voice.id}>
+                        {voice.name || voice.id}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedVoice?.note ? <span className="field-hint">{selectedVoice.note}</span> : null}
+                </label>
+              </>
+            ) : null}
             <label className="field">
               <span className="field-title">{t("tts.stylePrompt")}</span>
               <input

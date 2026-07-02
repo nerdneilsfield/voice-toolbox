@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Provider, ProviderModel, Voice } from "../api";
-import { selectDefaultVoice, selectModelForCapability } from "../lib/providerSelection";
+import { selectDefaultVoice, selectModelForCapability, voicesForModel } from "../lib/providerSelection";
 
 /**
  * Derives model + voice selections for a provider, resetting them when the
@@ -42,24 +42,33 @@ export function useProviderSelection(provider: Provider | null, voices: Voice[])
       clone: selectModelForCapability(provider, "tts.clone", providerChanged ? null : current.clone),
       asr: selectModelForCapability(provider, "asr.transcribe", providerChanged ? null : current.asr),
     }));
-    // Provider changed -> reset to default. But voices load asynchronously,
-    // so the first run may see an empty voice list and leave voiceId blank.
-    // Backfill the default once voices arrive and voiceId is still empty
-    // (current value not in the list), otherwise the controlled select drifts
-    // out of sync with React state.
+  }, [provider]);
+
+  // Voice options may be model-scoped. Recompute when provider voices load or
+  // the selected builtin model changes.
+  useEffect(() => {
     setVoiceId((current) => {
-      if (providerChanged) return selectDefaultVoice(provider, voices, null) ?? "";
-      const stillValid = current && voices.some((voice) => voice.id === current);
-      if (!current && voices.length > 0) return selectDefaultVoice(provider, voices, null) ?? voices[0].id;
-      return stillValid ? current : (selectDefaultVoice(provider, voices, null) ?? "");
+      const modelVoices = voicesForModel(provider, voices, models.builtin);
+      if (modelVoices.length === 0) return provider?.default_voice ?? current ?? "";
+      return selectDefaultVoice(provider, modelVoices, current) ?? "";
     });
-  }, [provider, voices]);
+  }, [provider, voices, models.builtin]);
 
-  const setModel = (capability: keyof ModelSelection, value: string | null) => {
-    setModels((current) => ({ ...current, [capability]: value }));
-  };
+  const setModel = useCallback(
+    (capability: keyof ModelSelection, value: string | null) => {
+      setModels((current) => ({ ...current, [capability]: value }));
+      if (capability === "builtin") {
+        const modelVoices = voicesForModel(provider, voices, value);
+        setVoiceId((current) => {
+          if (modelVoices.length === 0) return provider?.default_voice ?? current ?? "";
+          return selectDefaultVoice(provider, modelVoices, current) ?? "";
+        });
+      }
+    },
+    [provider, voices],
+  );
 
-  return useMemo(() => ({ models, voiceId, setModel, setVoiceId }), [models, voiceId]);
+  return useMemo(() => ({ models, voiceId, setModel, setVoiceId }), [models, setModel, voiceId]);
 }
 
 export function modelsForCapability(provider: Provider | null, capability: string): ProviderModel[] {

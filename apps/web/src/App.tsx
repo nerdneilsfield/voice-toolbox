@@ -12,6 +12,7 @@ import { useProviderSelection } from "./hooks/useProviderSelection";
 import { useI18n } from "./i18n";
 import type { Artifact, Voice } from "./api";
 import { getArtifacts, getVoices } from "./api";
+import { voicesForModel } from "./lib/providerSelection";
 
 type MainTab = "tts" | "asr";
 
@@ -162,6 +163,7 @@ function App() {
   }
 
   const globalError = providerError || voicesError;
+  const ttsVoices = voicesForModel(selectedProvider, voices, selection.models.builtin);
 
   return (
     <main className="app-shell">
@@ -192,7 +194,7 @@ function App() {
             providerId={selectedProviderId}
             models={selection.models}
             onModelChange={onModelChange}
-            voices={voices}
+            voices={ttsVoices}
             voiceId={selection.voiceId}
             onVoiceIdChange={selection.setVoiceId}
             ttsMode={ttsMode}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Provider, Voice } from "../api";
-import { selectDefaultVoice, selectModelForCapability } from "./providerSelection";
+import { selectDefaultVoice, selectModelForCapability, voicesForModel } from "./providerSelection";
 
 const provider: Provider = {
   id: "mimo",
@@ -44,5 +44,47 @@ describe("provider selection", () => {
 
   it("keeps current valid voice on same provider refresh", () => {
     expect(selectDefaultVoice(provider, voices, "冰糖")).toBe("冰糖");
+  });
+
+  it("uses selected model voices before provider voices", () => {
+    const mlxProvider: Provider = {
+      id: "mlx-audio",
+      name: "MLX Audio",
+      capabilities: ["tts.builtin"],
+      default_models: { tts_builtin: "qwen3" },
+      models: [
+        {
+          id: "qwen3",
+          name: "Qwen3",
+          capability: "tts.builtin",
+          voices: [
+            { id: "Ryan", name: "Ryan" },
+            { id: "Aiden", name: "Aiden" },
+          ],
+        },
+        { id: "longcat", name: "LongCat", capability: "tts.builtin", voices: [] },
+      ],
+      voices: [{ id: "legacy", name: "Legacy" }],
+    };
+
+    expect(voicesForModel(mlxProvider, mlxProvider.voices ?? [], "qwen3").map((voice) => voice.id)).toEqual([
+      "Ryan",
+      "Aiden",
+    ]);
+  });
+
+  it("removes model voices when selected model has none", () => {
+    const mlxProvider: Provider = {
+      id: "mlx-audio",
+      name: "MLX Audio",
+      capabilities: ["tts.builtin"],
+      models: [
+        { id: "qwen3", name: "Qwen3", capability: "tts.builtin", voices: [{ id: "Ryan", name: "Ryan" }] },
+        { id: "longcat", name: "LongCat", capability: "tts.builtin", voices: [] },
+      ],
+      voices: [],
+    };
+
+    expect(voicesForModel(mlxProvider, [], "longcat")).toEqual([]);
   });
 });

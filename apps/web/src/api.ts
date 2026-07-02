@@ -8,6 +8,7 @@ export type ProviderModel = {
   capability?: string | null;
   note?: string | null;
   options?: ProviderOptionSpec[];
+  voices?: Voice[];
   transcript_capabilities?: TranscriptCapabilities | null;
 };
 

@@ -37,3 +37,18 @@ export function selectDefaultVoice(
   }
   return voices[0]?.id ?? null;
 }
+
+export function voicesForModel(
+  provider: Provider | null | undefined,
+  providerVoices: Voice[],
+  modelId?: string | null,
+): Voice[] {
+  const model = provider?.models.find((item) => item.id === modelId);
+  if (provider?.type === "mlx_audio") {
+    return model?.voices ?? [];
+  }
+  if (model?.voices && model.voices.length > 0) {
+    return model.voices;
+  }
+  return providerVoices;
+}
