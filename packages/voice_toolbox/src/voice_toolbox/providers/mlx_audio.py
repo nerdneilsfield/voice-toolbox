@@ -5,6 +5,7 @@ import io
 import importlib
 import platform
 import tempfile
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -60,6 +61,7 @@ TTSLoader = Callable[..., Any]
 STTLoader = Callable[..., Any]
 WavWriter = Callable[[Any, int], bytes]
 PlatformCheck = Callable[[], None]
+TTSCacheKey = tuple[str, tuple[str, ...]]
 
 
 def _load_tts_model(model_id: str, **kwargs: object) -> Any:
@@ -110,8 +112,14 @@ class MlxAudioProvider:
         self._operation_counter = 0
         self._closed = False
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
-        self._tts_models: dict[str, Any] = {}
+        self._lifecycle_lock = threading.RLock()
+        self._counter_lock = threading.Lock()
+        self._tts_cache_lock = threading.Lock()
+        self._stt_cache_lock = threading.Lock()
+        self._tts_models: dict[TTSCacheKey, Any] = {}
         self._stt_models: dict[str, Any] = {}
+        self._tts_inference_locks: dict[TTSCacheKey, threading.Lock] = {}
+        self._stt_inference_locks: dict[str, threading.Lock] = {}
         self._tts_loader = tts_loader
         self._stt_loader = stt_loader
         self._wav_writer = wav_writer
@@ -144,10 +152,11 @@ class MlxAudioProvider:
         return self._artifact_root
 
     def close(self) -> None:
-        if self._temp_dir is not None:
-            self._temp_dir.cleanup()
-            self._temp_dir = None
-        self._closed = True
+        with self._lifecycle_lock:
+            if self._temp_dir is not None:
+                self._temp_dir.cleanup()
+                self._temp_dir = None
+            self._closed = True
 
     def __enter__(self) -> MlxAudioProvider:
         return self
@@ -221,14 +230,16 @@ class MlxAudioProvider:
             raise ProviderError("mlx_audio TTS output format must be wav")
         selected = self._resolve_tts_model(request)
         upstream = _upstream_model_id(selected)
-        model = self._load_tts(selected, upstream)
+        model, inference_lock = self._load_tts(selected, upstream)
         kwargs = self._tts_kwargs(request)
         kwargs = _validated_generate_kwargs(model.generate, kwargs)
         try:
-            results = list(model.generate(**kwargs))
-            audio, sample_rate = _merge_generation_results(results, model)
+            with inference_lock:
+                results = list(model.generate(**kwargs))
+                audio, sample_rate = _merge_generation_results(results, model)
+                wav_audio = self._wav_writer(audio, sample_rate)
             return ProviderAudioResult(
-                audio=self._wav_writer(audio, sample_rate),
+                audio=wav_audio,
                 mime_type="audio/wav",
                 suffix=".wav",
                 model=selected,
@@ -288,7 +299,7 @@ class MlxAudioProvider:
                 "mlx_audio forced alignment is not asr.transcribe; use a future alignment capability"
             )
         upstream = _upstream_model_id(selected)
-        model = self._load_stt(selected, upstream)
+        model, inference_lock = self._load_stt(selected, upstream)
         kwargs = _provider_options_without_core_collisions(
             request.provider_options,
             core_keys=ASR_CORE_OPTION_KEYS,
@@ -298,7 +309,8 @@ class MlxAudioProvider:
             kwargs["language"] = language
         kwargs = _validated_generate_kwargs(model.generate, kwargs)
         try:
-            result = model.generate(str(request.audio_path), **kwargs)
+            with inference_lock:
+                result = model.generate(str(request.audio_path), **kwargs)
         except ProviderError:
             raise
         except Exception as exc:
@@ -308,28 +320,32 @@ class MlxAudioProvider:
             raise ProviderError("mlx_audio response is missing transcript text")
         return TranscriptPayload(text=text, segments=_segments_from_result(result))
 
-    def _load_tts(self, selected: str, upstream: str) -> Any:
-        if selected not in self._tts_models:
-            kwargs: dict[str, object] = {}
-            if _is_bailingmm_model(selected, upstream):
-                kwargs["allow_patterns"] = [*DEFAULT_MLX_ALLOW_PATTERNS, "*.onnx"]
+    def _load_tts(self, selected: str, upstream: str) -> tuple[Any, threading.Lock]:
+        cache_key, kwargs = _tts_cache_key(selected, upstream)
+        with self._tts_cache_lock:
+            if cache_key in self._tts_models:
+                return self._tts_models[cache_key], self._tts_inference_locks[cache_key]
             try:
-                self._tts_models[selected] = self._tts_loader(upstream, **kwargs)
+                self._tts_models[cache_key] = self._tts_loader(upstream, **kwargs)
+                self._tts_inference_locks[cache_key] = threading.Lock()
             except ProviderError:
                 raise
             except Exception as exc:
                 raise _dependency_error(exc, selected_model=selected, upstream_model=upstream) from exc
-        return self._tts_models[selected]
+            return self._tts_models[cache_key], self._tts_inference_locks[cache_key]
 
-    def _load_stt(self, selected: str, upstream: str) -> Any:
-        if selected not in self._stt_models:
+    def _load_stt(self, selected: str, upstream: str) -> tuple[Any, threading.Lock]:
+        with self._stt_cache_lock:
+            if upstream in self._stt_models:
+                return self._stt_models[upstream], self._stt_inference_locks[upstream]
             try:
-                self._stt_models[selected] = self._stt_loader(upstream)
+                self._stt_models[upstream] = self._stt_loader(upstream)
+                self._stt_inference_locks[upstream] = threading.Lock()
             except ProviderError:
                 raise
             except Exception as exc:
                 raise _dependency_error(exc, selected_model=selected, upstream_model=upstream) from exc
-        return self._stt_models[selected]
+            return self._stt_models[upstream], self._stt_inference_locks[upstream]
 
     def _resolve_tts_model(self, request: TTSRequest) -> str:
         if request.mode == TTSMode.DESIGN:
@@ -384,12 +400,15 @@ class MlxAudioProvider:
         return kwargs
 
     def _next_operation_id(self, operation: str) -> str:
-        self._operation_counter += 1
-        return f"{self.id}-{self._operation_prefix}-{operation}-{self._operation_counter}"
+        with self._counter_lock:
+            self._operation_counter += 1
+            counter = self._operation_counter
+        return f"{self.id}-{self._operation_prefix}-{operation}-{counter}"
 
     def _ensure_open(self) -> None:
-        if self._closed:
-            raise ProviderError("mlx_audio provider is closed")
+        with self._lifecycle_lock:
+            if self._closed:
+                raise ProviderError("mlx_audio provider is closed")
 
 
 def _ensure_apple_silicon_macos() -> None:
@@ -414,6 +433,16 @@ def _is_bailingmm_model(selected_model: str, upstream_model: str) -> bool:
 def _is_kokoro_model(selected_model: str, upstream_model: str) -> bool:
     lowered = f"{selected_model} {upstream_model}".lower()
     return any(marker in lowered for marker in KOKORO_MODEL_MARKERS)
+
+
+def _tts_cache_key(selected: str, upstream: str) -> tuple[TTSCacheKey, dict[str, object]]:
+    allow_patterns: list[str] = []
+    if _is_bailingmm_model(selected, upstream):
+        allow_patterns = [*DEFAULT_MLX_ALLOW_PATTERNS, "*.onnx"]
+    kwargs: dict[str, object] = {}
+    if allow_patterns:
+        kwargs["allow_patterns"] = allow_patterns
+    return (upstream, tuple(allow_patterns)), kwargs
 
 
 def _asr_language(language: str) -> str | None:

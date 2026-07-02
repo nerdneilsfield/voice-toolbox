@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable, cast
@@ -93,6 +96,30 @@ class StrictASRModel:
     def generate(self, audio: str, *, language: str | None = None) -> object:
         self.calls.append({"audio": audio, "language": language})
         return SimpleNamespace(text="hello world", segments=[])
+
+
+class OverlapDetectingTTSModel:
+    sample_rate = 24000
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.overlap_count = 0
+        self._active = False
+        self._lock = threading.Lock()
+
+    def generate(self, **kwargs: object):
+        with self._lock:
+            if self._active:
+                self.overlap_count += 1
+                raise RuntimeError("overlapped generate")
+            self._active = True
+        try:
+            self.calls.append(kwargs)
+            time.sleep(0.02)
+            yield SimpleNamespace(audio=[0.0], sample_rate=24000)
+        finally:
+            with self._lock:
+                self._active = False
 
 
 def _writer(audio: object, sample_rate: int) -> bytes:
@@ -233,6 +260,75 @@ def test_tts_clone_passes_reference_audio_and_text(tmp_path: Path) -> None:
 
     assert model.calls[0]["ref_audio"] == str(sample)
     assert model.calls[0]["ref_text"] == "reference words"
+
+
+def test_tts_builtin_and_clone_aliases_share_upstream_cache(tmp_path: Path) -> None:
+    provider, _, _, tts_calls, _ = _provider(tmp_path)
+    sample = tmp_path / "voice.wav"
+    sample.write_bytes(b"RIFF0000WAVEfmt ")
+
+    provider.synthesize_bytes(
+        TTSRequest(
+            provider_id="mlx-audio",
+            mode=TTSMode.BUILTIN,
+            text="hello",
+            voice_id="Ryan",
+        )
+    )
+    clone_result = provider.synthesize_bytes(
+        TTSRequest(
+            provider_id="mlx-audio",
+            mode=TTSMode.CLONE,
+            text="hello",
+            clone_sample_path=sample,
+            clone_mime_type="audio/wav",
+            clone_reference_text="reference words",
+            consent_confirmed=True,
+        )
+    )
+
+    assert len(tts_calls) == 1
+    assert tts_calls[0] == {"model_id": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16"}
+    assert clone_result.model == "qwen3-tts-0.6b-base-clone"
+
+
+def test_tts_concurrent_calls_share_lazy_load_and_serialize_generate(tmp_path: Path) -> None:
+    model = OverlapDetectingTTSModel()
+    tts_calls: list[dict[str, object]] = []
+    loader_lock = threading.Lock()
+
+    def tts_loader(model_id: str, **kwargs: object) -> OverlapDetectingTTSModel:
+        time.sleep(0.02)
+        with loader_lock:
+            tts_calls.append({"model_id": model_id, **kwargs})
+        return model
+
+    provider = MlxAudioProvider(
+        config=_config(),
+        artifact_root=tmp_path,
+        tts_loader=tts_loader,
+        stt_loader=lambda model_id, **kwargs: FakeASRModel(),
+        wav_writer=_writer,
+        platform_check=lambda: None,
+    )
+
+    def synthesize_once(index: int) -> bytes:
+        return provider.synthesize_bytes(
+            TTSRequest(
+                provider_id="mlx-audio",
+                mode=TTSMode.BUILTIN,
+                text=f"hello {index}",
+                voice_id="Ryan",
+            )
+        ).audio
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(synthesize_once, range(8)))
+
+    assert results == [b"WAV:24000:[0.0]"] * 8
+    assert len(tts_calls) == 1
+    assert len(model.calls) == 8
+    assert model.overlap_count == 0
 
 
 def test_tts_artifact_metadata_keeps_trusted_values_and_no_raw_clone_text(
@@ -405,6 +501,18 @@ def test_asr_provider_options_reject_unknown_strict_generate_kwarg(tmp_path: Pat
                 provider_options={"beam_size": 4},
             )
         )
+
+
+def test_operation_ids_are_unique_under_concurrency(tmp_path: Path) -> None:
+    provider, _, _, _, _ = _provider(tmp_path)
+
+    def next_id(_: int) -> str:
+        return provider._next_operation_id("tts")
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        operation_ids = list(executor.map(next_id, range(500)))
+
+    assert len(operation_ids) == len(set(operation_ids))
 
 
 def test_unknown_asr_model_is_rejected_before_loader(tmp_path: Path) -> None:
