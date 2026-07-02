@@ -43,7 +43,14 @@ def test_output_format_accepts_wav_and_mp3() -> None:
 
 def test_output_format_rejects_unknown_values() -> None:
     with pytest.raises(ValidationError):
-        TTSRequest(mode=TTSMode.BUILTIN, text="hello", voice_id="voice-1", output_format="flac")
+        TTSRequest.model_validate(
+            {
+                "mode": TTSMode.BUILTIN,
+                "text": "hello",
+                "voice_id": "voice-1",
+                "output_format": "flac",
+            }
+        )
 
 
 def test_asr_language_supports_auto() -> None:
@@ -86,11 +93,13 @@ def test_operation_result_has_started_at_and_finished_at() -> None:
 
 def test_tts_request_rejects_unexpected_fields() -> None:
     with pytest.raises(ValidationError):
-        TTSRequest(
-            mode=TTSMode.BUILTIN,
-            text="hello",
-            voice_id="voice-1",
-            unexpected="nope",
+        TTSRequest.model_validate(
+            {
+                "mode": TTSMode.BUILTIN,
+                "text": "hello",
+                "voice_id": "voice-1",
+                "unexpected": "nope",
+            }
         )
 
 
@@ -124,10 +133,12 @@ def test_tts_request_strips_prompt_fields() -> None:
 
 def test_asr_request_rejects_unexpected_fields() -> None:
     with pytest.raises(ValidationError):
-        ASRRequest(
-            audio_path=Path("input.wav"),
-            mime_type="audio/wav",
-            raw_byte_size=10,
-            base64_size=16,
-            unexpected="nope",
+        ASRRequest.model_validate(
+            {
+                "audio_path": Path("input.wav"),
+                "mime_type": "audio/wav",
+                "raw_byte_size": 10,
+                "base64_size": 16,
+                "unexpected": "nope",
+            }
         )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, cast
 import urllib.request
 
 import msgpack
@@ -22,10 +22,24 @@ from voice_toolbox.providers.fish_audio import (
 )
 
 
+class FishCall(TypedDict):
+    path: str
+    headers: dict[str, str]
+    json_body: dict[str, object] | None
+    msgpack_body: dict[str, object] | None
+    files: dict[str, tuple[str, bytes, str]] | None
+    fields: dict[str, str]
+    timeout: float
+
+
 class FakeFishClient:
     def __init__(self, responses: list[FishHTTPResponse] | FishHTTPResponse) -> None:
-        self.responses = responses if isinstance(responses, list) else [responses]
-        self.calls: list[dict[str, object]] = []
+        self.responses: list[FishHTTPResponse]
+        if isinstance(responses, list):
+            self.responses = cast(list[FishHTTPResponse], responses)
+        else:
+            self.responses = [responses]
+        self.calls: list[FishCall] = []
 
     def post(
         self,
@@ -125,7 +139,9 @@ def test_fish_s2_builtin_uses_pro_free_by_default(tmp_path: Path) -> None:
     provider.synthesize(request)
 
     assert client.calls[0]["headers"] == {"model": "s2.1-pro-free"}
-    assert client.calls[0]["json_body"]["reference_id"] == "e58b0d7efca34eb38d5c4985e378abcb"
+    json_body = client.calls[0]["json_body"]
+    assert json_body is not None
+    assert json_body["reference_id"] == "e58b0d7efca34eb38d5c4985e378abcb"
 
 
 def test_fish_tts_provider_options_passthrough(tmp_path: Path) -> None:
@@ -147,7 +163,9 @@ def test_fish_tts_provider_options_passthrough(tmp_path: Path) -> None:
         )
     )
 
-    assert client.calls[0]["json_body"]["latency"] == "balanced"
+    json_body = client.calls[0]["json_body"]
+    assert json_body is not None
+    assert json_body["latency"] == "balanced"
 
 
 def test_fish_voice_design_decodes_first_audio_candidate(tmp_path: Path) -> None:
@@ -272,7 +290,8 @@ def test_fish_s2_clone_maps_to_s2_pro_api_header(tmp_path: Path) -> None:
     assert client.calls[0]["json_body"] is None
     payload = client.calls[0]["msgpack_body"]
     assert isinstance(payload, dict)
-    assert payload["references"][0]["audio"] == b"RIFF0000WAVEfmt "
+    references = cast(list[dict[str, object]], payload["references"])
+    assert references[0]["audio"] == b"RIFF0000WAVEfmt "
 
 
 def test_fish_http_client_encodes_msgpack_with_binary_audio(

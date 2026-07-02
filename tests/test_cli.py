@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from voice_toolbox.config import (
@@ -58,10 +59,10 @@ class RecordingProvider:
     def capabilities(self) -> set[str]:
         return {"tts.builtin", "tts.design", "tts.clone", "asr.transcribe"}
 
-    def list_models(self) -> list[object]:
+    def list_models(self) -> list[ModelInfo]:
         return []
 
-    def list_voices(self) -> list[object]:
+    def list_voices(self) -> list[VoiceInfo]:
         return []
 
     def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
@@ -113,14 +114,18 @@ class RecordingProvider:
         return TranscriptPayload(text=f"chunk {len(self.asr_requests)}")
 
 
-def _install_recording_provider(monkeypatch: object, tmp_path: Path) -> RecordingProvider:
+def _install_recording_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> RecordingProvider:
     provider = RecordingProvider(tmp_path)
     registry = ProviderRegistry([provider])
     monkeypatch.setattr(cli, "build_provider_registry", lambda: registry)
     return provider
 
 
-def _install_cli_config(monkeypatch: object, *, asr_chunking: ASRChunkingConfig | None = None):
+def _install_cli_config(
+    monkeypatch: pytest.MonkeyPatch, *, asr_chunking: ASRChunkingConfig | None = None
+) -> AppConfig:
     config = AppConfig(
         api=APIConfig(host="127.0.0.1", port=8000),
         logging=LoggingConfig(console=ConsoleLoggingConfig(enabled=False)),
@@ -253,7 +258,9 @@ def test_cli_tts_synthesize_accepts_file_and_chunk_options(
 
     assert result.exit_code == 0, result.output
     assert len(provider.tts_requests) > 1
-    assert provider.tts_requests[0].text.startswith("Title")
+    first_text = provider.tts_requests[0].text
+    assert first_text is not None
+    assert first_text.startswith("Title")
     assert "chunks:" in result.output
 
 

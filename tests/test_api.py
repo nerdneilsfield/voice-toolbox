@@ -25,6 +25,7 @@ from voice_toolbox.models import (
     ASRRequest,
     ModelInfo,
     ProviderAudioResult,
+    ProviderOptionOverride,
     ProviderOptionSpec,
     TranscriptCapabilities,
     TTSRequest,
@@ -1434,11 +1435,11 @@ def test_default_model_provider_options_are_merged(tmp_path: Path) -> None:
                 name="Fake TTS",
                 capability="tts.builtin",
                 options=[
-                    {
-                        "key": "speed",
-                        "capability": "tts.builtin",
-                        "max_value": 1.5,
-                    }
+                    ProviderOptionOverride(
+                        key="speed",
+                        capability="tts.builtin",
+                        max_value=1.5,
+                    )
                 ],
             ),
             ModelInfo(id="fake-asr", name="Fake ASR", capability="asr.transcribe"),

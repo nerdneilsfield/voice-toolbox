@@ -16,6 +16,10 @@ from voice_toolbox.models import TTSMode
 
 
 class Upload:
+    file: BytesIO
+    filename: str | None
+    content_type: str | None
+
     def __init__(
         self,
         data: bytes,

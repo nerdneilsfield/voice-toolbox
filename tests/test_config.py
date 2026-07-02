@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -685,7 +686,7 @@ def test_mlx_audio_provider_rejects_local_url_and_key_env() -> None:
 
 
 def test_network_provider_still_requires_url_and_key_env() -> None:
-    network_provider_base_urls = {
+    network_provider_base_urls: dict[Literal["mimo", "fish_audio", "openrouter"], str] = {
         "mimo": "https://api.xiaomimimo.com/v1",
         "fish_audio": "https://api.fish.audio",
         "openrouter": "https://openrouter.ai/api/v1",

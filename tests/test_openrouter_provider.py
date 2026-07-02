@@ -4,8 +4,10 @@ import base64
 import json
 import urllib.error
 import urllib.request
+from email.message import Message
 from io import BytesIO
 from pathlib import Path
+from typing import TypedDict, cast
 
 import pytest
 from pydantic import ValidationError
@@ -25,10 +27,20 @@ from voice_toolbox.providers.openrouter import (
 )
 
 
+class OpenRouterCall(TypedDict):
+    path: str
+    body: dict[str, object]
+    timeout: float
+
+
 class FakeOpenRouterClient:
     def __init__(self, responses: list[OpenRouterHTTPResponse] | OpenRouterHTTPResponse) -> None:
-        self.responses = responses if isinstance(responses, list) else [responses]
-        self.calls: list[dict[str, object]] = []
+        self.responses: list[OpenRouterHTTPResponse]
+        if isinstance(responses, list):
+            self.responses = cast(list[OpenRouterHTTPResponse], responses)
+        else:
+            self.responses = [responses]
+        self.calls: list[OpenRouterCall] = []
 
     def post_json(
         self,
@@ -368,7 +380,7 @@ def test_openrouter_http_client_returns_http_errors(monkeypatch) -> None:
                 request.full_url,
                 401,
                 "Unauthorized",
-                hdrs={},
+                hdrs=Message(),
                 fp=BytesIO(b"nope"),
             )
 

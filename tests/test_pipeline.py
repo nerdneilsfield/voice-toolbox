@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from voice_toolbox.chunking.models import TextSource
 import pytest
 
@@ -80,7 +82,8 @@ def test_prepare_tts_request_adds_source_and_chunking_metadata_for_inline_text()
     assert prepared.artifact_metadata["source_kind"] == "inline"
     assert prepared.artifact_metadata["source_text_raw_char_count"] == 450
     assert prepared.artifact_metadata["chunking_enabled"] is True
-    assert all(length <= 200 for length in prepared.artifact_metadata["chunking_text_lengths"])
+    lengths = cast(list[int], prepared.artifact_metadata["chunking_text_lengths"])
+    assert all(length <= 200 for length in lengths)
 
 
 def test_prepare_tts_request_rejects_invalid_chunk_override() -> None:
