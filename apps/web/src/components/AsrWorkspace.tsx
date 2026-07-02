@@ -3,6 +3,7 @@ import type { Artifact, ChunkingMode, Provider } from "../api";
 import { useI18n } from "../i18n";
 import { useAsrChunkUpload } from "../hooks/useAsrChunkUpload";
 import { useProviderOptions } from "../hooks/useProviderOptions";
+import { asrLanguageOptionsForProvider } from "../lib/asrLanguages";
 import {
   optionsForCapability,
   sanitizeOptionValues,
@@ -56,7 +57,7 @@ export function AsrWorkspace({
   const modelObj = selectedModel(provider, model);
   const specs = useMemo(() => optionsForCapability(provider, modelObj, "asr.transcribe"), [provider, modelObj]);
   const [optionValues, setOptionValues] = useProviderOptions(providerId, "asr.transcribe", specs);
-  const languageOptions = provider?.type === "mlx_audio" ? MLX_ASR_LANGUAGE_OPTIONS : BASIC_ASR_LANGUAGE_OPTIONS;
+  const languageOptions = asrLanguageOptionsForProvider(provider);
   const supportsTimestamps = Boolean(modelObj?.transcript_capabilities?.timestamps);
   const supportsSpeakers = Boolean(modelObj?.transcript_capabilities?.speakers);
 
@@ -126,9 +127,9 @@ export function AsrWorkspace({
         <label className="field">
           <span className="field-title">{t("asr.language")}</span>
           <select value={language} onChange={(event) => setLanguage(event.target.value)}>
-            {languageOptions.map((value) => (
-              <option key={value} value={value}>
-                {t(`asr.languageOption.${value}`)}
+            {languageOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {t(option.labelKey)}
               </option>
             ))}
           </select>
@@ -219,6 +220,3 @@ export function AsrWorkspace({
     </form>
   );
 }
-
-const BASIC_ASR_LANGUAGE_OPTIONS = ["auto", "zh", "en"] as const;
-const MLX_ASR_LANGUAGE_OPTIONS = ["auto", "zh", "yue", "en", "de", "es", "fr", "it", "pt", "ru", "ko", "ja"] as const;

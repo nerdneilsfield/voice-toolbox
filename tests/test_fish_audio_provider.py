@@ -396,7 +396,7 @@ def test_fish_asr_posts_multipart_and_writes_transcript(tmp_path: Path) -> None:
         mime_type="audio/wav",
         raw_byte_size=16,
         base64_size=24,
-        language="en",
+        language="ja",
         provider_options={"temperature": 0},
     )
 
@@ -411,7 +411,7 @@ def test_fish_asr_posts_multipart_and_writes_transcript(tmp_path: Path) -> None:
             "json_body": None,
             "msgpack_body": None,
             "files": {"audio": ("speech.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-            "fields": {"language": "en", "temperature": "0"},
+            "fields": {"language": "ja", "temperature": "0"},
             "timeout": 300.0,
         }
     ]

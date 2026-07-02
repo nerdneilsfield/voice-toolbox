@@ -89,6 +89,9 @@ models. Language hints include `auto`, `zh`, `yue`, `en`, `de`, `es`, `fr`,
 `it`, `pt`, `ru`, `ko`, and `ja`, matching the Qwen3 ASR language set. Upstream
 also ships Qwen3 ForcedAligner, but that model performs word-level alignment
 with transcript text; Voice Toolbox does not expose it as `asr.transcribe`.
+MiMo ASR keeps the official `auto`, `zh`, and `en` language set. Fish Audio ASR
+uses the multilingual set exposed in the web UI: `auto`, `zh`, `yue`, `en`,
+`de`, `es`, `fr`, `it`, `pt`, `ru`, `ko`, and `ja`.
 
 When `voice_toolbox.toml` exists, it is the source of truth for `base_url`,
 `api.host`, and `api.port`. The `.env` values `MIMO_BASE_URL`,

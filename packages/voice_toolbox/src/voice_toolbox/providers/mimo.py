@@ -47,6 +47,7 @@ GENERATION_TIMEOUT_SECONDS = 300.0
 TTS_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
 ASR_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
 RATE_LIMIT_BACKOFF_SECONDS = 0.25
+MIMO_ASR_LANGUAGES = {"auto", "zh", "en"}
 CLONE_MIME_SUFFIXES = {
     "audio/wav": {".wav"},
     "audio/mpeg": {".mp3"},
@@ -212,6 +213,8 @@ class MimoProvider:
         model = self._resolve_asr_model(request)
         self._validate_model_id(model, expected_capability=ASR_CAPABILITY)
         _validate_base64_size(request.base64_size)
+        if request.language not in MIMO_ASR_LANGUAGES:
+            raise ProviderError("MiMo ASR language must be one of: auto, zh, en")
         body: dict[str, Any] = {
             "model": model,
             "messages": [

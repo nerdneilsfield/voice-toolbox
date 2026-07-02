@@ -283,6 +283,27 @@ def test_asr_uses_chat_completions_input_audio_and_extra_body(tmp_path: Path) ->
     assert artifact.path.read_text(encoding="utf-8") == "你好"
 
 
+def test_asr_rejects_unsupported_language_before_request(tmp_path: Path) -> None:
+    audio = tmp_path / "input.wav"
+    audio.write_bytes(b"asr audio")
+    data_url, raw_size, base64_size = _audio_file_to_data_url(audio, "audio/wav")
+    request = ASRRequest(
+        audio_path=audio,
+        mime_type="audio/wav",
+        raw_byte_size=raw_size,
+        base64_size=base64_size,
+        language="ja",
+    )
+    provider = MimoProvider(
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=FakeClient(_asr_completion()),
+    )
+
+    with pytest.raises(ProviderError, match="auto, zh, en"):
+        provider._build_asr_body(request, data_url)
+
+
 def test_non_text_asr_transcript_raises_provider_error(tmp_path: Path) -> None:
     audio = tmp_path / "input.wav"
     audio.write_bytes(b"asr audio")
