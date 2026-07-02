@@ -466,7 +466,11 @@ class MlxAudioProvider:
         )
         self._validate_provider_option_keys(kwargs, selected=selected, capability=capability)
         kwargs["text"] = request.text or ""
-        if request.voice_id:
+        model_info = self._models_by_id.get(selected)
+        model_voice_ids = {voice.id for voice in model_info.voices} if model_info else set()
+        if model_voice_ids:
+            if request.voice_id not in model_voice_ids:
+                raise ProviderError(f"unsupported MLX Audio voice for {selected}: {request.voice_id}")
             kwargs["voice"] = request.voice_id
         if "lang_code" not in kwargs:
             kwargs["lang_code"] = "auto"

@@ -10,8 +10,8 @@ from typing import Any, Iterable, cast
 import pytest
 
 from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
-from voice_toolbox.defaults import MLX_AUDIO_TTS_OPTIONS
-from voice_toolbox.models import ASRRequest, ModelInfo, TTSMode, TTSRequest, VoiceInfo
+from voice_toolbox.defaults import MLX_AUDIO_QWEN3_VOICES, MLX_AUDIO_TTS_OPTIONS
+from voice_toolbox.models import ASRRequest, ModelInfo, TTSMode, TTSRequest
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.mlx_audio import (
     DEFAULT_MLX_ALLOW_PATTERNS,
@@ -34,11 +34,21 @@ def _config() -> ConfiguredProvider:
             asr="mlx-community/Qwen3-ASR-0.6B-8bit",
         ),
         models=[
-            ModelInfo(id="qwen3-tts-0.6b-base", name="Qwen3 TTS", capability="tts.builtin"),
+            ModelInfo(
+                id="qwen3-tts-0.6b-base",
+                name="Qwen3 TTS",
+                capability="tts.builtin",
+                voices=[voice.model_copy() for voice in MLX_AUDIO_QWEN3_VOICES],
+            ),
             ModelInfo(
                 id="qwen3-tts-0.6b-base-clone",
                 name="Qwen3 TTS Clone",
                 capability="tts.clone",
+            ),
+            ModelInfo(
+                id="longcat-audiodit-1b",
+                name="LongCat AudioDiT",
+                capability="tts.builtin",
             ),
             ModelInfo(
                 id="ming-omni-tts-16.8b-a3b",
@@ -52,7 +62,7 @@ def _config() -> ConfiguredProvider:
             ),
         ],
         options=[option.model_copy() for option in MLX_AUDIO_TTS_OPTIONS],
-        voices=[VoiceInfo(id="Ryan", name="Ryan")],
+        voices=[],
     )
 
 
@@ -223,6 +233,38 @@ def test_tts_provider_options_cannot_override_core_kwargs(tmp_path: Path) -> Non
         )
 
 
+def test_tts_builtin_rejects_voice_not_supported_by_selected_model(tmp_path: Path) -> None:
+    provider, model, _, _, _ = _provider(tmp_path)
+
+    with pytest.raises(ProviderError, match="unsupported MLX Audio voice"):
+        provider.synthesize_bytes(
+            TTSRequest(
+                provider_id="mlx-audio",
+                mode=TTSMode.BUILTIN,
+                text="hello",
+                voice_id="NotAQwenVoice",
+            )
+        )
+
+    assert model.calls == []
+
+
+def test_tts_builtin_omits_voice_for_models_without_preset_voices(tmp_path: Path) -> None:
+    provider, model, _, _, _ = _provider(tmp_path)
+
+    provider.synthesize_bytes(
+        TTSRequest(
+            provider_id="mlx-audio",
+            mode=TTSMode.BUILTIN,
+            model="longcat-audiodit-1b",
+            text="hello",
+            voice_id="Ryan",
+        )
+    )
+
+    assert "voice" not in model.calls[0]
+
+
 def test_tts_provider_options_reject_unknown_strict_generate_kwarg(tmp_path: Path) -> None:
     provider, _, _, _, _ = _provider(tmp_path, tts_model=StrictTTSModel())
 
@@ -300,12 +342,14 @@ def test_tts_clone_passes_reference_audio_and_text(tmp_path: Path) -> None:
             clone_sample_path=sample,
             clone_mime_type="audio/wav",
             clone_reference_text="reference words",
+            voice_id="Ryan",
             consent_confirmed=True,
         )
     )
 
     assert model.calls[0]["ref_audio"] == str(sample)
     assert model.calls[0]["ref_text"] == "reference words"
+    assert "voice" not in model.calls[0]
 
 
 def test_tts_builtin_and_clone_aliases_share_upstream_cache(tmp_path: Path) -> None:
