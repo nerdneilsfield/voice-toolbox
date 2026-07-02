@@ -6,8 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from voice_toolbox.config import AppConfig, ConfiguredProvider, ProviderDefaultModels
+from voice_toolbox.defaults import make_default_mlx_audio_provider_config
 from voice_toolbox.models import ASRRequest, ModelInfo, TTSMode, TTSRequest, VoiceInfo
 from voice_toolbox.providers.factory import build_provider_registry
+from voice_toolbox.providers.mlx_audio import MlxAudioProvider
 from voice_toolbox.providers.mimo import MIMO_MODELS, MIMO_VOICES, MimoProvider
 
 
@@ -127,3 +129,17 @@ def test_build_provider_registry_uses_config_and_env_values(tmp_path: Path) -> N
 
     assert isinstance(provider, MimoProvider)
     assert provider.id == "mimo-sgp"
+
+
+def test_build_provider_registry_constructs_mlx_audio_without_api_key(tmp_path: Path) -> None:
+    registry = build_provider_registry(
+        config=AppConfig(config_path=None, providers=[make_default_mlx_audio_provider_config()]),
+        artifact_root=tmp_path,
+        env_values={},
+    )
+
+    provider = registry.get("mlx-audio")
+
+    assert isinstance(provider, MlxAudioProvider)
+    assert provider.id == "mlx-audio"
+    assert provider.capabilities() >= {"tts.builtin", "tts.clone", "asr.transcribe"}

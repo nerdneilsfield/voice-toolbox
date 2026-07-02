@@ -25,15 +25,19 @@ from voice_toolbox.defaults import (
     DEFAULT_FISH_AUDIO_MODELS,
     DEFAULT_MIMO_BASE_URL,
     DEFAULT_MIMO_MODELS,
+    DEFAULT_MLX_AUDIO_MODELS,
     DEFAULT_OPENROUTER_MODELS,
     FISH_AUDIO_MODELS,
     FISH_AUDIO_VOICES,
     MIMO_MODELS,
     MIMO_VOICES,
+    MLX_AUDIO_MODELS,
+    MLX_AUDIO_TTS_OPTIONS,
+    MLX_AUDIO_VOICES,
     OPENROUTER_MODELS,
     OPENROUTER_VOICES,
 )
-from voice_toolbox.models import ModelInfo
+from voice_toolbox.models import ModelInfo, ProviderOptionSpec
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +242,14 @@ def _fill_provider_defaults(provider: dict[str, Any]) -> dict[str, Any]:
             models=OPENROUTER_MODELS,
             voices=OPENROUTER_VOICES,
         )
+    if provider.get("type") == "mlx_audio":
+        return _fill_defaults_for_provider(
+            provider,
+            default_models=DEFAULT_MLX_AUDIO_MODELS,
+            models=MLX_AUDIO_MODELS,
+            voices=MLX_AUDIO_VOICES,
+            options=MLX_AUDIO_TTS_OPTIONS,
+        )
     return dict(provider)
 
 
@@ -247,6 +259,7 @@ def _fill_defaults_for_provider(
     default_models: ProviderDefaultModels,
     models: list[ModelInfo],
     voices: list[Any],
+    options: list[ProviderOptionSpec] | None = None,
 ) -> dict[str, Any]:
     result = dict(provider)
     had_models = "models" in result
@@ -255,6 +268,8 @@ def _fill_defaults_for_provider(
         result["models"] = [model.model_dump() for model in models]
     if "voices" not in result:
         result["voices"] = [voice.model_dump() for voice in voices]
+    if "options" not in result and options:
+        result["options"] = [option.model_dump() for option in options]
     if "default_voice" not in result and not had_voices and voices:
         result["default_voice"] = voices[0].id
     models = [ModelInfo.model_validate(model) for model in result.get("models", [])]

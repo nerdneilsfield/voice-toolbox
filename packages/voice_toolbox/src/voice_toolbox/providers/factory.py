@@ -5,10 +5,21 @@ from pathlib import Path
 
 from voice_toolbox.artifacts import ArtifactStore
 from voice_toolbox.config import AppConfig, load_env_values
+from voice_toolbox.config_models import ConfiguredProvider
+from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.fish_audio import FishAudioProvider
+from voice_toolbox.providers.mlx_audio import MlxAudioProvider
 from voice_toolbox.providers.mimo import MimoProvider
 from voice_toolbox.providers.openrouter import OpenRouterProvider
 from voice_toolbox.providers.registry import ProviderRegistry
+
+
+def _api_key_for_network_provider(
+    provider_config: ConfiguredProvider, env: Mapping[str, str]
+) -> str | None:
+    if provider_config.api_key_env is None:
+        raise ProviderError(f"provider {provider_config.id} requires api_key_env")
+    return env.get(provider_config.api_key_env)
 
 
 def build_provider_registry(
@@ -25,7 +36,7 @@ def build_provider_registry(
             providers.append(
                 MimoProvider(
                     config=provider_config,
-                    api_key=env.get(provider_config.api_key_env),
+                    api_key=_api_key_for_network_provider(provider_config, env),
                     artifact_store=ArtifactStore(root),
                 )
             )
@@ -33,7 +44,7 @@ def build_provider_registry(
             providers.append(
                 FishAudioProvider(
                     config=provider_config,
-                    api_key=env.get(provider_config.api_key_env),
+                    api_key=_api_key_for_network_provider(provider_config, env),
                     artifact_store=ArtifactStore(root),
                 )
             )
@@ -41,7 +52,14 @@ def build_provider_registry(
             providers.append(
                 OpenRouterProvider(
                     config=provider_config,
-                    api_key=env.get(provider_config.api_key_env),
+                    api_key=_api_key_for_network_provider(provider_config, env),
+                    artifact_store=ArtifactStore(root),
+                )
+            )
+        elif provider_config.type == "mlx_audio":
+            providers.append(
+                MlxAudioProvider(
+                    config=provider_config,
                     artifact_store=ArtifactStore(root),
                 )
             )

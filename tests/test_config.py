@@ -726,3 +726,44 @@ def test_network_provider_still_requires_url_and_key_env() -> None:
                     base_url=base_url,
                     api_key_env=api_key_env,
                 )
+
+
+def test_mlx_audio_toml_gets_default_models_and_voices(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "mlx-audio"
+type = "mlx_audio"
+name = "MLX Audio"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_app_config(path)
+    provider = config.providers[0]
+
+    assert provider.default_models is not None
+    assert provider.base_url is None
+    assert provider.api_key_env is None
+    assert provider.default_models.tts_builtin == "qwen3-tts-0.6b-base"
+    assert provider.default_models.tts_clone == "qwen3-tts-0.6b-base-clone"
+    assert provider.default_models.asr == "mlx-community/Qwen3-ASR-0.6B-8bit"
+
+    model_ids = {model.id for model in provider.models}
+    assert model_ids >= {
+        "qwen3-tts-0.6b-base",
+        "qwen3-tts-0.6b-base-clone",
+        "longcat-audiodit-1b",
+        "ming-omni-tts-16.8b-a3b",
+        "higgs-audio-v3-tts-4b",
+        "mlx-community/Qwen3-ASR-0.6B-8bit",
+    }
+    voice_ids = {voice.id for voice in provider.voices}
+    assert voice_ids >= {"Ryan", "Aiden", "Vivian", "default"}
+    option_keys = {option.key for option in provider.options}
+    assert option_keys >= {"lang_code", "temperature", "speed"}
+    ming = next(model for model in provider.models if model.id == "ming-omni-tts-16.8b-a3b")
+    assert ming.note is not None
+    assert "onnx" in ming.note
+    assert "safetensors" in ming.note

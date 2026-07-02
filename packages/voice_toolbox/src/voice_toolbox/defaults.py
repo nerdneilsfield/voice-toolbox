@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
-from voice_toolbox.models import ModelInfo, VoiceInfo
+from voice_toolbox.models import ModelInfo, ProviderOptionSpec, VoiceInfo
 
 DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
 DEFAULT_FISH_AUDIO_BASE_URL = "https://api.fish.audio"
@@ -143,6 +143,106 @@ DEFAULT_OPENROUTER_MODELS = ProviderDefaultModels(
     asr="openai/whisper-1",
 )
 
+MLX_AUDIO_MODEL_ALIASES = {
+    "qwen3-tts-0.6b-base": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+    "qwen3-tts-0.6b-base-clone": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+    "qwen3-tts-1.7b-base-8bit": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+    "longcat-audiodit-1b": "mlx-community/LongCat-AudioDiT-1B-bf16",
+    "ming-omni-tts-16.8b-a3b": "mlx-community/Ming-omni-tts-16.8B-A3B-bf16",
+    "higgs-audio-v3-tts-4b": "bosonai/higgs-audio-v3-tts-4b",
+}
+
+MLX_AUDIO_TTS_OPTIONS: list[ProviderOptionSpec] = [
+    ProviderOptionSpec(
+        key="lang_code",
+        label="Language",
+        type="string",
+        capability=capability,
+        default="auto",
+        advanced=True,
+        safe_metadata=True,
+    )
+    for capability in ("tts.builtin", "tts.clone")
+] + [
+    ProviderOptionSpec(
+        key=key,
+        label=label,
+        type="number",
+        capability=capability,
+        default=default,
+        min_value=min_value,
+        max_value=max_value,
+        step=0.05,
+        advanced=True,
+        safe_metadata=True,
+    )
+    for capability in ("tts.builtin", "tts.clone")
+    for key, label, default, min_value, max_value in (
+        ("temperature", "Temperature", 0.7, 0.0, 2.0),
+        ("speed", "Speed", 1.0, 0.25, 4.0),
+    )
+]
+
+MLX_AUDIO_MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="qwen3-tts-0.6b-base",
+        name="Qwen3 TTS 0.6B Base",
+        capability="tts.builtin",
+    ),
+    ModelInfo(
+        id="qwen3-tts-0.6b-base-clone",
+        name="Qwen3 TTS 0.6B Clone",
+        capability="tts.clone",
+        note="uses upstream Qwen3 TTS base model with clone_reference_text",
+    ),
+    ModelInfo(
+        id="qwen3-tts-1.7b-base-8bit",
+        name="Qwen3 TTS 1.7B 8-bit",
+        capability="tts.builtin",
+    ),
+    ModelInfo(
+        id="longcat-audiodit-1b",
+        name="LongCat AudioDiT 1B",
+        capability="tts.builtin",
+    ),
+    ModelInfo(
+        id="ming-omni-tts-16.8b-a3b",
+        name="Ming Omni TTS 16.8B A3B",
+        capability="tts.builtin",
+        note="requires onnx and safetensors conversion artifacts",
+    ),
+    ModelInfo(
+        id="higgs-audio-v3-tts-4b",
+        name="Higgs Audio v3 TTS 4B",
+        capability="tts.builtin",
+        note="large model; expect higher memory and startup cost",
+    ),
+    ModelInfo(
+        id="mlx-community/Qwen3-ASR-0.6B-8bit",
+        name="Qwen3 ASR 0.6B 8-bit",
+        capability="asr.transcribe",
+    ),
+    ModelInfo(
+        id="mlx-community/Qwen3-ASR-1.7B-8bit",
+        name="Qwen3 ASR 1.7B 8-bit",
+        capability="asr.transcribe",
+    ),
+]
+
+MLX_AUDIO_VOICES: list[VoiceInfo] = [
+    VoiceInfo(id="Ryan", name="Ryan", language="en", gender="male"),
+    VoiceInfo(id="Aiden", name="Aiden", language="en", gender="male"),
+    VoiceInfo(id="Vivian", name="Vivian", language="en", gender="female"),
+    VoiceInfo(id="Serena", name="Serena", language="en", gender="female"),
+    VoiceInfo(id="default", name="Default"),
+]
+
+DEFAULT_MLX_AUDIO_MODELS = ProviderDefaultModels(
+    tts_builtin="qwen3-tts-0.6b-base",
+    tts_clone="qwen3-tts-0.6b-base-clone",
+    asr="mlx-community/Qwen3-ASR-0.6B-8bit",
+)
+
 
 def make_default_mimo_provider_config(
     *,
@@ -201,4 +301,23 @@ def make_default_openrouter_provider_config(
         default_models=DEFAULT_OPENROUTER_MODELS,
         models=[model.model_copy() for model in OPENROUTER_MODELS],
         voices=[voice.model_copy() for voice in OPENROUTER_VOICES],
+    )
+
+
+def make_default_mlx_audio_provider_config(
+    *,
+    provider_id: str = "mlx-audio",
+    name: str = "MLX Audio",
+) -> ConfiguredProvider:
+    return ConfiguredProvider(
+        id=provider_id,
+        type="mlx_audio",
+        name=name,
+        base_url=None,
+        api_key_env=None,
+        default_voice="Ryan",
+        default_models=DEFAULT_MLX_AUDIO_MODELS,
+        models=[model.model_copy() for model in MLX_AUDIO_MODELS],
+        voices=[voice.model_copy() for voice in MLX_AUDIO_VOICES],
+        options=[option.model_copy() for option in MLX_AUDIO_TTS_OPTIONS],
     )
