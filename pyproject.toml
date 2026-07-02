@@ -29,6 +29,9 @@ dev = [
   "ruff>=0.6",
   "ty>=0.0.54",
 ]
+mac = [
+  "mlx-audio[tts,stt]>=0.4.4 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 
 [project.scripts]
 voice-toolbox = "voice_toolbox.cli:app"

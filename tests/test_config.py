@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,13 @@ from voice_toolbox.config import (
     preview_config_path,
     replay_config_warnings,
 )
-from voice_toolbox.models import ProviderOptionOverride, ProviderOptionSpec
+from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
+from voice_toolbox.models import (
+    ModelInfo,
+    ProviderOptionOverride,
+    ProviderOptionSpec,
+    VoiceInfo,
+)
 
 
 def test_loads_builtin_default_without_toml(
@@ -605,3 +612,91 @@ api_key_env = "BAD_KEY"
 
     with pytest.raises(ConfigError, match="mimo|fish_audio|openrouter"):
         load_app_config(path)
+
+
+def test_mac_extra_installs_mlx_audio_without_model_specific_deps() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    mac_deps = pyproject["project"]["optional-dependencies"]["mac"]
+    joined = "\n".join(mac_deps)
+
+    assert (
+        "mlx-audio[tts,stt]>=0.4.4 ; "
+        "sys_platform == 'darwin' and platform_machine == 'arm64'"
+    ) in mac_deps
+    assert "misaki" not in joined
+    assert "nagisa" not in joined
+    assert "soynlp" not in joined
+    assert "onnx" not in joined
+
+
+def test_mlx_audio_provider_accepts_local_credentials_none() -> None:
+    provider = ConfiguredProvider(
+        id="mlx-audio",
+        type="mlx_audio",
+        name="MLX Audio",
+        base_url=None,
+        api_key_env=None,
+        default_voice="Ryan",
+        default_models=ProviderDefaultModels(
+            tts_builtin="qwen3-tts-0.6b-base",
+            tts_clone="qwen3-tts-0.6b-base-clone",
+            asr="mlx-community/Qwen3-ASR-0.6B-8bit",
+        ),
+        models=[
+            ModelInfo(id="qwen3-tts-0.6b-base", name="Qwen3 TTS", capability="tts.builtin"),
+            ModelInfo(
+                id="qwen3-tts-0.6b-base-clone",
+                name="Qwen3 TTS Clone",
+                capability="tts.clone",
+            ),
+            ModelInfo(
+                id="mlx-community/Qwen3-ASR-0.6B-8bit",
+                name="Qwen3 ASR",
+                capability="asr.transcribe",
+            ),
+        ],
+        voices=[VoiceInfo(id="Ryan", name="Ryan", language="en", gender="male")],
+    )
+
+    assert provider.base_url is None
+    assert provider.api_key_env is None
+
+
+def test_mlx_audio_provider_rejects_local_url_and_key_env() -> None:
+    with pytest.raises(ValueError, match="base_url is not used by local provider type mlx_audio"):
+        ConfiguredProvider(
+            id="mlx-audio",
+            type="mlx_audio",
+            name="MLX Audio",
+            base_url="https://localhost.example",
+            api_key_env=None,
+        )
+
+    with pytest.raises(ValueError, match="api_key_env is not used by local provider type mlx_audio"):
+        ConfiguredProvider(
+            id="mlx-audio",
+            type="mlx_audio",
+            name="MLX Audio",
+            base_url=None,
+            api_key_env="MLX_AUDIO_API_KEY",
+        )
+
+
+def test_network_provider_still_requires_url_and_key_env() -> None:
+    with pytest.raises(ValueError, match="base_url is required"):
+        ConfiguredProvider(
+            id="mimo",
+            type="mimo",
+            name="MiMo",
+            base_url=None,
+            api_key_env="MIMO_API_KEY",
+        )
+
+    with pytest.raises(ValueError, match="api_key_env is required"):
+        ConfiguredProvider(
+            id="mimo",
+            type="mimo",
+            name="MiMo",
+            base_url="https://api.xiaomimimo.com/v1",
+            api_key_env=None,
+        )

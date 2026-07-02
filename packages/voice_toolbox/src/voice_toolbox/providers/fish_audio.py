@@ -78,6 +78,11 @@ class FishAudioProvider:
         if base_url is not None:
             resolved_config = resolved_config.model_copy(update={"base_url": base_url})
 
+        base_url_value = resolved_config.base_url
+        api_key_env_value = resolved_config.api_key_env
+        if base_url_value is None or api_key_env_value is None:
+            raise ProviderError(f"provider {resolved_config.id} requires base_url and api_key_env")
+
         self._config = resolved_config
         self.id = resolved_config.id
         self.name = resolved_config.name
@@ -87,10 +92,10 @@ class FishAudioProvider:
             self._client = client
         elif api_key:
             factory = client_factory or FishHTTPClient
-            self._client = factory(api_key=api_key, base_url=resolved_config.base_url)
+            self._client = factory(api_key=api_key, base_url=base_url_value)
         else:
             self._client = _MissingCredentialsClient(
-                resolved_config.api_key_env,
+                api_key_env_value,
                 provider_id=resolved_config.id,
             )
         self._operation_prefix = uuid4().hex

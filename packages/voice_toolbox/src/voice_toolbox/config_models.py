@@ -99,19 +99,32 @@ class ConfiguredProvider(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1)
-    type: Literal["mimo", "fish_audio", "openrouter"]
+    type: Literal["mimo", "fish_audio", "openrouter", "mlx_audio"]
     name: str = Field(min_length=1)
-    base_url: str = Field(min_length=1)
-    api_key_env: str = Field(min_length=1)
+    base_url: str | None = None
+    api_key_env: str | None = None
     default_voice: str | None = None
     default_models: ProviderDefaultModels | None = None
     models: list[ModelInfo] = Field(default_factory=list)
     voices: list[VoiceInfo] = Field(default_factory=list)
     options: list[ProviderOptionSpec] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unused_local_provider_credentials(cls, data: object) -> object:
+        if not isinstance(data, dict) or data.get("type") != "mlx_audio":
+            return data
+        if data.get("base_url") is not None:
+            raise ValueError("base_url is not used by local provider type mlx_audio")
+        if data.get("api_key_env") is not None:
+            raise ValueError("api_key_env is not used by local provider type mlx_audio")
+        return data
+
     @field_validator("base_url")
     @classmethod
-    def validate_base_url(cls, value: str) -> str:
+    def validate_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
         parsed = urlsplit(value)
         if parsed.scheme != "https" or not parsed.netloc:
             raise ValueError("base_url must be an https URL")
@@ -120,6 +133,16 @@ class ConfiguredProvider(BaseModel):
         if parsed.query or parsed.fragment:
             raise ValueError("base_url must not include query or fragment")
         return value
+
+    @model_validator(mode="after")
+    def validate_provider_credentials(self) -> ConfiguredProvider:
+        if self.type == "mlx_audio":
+            return self
+        if self.base_url is None:
+            raise ValueError(f"base_url is required for provider type {self.type}")
+        if self.api_key_env is None:
+            raise ValueError(f"api_key_env is required for provider type {self.type}")
+        return self
 
 
 class AppConfig(BaseModel):
