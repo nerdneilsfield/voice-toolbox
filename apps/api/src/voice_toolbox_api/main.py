@@ -911,6 +911,7 @@ def _provider_summary(
             "type": "test",
             "base_url": None,
             "api_key_env": None,
+            "requires_api_key": False,
             "has_api_key": False,
             "api_key_preview": None,
             "config_path_preview": preview_config_path(config.config_path),
@@ -922,15 +923,25 @@ def _provider_summary(
             "voices": [voice.model_dump(mode="json") for voice in provider.list_voices()],
         }
 
-    api_key = env_values.get(provider_config.api_key_env)
+    requires_api_key = provider_config.api_key_env is not None
+    api_key = (
+        env_values.get(provider_config.api_key_env)
+        if provider_config.api_key_env is not None
+        else None
+    )
     return {
         "id": provider.id,
         "name": provider.name,
         "type": provider_config.type,
         "base_url": provider_config.base_url,
         "api_key_env": provider_config.api_key_env,
+        "requires_api_key": requires_api_key,
         "has_api_key": bool(api_key),
-        "api_key_preview": mask_api_key_preview(api_key, trusted_local=trusted_local),
+        "api_key_preview": (
+            mask_api_key_preview(api_key, trusted_local=trusted_local)
+            if requires_api_key
+            else None
+        ),
         "config_path_preview": preview_config_path(config.config_path),
         "default_voice": provider_config.default_voice,
         "default_models": (
@@ -1247,6 +1258,8 @@ def _ensure_provider_configured_for_operation(request: Request, provider_id: str
     config_provider = _configured_provider_for_id(request.app.state.config, provider_id)
     if config_provider is None:
         raise HTTPException(status_code=503, detail=f"provider {provider_id} is not configured")
+    if config_provider.api_key_env is None:
+        return
     value = request.app.state.env_values.get(config_provider.api_key_env)
     if not value:
         raise HTTPException(

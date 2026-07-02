@@ -10,6 +10,7 @@ export const en = {
   "keyStatus.unavailable": "Key status unavailable",
   "keyStatus.configured": "API key configured",
   "keyStatus.missing": "API key missing",
+  "keyStatus.local": "Local provider",
 
   "providerDetails.statusAria": "Provider status",
   "providerDetails.env": "Env",
@@ -19,6 +20,7 @@ export const en = {
   "providerDetails.na": "n/a",
   "providerDetails.configured": "configured",
   "providerDetails.missing": "missing",
+  "providerDetails.notRequired": "not required",
 
   "nav.ariaSections": "Toolbox sections",
   "nav.ttsSection": "TTS",
@@ -186,6 +188,7 @@ export const zh: Record<keyof typeof en, string> = {
   "keyStatus.unavailable": "密钥状态不可用",
   "keyStatus.configured": "API 密钥已配置",
   "keyStatus.missing": "API 密钥缺失",
+  "keyStatus.local": "本地提供方",
 
   "providerDetails.statusAria": "提供方状态",
   "providerDetails.env": "环境变量",
@@ -195,6 +198,7 @@ export const zh: Record<keyof typeof en, string> = {
   "providerDetails.na": "无",
   "providerDetails.configured": "已配置",
   "providerDetails.missing": "缺失",
+  "providerDetails.notRequired": "无需密钥",
 
   "nav.ariaSections": "工具箱分区",
   "nav.ttsSection": "TTS",

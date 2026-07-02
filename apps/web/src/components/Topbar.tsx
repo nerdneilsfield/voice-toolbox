@@ -1,5 +1,6 @@
 import type { Provider } from "../api";
 import { useI18n } from "../i18n";
+import { providerRequiresApiKey } from "../lib/providerReadiness";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -57,7 +58,13 @@ function KeyStatus({ provider, loading }: { provider: Provider | null; loading: 
   if (loading) {
     return <span className="status-badge">{t("keyStatus.loading")}</span>;
   }
-  if (!provider || provider.has_api_key === undefined) {
+  if (!provider) {
+    return <span className="status-badge">{t("keyStatus.unavailable")}</span>;
+  }
+  if (!providerRequiresApiKey(provider)) {
+    return <span className="status-badge ok">{t("keyStatus.local")}</span>;
+  }
+  if (provider.has_api_key === undefined) {
     return <span className="status-badge">{t("keyStatus.unavailable")}</span>;
   }
   if (provider.has_api_key) {

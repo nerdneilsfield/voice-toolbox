@@ -63,6 +63,7 @@ export type Provider = {
   base_url?: string | null;
   api_key_env?: string | null;
   api_key_preview?: string | null;
+  requires_api_key?: boolean;
   config_path_preview?: string;
   default_voice?: string | null;
   default_models?: ProviderDefaultModels;

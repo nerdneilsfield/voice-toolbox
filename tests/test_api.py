@@ -145,6 +145,11 @@ class RecordingMimoProvider(FakeProvider):
         return payload
 
 
+class RecordingMlxAudioProvider(RecordingMimoProvider):
+    id = "mlx-audio"
+    name = "MLX Audio"
+
+
 class ExplodingProvider(RecordingMimoProvider):
     def synthesize(
         self,
@@ -336,6 +341,84 @@ def test_provider_summary_falls_back_for_unconfigured_injected_provider(tmp_path
     assert summary["config_path_preview"] == "built-in default"
     assert summary["capabilities"] == sorted(provider.capabilities())
     assert {voice["id"] for voice in summary["voices"]} == {"Mia", "Chen"}
+
+
+def test_mlx_audio_provider_summary_does_not_require_api_key(tmp_path: Path) -> None:
+    provider = RecordingMlxAudioProvider(tmp_path)
+    config = AppConfig(
+        config_path=None,
+        providers=[
+            ConfiguredProvider(
+                id="mlx-audio",
+                type="mlx_audio",
+                name="MLX Audio",
+                base_url=None,
+                api_key_env=None,
+                default_models=ProviderDefaultModels(tts_builtin="fake-tts", asr="fake-asr"),
+                models=[
+                    ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
+                    ModelInfo(id="fake-asr", name="Fake ASR", capability="asr.transcribe"),
+                ],
+            )
+        ],
+    )
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=config,
+        env_values={},
+    )
+    client = TestClient(app)
+
+    summary = client.get("/v1/providers").json()["providers"][0]
+
+    assert summary["type"] == "mlx_audio"
+    assert summary["base_url"] is None
+    assert summary["api_key_env"] is None
+    assert summary["requires_api_key"] is False
+    assert summary["has_api_key"] is False
+    assert summary["api_key_preview"] is None
+
+
+def test_mlx_audio_tts_route_skips_api_key_readiness(tmp_path: Path) -> None:
+    provider = RecordingMlxAudioProvider(tmp_path)
+    config = AppConfig(
+        config_path=None,
+        providers=[
+            ConfiguredProvider(
+                id="mlx-audio",
+                type="mlx_audio",
+                name="MLX Audio",
+                base_url=None,
+                api_key_env=None,
+                default_voice="Mia",
+                default_models=ProviderDefaultModels(tts_builtin="fake-tts", asr="fake-asr"),
+                models=[
+                    ModelInfo(id="fake-tts", name="Fake TTS", capability="tts.builtin"),
+                    ModelInfo(id="fake-asr", name="Fake ASR", capability="asr.transcribe"),
+                ],
+                voices=[VoiceInfo(id="Mia", name="Mia")],
+            )
+        ],
+    )
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=config,
+        env_values={},
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={
+            "provider_id": "mlx-audio",
+            "text": "hello",
+            "voice_id": "Mia",
+        },
+    )
+
+    assert response.status_code == 200
 
 
 def test_missing_key_blocks_only_operation_not_listing(tmp_path: Path) -> None:
