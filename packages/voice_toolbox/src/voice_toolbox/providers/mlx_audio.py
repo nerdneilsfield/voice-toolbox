@@ -7,11 +7,12 @@ import platform
 import tempfile
 import threading
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from voice_toolbox.artifacts import ArtifactStore
@@ -111,8 +112,11 @@ class MlxAudioProvider:
         self._operation_prefix = uuid4().hex
         self._operation_counter = 0
         self._closed = False
+        self._active_operations = 0
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._lifecycle_lock = threading.RLock()
+        self._lifecycle_condition = threading.Condition(self._lifecycle_lock)
+        self._lease_state = threading.local()
         self._counter_lock = threading.Lock()
         self._tts_cache_lock = threading.Lock()
         self._stt_cache_lock = threading.Lock()
@@ -152,11 +156,13 @@ class MlxAudioProvider:
         return self._artifact_root
 
     def close(self) -> None:
-        with self._lifecycle_lock:
+        with self._lifecycle_condition:
+            self._closed = True
+            while self._active_operations > 0:
+                self._lifecycle_condition.wait()
             if self._temp_dir is not None:
                 self._temp_dir.cleanup()
                 self._temp_dir = None
-            self._closed = True
 
     def __enter__(self) -> MlxAudioProvider:
         return self
@@ -169,7 +175,41 @@ class MlxAudioProvider:
     ) -> None:
         self.close()
 
+    @contextmanager
+    def _operation_lease(self) -> Iterator[None]:
+        depth = getattr(self._lease_state, "depth", 0)
+        if depth > 0:
+            self._lease_state.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._lease_state.depth = depth
+            return
+
+        with self._lifecycle_condition:
+            if self._closed:
+                raise ProviderError("mlx_audio provider is closed")
+            self._active_operations += 1
+        self._lease_state.depth = 1
+        try:
+            yield
+        finally:
+            self._lease_state.depth = 0
+            with self._lifecycle_condition:
+                self._active_operations -= 1
+                if self._active_operations == 0:
+                    self._lifecycle_condition.notify_all()
+
     def synthesize(
+        self,
+        request: TTSRequest,
+        *,
+        artifact_metadata: Mapping[str, object] | None = None,
+    ) -> AudioArtifact:
+        with self._operation_lease():
+            return self._synthesize(request, artifact_metadata=artifact_metadata)
+
+    def _synthesize(
         self,
         request: TTSRequest,
         *,
@@ -224,6 +264,10 @@ class MlxAudioProvider:
         return artifact
 
     def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        with self._operation_lease():
+            return self._synthesize_bytes(request)
+
+    def _synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
         self._ensure_open()
         self._platform_check()
         if request.output_format != "wav":
@@ -256,6 +300,10 @@ class MlxAudioProvider:
             ) from exc
 
     def transcribe(self, request: ASRRequest) -> TranscriptArtifact:
+        with self._operation_lease():
+            return self._transcribe(request)
+
+    def _transcribe(self, request: ASRRequest) -> TranscriptArtifact:
         operation_id = self._next_operation_id("asr")
         started_at = datetime.now(UTC)
         payload = self.transcribe_payload(request)
@@ -291,6 +339,10 @@ class MlxAudioProvider:
         return artifact
 
     def transcribe_payload(self, request: ASRRequest) -> TranscriptPayload:
+        with self._operation_lease():
+            return self._transcribe_payload(request)
+
+    def _transcribe_payload(self, request: ASRRequest) -> TranscriptPayload:
         self._ensure_open()
         self._platform_check()
         selected = self._resolve_asr_model(request)
@@ -406,8 +458,8 @@ class MlxAudioProvider:
         return f"{self.id}-{self._operation_prefix}-{operation}-{counter}"
 
     def _ensure_open(self) -> None:
-        with self._lifecycle_lock:
-            if self._closed:
+        with self._lifecycle_condition:
+            if self._closed and getattr(self._lease_state, "depth", 0) == 0:
                 raise ProviderError("mlx_audio provider is closed")
 
 

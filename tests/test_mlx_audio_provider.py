@@ -122,6 +122,20 @@ class OverlapDetectingTTSModel:
                 self._active = False
 
 
+class BlockingTTSModel:
+    sample_rate = 24000
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate(self, **kwargs: object):
+        self.started.set()
+        if not self.release.wait(timeout=2):
+            raise RuntimeError("test timed out waiting to release generate")
+        yield SimpleNamespace(audio=[0.0], sample_rate=24000)
+
+
 def _writer(audio: object, sample_rate: int) -> bytes:
     return f"WAV:{sample_rate}:{list(cast(Iterable[object], audio))}".encode()
 
@@ -362,6 +376,84 @@ def test_tts_artifact_metadata_keeps_trusted_values_and_no_raw_clone_text(
     assert artifact.metadata["uploaded_file_suffix"] == ".wav"
     assert isinstance(artifact.metadata["uploaded_file_name_hash"], str)
     assert "clone_reference_text" not in artifact.metadata
+
+
+def test_close_waits_for_in_flight_synthesize_before_temp_cleanup() -> None:
+    model = BlockingTTSModel()
+    provider = MlxAudioProvider(
+        config=_config(),
+        tts_loader=lambda model_id, **kwargs: model,
+        stt_loader=lambda model_id, **kwargs: FakeASRModel(),
+        wav_writer=_writer,
+        platform_check=lambda: None,
+    )
+    temp_root = provider.artifact_root
+
+    def synthesize_once():
+        return provider.synthesize(
+            TTSRequest(
+                provider_id="mlx-audio",
+                mode=TTSMode.BUILTIN,
+                text="hello",
+                voice_id="Ryan",
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        synthesize_future = executor.submit(synthesize_once)
+        assert model.started.wait(timeout=2)
+        close_future = executor.submit(provider.close)
+
+        time.sleep(0.05)
+        assert not close_future.done()
+        assert temp_root.exists()
+
+        model.release.set()
+        synthesize_future.result(timeout=2)
+        close_future.result(timeout=2)
+
+    assert not temp_root.exists()
+
+
+def test_new_synthesize_bytes_is_rejected_after_close_begins() -> None:
+    model = BlockingTTSModel()
+    provider = MlxAudioProvider(
+        config=_config(),
+        tts_loader=lambda model_id, **kwargs: model,
+        stt_loader=lambda model_id, **kwargs: FakeASRModel(),
+        wav_writer=_writer,
+        platform_check=lambda: None,
+    )
+
+    def synthesize_once() -> bytes:
+        return provider.synthesize_bytes(
+            TTSRequest(
+                provider_id="mlx-audio",
+                mode=TTSMode.BUILTIN,
+                text="hello",
+                voice_id="Ryan",
+            )
+        ).audio
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        synthesize_future = executor.submit(synthesize_once)
+        assert model.started.wait(timeout=2)
+        close_future = executor.submit(provider.close)
+        time.sleep(0.05)
+
+        with pytest.raises(ProviderError, match="closed"):
+            provider.synthesize_bytes(
+                TTSRequest(
+                    provider_id="mlx-audio",
+                    mode=TTSMode.BUILTIN,
+                    text="late",
+                    voice_id="Ryan",
+                )
+            )
+
+        model.release.set()
+        assert synthesize_future.result(timeout=2) == b"WAV:24000:[0.0]"
+        close_future.result(timeout=2)
 
 
 def test_ming_loader_includes_onnx_allow_pattern(tmp_path: Path) -> None:
