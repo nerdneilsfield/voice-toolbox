@@ -548,10 +548,16 @@ class _MissingCredentialsClient:
         )
 
 
+_FISH_CLONE_TO_API_MODEL = {
+    "s1-design": "s1",
+    "s1-clone": "s1",
+    "s2.1-pro-clone": "s2.1-pro",
+    "s2-pro-clone": "s2-pro",
+}
+
+
 def _fish_api_model_id(model: str) -> str:
-    if model in {"s1-design", "s1-clone"}:
-        return "s1"
-    return model
+    return _FISH_CLONE_TO_API_MODEL.get(model, model)
 
 
 def _apply_fish_provider_options(

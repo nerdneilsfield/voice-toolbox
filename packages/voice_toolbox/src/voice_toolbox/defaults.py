@@ -42,6 +42,24 @@ DEFAULT_MIMO_MODELS = ProviderDefaultModels(
 )
 
 FISH_AUDIO_MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="s2.1-pro-free",
+        name="Fish Audio S2.1 Pro Free",
+        capability="tts.builtin",
+        note="free tier under Fair Use; 83 languages; default built-in model",
+    ),
+    ModelInfo(
+        id="s2.1-pro",
+        name="Fish Audio S2.1 Pro",
+        capability="tts.builtin",
+        note="latest paid Pro model",
+    ),
+    ModelInfo(
+        id="s2-pro",
+        name="Fish Audio S2 Pro",
+        capability="tts.builtin",
+        note="paid Pro model; supports multi-speaker dialogue",
+    ),
     ModelInfo(id="s1", name="Fish Audio S1", capability="tts.builtin"),
     ModelInfo(
         id="s1-design",
@@ -55,6 +73,18 @@ FISH_AUDIO_MODELS: list[ModelInfo] = [
         capability="tts.clone",
         note="uses Fish Audio model header s1 with MessagePack references",
     ),
+    ModelInfo(
+        id="s2.1-pro-clone",
+        name="Fish Audio S2.1 Pro Clone",
+        capability="tts.clone",
+        note="uses Fish Audio model header s2.1-pro with MessagePack references",
+    ),
+    ModelInfo(
+        id="s2-pro-clone",
+        name="Fish Audio S2 Pro Clone",
+        capability="tts.clone",
+        note="uses Fish Audio model header s2-pro with MessagePack references",
+    ),
     ModelInfo(id="fish-audio-asr", name="Fish Audio ASR", capability="asr.transcribe"),
 ]
 
@@ -63,11 +93,23 @@ FISH_AUDIO_VOICES: list[VoiceInfo] = [
         id="e58b0d7efca34eb38d5c4985e378abcb",
         name="Fish Audio default reference",
         note="public reference_id from Fish Audio docs; replace with your own model/reference id",
-    )
+    ),
+    VoiceInfo(id="bf6c479f5a384b8d857310030035824b", name="活泼女声", language="zh", gender="female"),
+    VoiceInfo(id="7f92f8afb8ec43bf81429cc1c9199cb1", name="AD 学姐", language="zh", gender="female"),
+    VoiceInfo(id="54a5170264694bfc8e9ad98df7bd89c3", name="丁真", language="zh", gender="male"),
+    VoiceInfo(id="aebaa2305aa2452fbdc8f41eec852a79", name="雷军", language="zh", gender="male"),
+    VoiceInfo(id="59cb5986671546eaa6ca8ae6f29f6d22", name="央视配音", language="zh", gender="male"),
+    VoiceInfo(id="e80ea225770f42f79d50aa98be3cedfc", name="孙笑川", language="zh", gender="male"),
+    VoiceInfo(id="f6f293aabfe24e46aff0fc309c233d31", name="曹操", language="zh", gender="male"),
+    VoiceInfo(id="5c353fdb312f4888836a9a5680099ef0", name="女大学生", language="zh", gender="female"),
+    VoiceInfo(id="57eab548c7ed4ddc974c4c153cb015b2", name="女主播", language="zh", gender="female"),
+    VoiceInfo(id="af495c47b4484b2b92244872bbabd9af", name="张琦震惊", language="zh", gender="female"),
+    VoiceInfo(id="0d6c092805a04e53aef4848f77d5c366", name="白发女教授", language="zh", gender="female"),
+    VoiceInfo(id="dd43b30d04d9446a94ebe41f301229b5", name="纪录片男声", language="zh", gender="male"),
 ]
 
 DEFAULT_FISH_AUDIO_MODELS = ProviderDefaultModels(
-    tts_builtin="s1",
+    tts_builtin="s2.1-pro-free",
     tts_design="s1-design",
     tts_clone="s1-clone",
     asr="fish-audio-asr",

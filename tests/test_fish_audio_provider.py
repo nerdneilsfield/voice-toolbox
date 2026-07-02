@@ -67,6 +67,7 @@ def test_fish_builtin_tts_posts_json_and_writes_audio(tmp_path: Path) -> None:
     request = TTSRequest(
         provider_id="fish-audio",
         mode=TTSMode.BUILTIN,
+        model="s1",
         text="hello",
         voice_id="e58b0d7efca34eb38d5c4985e378abcb",
     )
@@ -92,6 +93,27 @@ def test_fish_builtin_tts_posts_json_and_writes_audio(tmp_path: Path) -> None:
             "timeout": 300.0,
         }
     ]
+
+
+def test_fish_s2_builtin_uses_pro_free_by_default(tmp_path: Path) -> None:
+    client = FakeFishClient(_response(b"WAVDATA"))
+    provider = FishAudioProvider(
+        config=make_default_fish_audio_provider_config(),
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+    )
+    request = TTSRequest(
+        provider_id="fish-audio",
+        mode=TTSMode.BUILTIN,
+        text="hello",
+        voice_id="e58b0d7efca34eb38d5c4985e378abcb",
+    )
+
+    provider.synthesize(request)
+
+    assert client.calls[0]["headers"] == {"model": "s2.1-pro-free"}
+    assert client.calls[0]["json_body"]["reference_id"] == "e58b0d7efca34eb38d5c4985e378abcb"
 
 
 def test_fish_tts_provider_options_passthrough(tmp_path: Path) -> None:
@@ -206,6 +228,39 @@ def test_fish_clone_tts_posts_msgpack_references_and_writes_audio(tmp_path: Path
         "normalize": True,
         "references": [{"audio": b"RIFF0000WAVEfmt ", "text": "sample transcript"}],
     }
+
+
+def test_fish_s2_clone_maps_to_s2_pro_api_header(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.wav"
+    sample.write_bytes(b"RIFF0000WAVEfmt ")
+    client = FakeFishClient(_response(b"CLONED"))
+    provider = FishAudioProvider(
+        config=make_default_fish_audio_provider_config(),
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+    )
+    request = TTSRequest(
+        provider_id="fish-audio",
+        mode=TTSMode.CLONE,
+        model="s2-pro-clone",
+        text="target text",
+        clone_sample_path=sample,
+        clone_mime_type="audio/wav",
+        clone_reference_text="sample transcript",
+        clone_raw_byte_size=16,
+        clone_base64_size=24,
+        consent_confirmed=True,
+    )
+
+    artifact = provider.synthesize(request)
+
+    assert artifact.path.read_bytes() == b"CLONED"
+    assert client.calls[0]["headers"] == {"model": "s2-pro"}
+    assert client.calls[0]["json_body"] is None
+    payload = client.calls[0]["msgpack_body"]
+    assert isinstance(payload, dict)
+    assert payload["references"][0]["audio"] == b"RIFF0000WAVEfmt "
 
 
 def test_fish_http_client_encodes_msgpack_with_binary_audio(

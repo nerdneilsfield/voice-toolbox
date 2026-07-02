@@ -406,10 +406,14 @@ api_key_env = "FISH_AUDIO_API_KEY"
 
     assert provider.type == "fish_audio"
     assert provider.default_models is not None
-    assert provider.default_models.tts_builtin == "s1"
+    assert provider.default_models.tts_builtin == "s2.1-pro-free"
     assert provider.default_models.tts_design == "s1-design"
     assert provider.default_models.tts_clone == "s1-clone"
     assert provider.default_models.asr == "fish-audio-asr"
+    builtin_models = [m.id for m in provider.models if m.capability == "tts.builtin"]
+    clone_models = [m.id for m in provider.models if m.capability == "tts.clone"]
+    assert builtin_models == ["s2.1-pro-free", "s2.1-pro", "s2-pro", "s1"]
+    assert clone_models == ["s1-clone", "s2.1-pro-clone", "s2-pro-clone"]
     assert {model.capability for model in provider.models} == {
         "tts.builtin",
         "tts.design",
