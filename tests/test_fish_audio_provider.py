@@ -56,6 +56,18 @@ def _response(content: bytes, *, status_code: int = 200) -> FishHTTPResponse:
     return FishHTTPResponse(status_code=status_code, content=content, headers={})
 
 
+def test_fish_provider_validates_base_url_override_with_config(tmp_path: Path) -> None:
+    client = FakeFishClient(_response(b"WAVDATA"))
+
+    with pytest.raises(ValueError, match="base_url must not include query or fragment"):
+        FishAudioProvider(
+            config=make_default_fish_audio_provider_config(),
+            base_url="https://api.fish.audio?token=secret",
+            artifact_root=tmp_path,
+            client=client,
+        )
+
+
 def test_fish_builtin_tts_posts_json_and_writes_audio(tmp_path: Path) -> None:
     client = FakeFishClient(_response(b"WAVDATA"))
     provider = FishAudioProvider(

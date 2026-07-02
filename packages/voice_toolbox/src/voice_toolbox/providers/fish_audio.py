@@ -76,7 +76,9 @@ class FishAudioProvider:
             base_url=base_url or DEFAULT_FISH_AUDIO_BASE_URL
         )
         if base_url is not None:
-            resolved_config = resolved_config.model_copy(update={"base_url": base_url})
+            resolved_config = ConfiguredProvider.model_validate(
+                {**resolved_config.model_dump(), "base_url": base_url}
+            )
 
         base_url_value = resolved_config.base_url
         api_key_env_value = resolved_config.api_key_env

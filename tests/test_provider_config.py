@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from voice_toolbox.config import AppConfig, ConfiguredProvider, ProviderDefaultModels
 from voice_toolbox.models import ASRRequest, ModelInfo, TTSMode, TTSRequest, VoiceInfo
 from voice_toolbox.providers.factory import build_provider_registry
@@ -81,6 +83,18 @@ def test_mimo_provider_keeps_base_url_test_seam(tmp_path: Path) -> None:
     )
 
     assert captured["base_url"] == "https://override.test/v1"
+
+
+def test_mimo_provider_validates_base_url_override_with_config(tmp_path: Path) -> None:
+    client = SimpleNamespace(chat=SimpleNamespace(completions=RecordingCompletions()))
+
+    with pytest.raises(ValueError, match="base_url must be an https URL"):
+        MimoProvider(
+            config=_provider_config(),
+            base_url="http://bad.example",
+            artifact_root=tmp_path,
+            client=client,
+        )
 
 
 def test_defaults_reexport_for_existing_tests() -> None:

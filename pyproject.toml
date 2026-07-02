@@ -12,7 +12,7 @@ dependencies = [
   "pydantic>=2.0",
   "python-dotenv>=1.0",
   "python-multipart>=0.0.18",
-  "typer>=0.12",
+  "typer>=0.26.8",
   "uvicorn>=0.30",
   "audioop-lts>=0.2.2 ; python_full_version >= '3.13'",
 ]
