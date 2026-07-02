@@ -85,8 +85,16 @@ loads/generation:
 - Missing `onnx` or `safetensors`: mention Ming Omni BailingMM campplus
   conversion and `pip install onnx safetensors`.
 - Missing `mistral_common`: mention Voxtral TTS and `mlx-audio[tts]`.
-- Any unknown `ModuleNotFoundError`: include the model id, missing module name,
-  and the original error text.
+- Normalize `ModuleNotFoundError`, direct `ImportError`, `ImportError.__cause__`,
+  known `RuntimeError` messages, and generic conversion exceptions whose text
+  mentions the known missing module.
+- Any unknown import/load failure: include the selected provider model id, the
+  resolved upstream model id, the missing module name when available, and the
+  original error text.
+
+Runtime dependency hints use an internal structured mapping keyed by provider
+model id, upstream model id, and missing module. `ModelInfo.note` is display-only
+metadata for the API/UI; provider error handling must not parse note strings.
 
 ## Provider Configuration
 
@@ -103,7 +111,10 @@ configured provider metadata so local providers can omit network credentials:
   web key-status label should show a local/provider-ready state instead of
   "API key missing".
 
-Default `mlx_audio` config:
+Default `mlx_audio` config uses provider-facing model ids. These ids are unique
+per capability because `ModelInfo.capability` is a single value and configured
+providers reject duplicate model ids. The provider maps these ids to upstream
+Hugging Face repo ids before calling `mlx_audio`.
 
 ```toml
 [[providers]]
@@ -115,26 +126,34 @@ api_key_env = null
 default_voice = "Ryan"
 
 [providers.default_models]
-tts_builtin = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16"
-tts_clone = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16"
+tts_builtin = "qwen3-tts-0.6b-base"
+tts_clone = "qwen3-tts-0.6b-base-clone"
 asr = "mlx-community/Qwen3-ASR-0.6B-8bit"
 ```
 
 Built-in model list should include:
 
-- `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` as default TTS/clone.
-- `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit`.
-- `mlx-community/LongCat-AudioDiT-1B-bf16`.
-- `mlx-community/Ming-omni-tts-16.8B-A3B-bf16`, with a note that `onnx` and
+- `qwen3-tts-0.6b-base`, capability `tts.builtin`, upstream
+  `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16`.
+- `qwen3-tts-0.6b-base-clone`, capability `tts.clone`, upstream
+  `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16`, requires
+  `clone_reference_text`.
+- `qwen3-tts-1.7b-base-8bit`, upstream
+  `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit`.
+- `longcat-audiodit-1b`, upstream
+  `mlx-community/LongCat-AudioDiT-1B-bf16`.
+- `ming-omni-tts-16.8b-a3b`, upstream
+  `mlx-community/Ming-omni-tts-16.8B-A3B-bf16`, with a note that `onnx` and
   `safetensors` may be needed if campplus conversion runs.
-- `bosonai/higgs-audio-v3-tts-4b`.
+- `higgs-audio-v3-tts-4b`, upstream `bosonai/higgs-audio-v3-tts-4b`.
 - `mlx-community/Qwen3-ASR-0.6B-8bit` as default ASR.
 - `mlx-community/Qwen3-ASR-1.7B-8bit`.
 
 Default voices can start with Qwen3 examples (`Ryan`, `Aiden`, `Vivian`,
 `Serena`) plus a generic `default` voice for models that ignore voice names.
-Use `ModelInfo.note` for model-specific dependency or memory warnings; avoid
-adding new API fields for this first pass.
+Use `ModelInfo.note` for display-only dependency or memory warnings; avoid
+adding new public API fields for this first pass. Runtime behavior uses
+provider-owned alias and dependency-hint maps.
 
 ## Provider Architecture
 
@@ -168,22 +187,30 @@ mlx-audio dependency is not installed; install voice-toolbox[mac]
 For `tts.builtin`:
 
 1. Resolve model from `request.model` or `default_models.tts_builtin`.
-2. Load TTS model with `mlx_audio.tts.utils.load`.
-3. Build generation kwargs:
+2. Resolve the provider-facing model id to an upstream model id.
+3. Load TTS model with `mlx_audio.tts.utils.load`.
+   - For Ming Omni/BailingMM, pass `allow_patterns` matching upstream defaults
+     plus `*.onnx` so `campplus.onnx` is available when conversion is needed.
+     Add a fake-loader unit test that asserts this loader option.
+4. Build generation kwargs:
    - `text=request.text`
    - `voice=request.voice_id` when present
    - `lang_code` from provider option `lang_code` or language inference default
    - `speed`, `temperature`, and other configured `provider_options`
-4. Iterate `model.generate(...)`.
-5. Concatenate returned `result.audio` chunks in order.
-6. Write WAV bytes using `mlx_audio.audio_io.write`.
+5. Iterate `model.generate(...)`.
+6. Concatenate returned `result.audio` chunks in order.
+7. Write WAV bytes using `mlx_audio.audio_io.write`.
 
 For `tts.clone`:
 
 1. Require the existing clone consent and uploaded sample path.
-2. Pass `ref_audio=str(request.clone_sample_path)`.
-3. Pass `ref_text=request.clone_reference_text` when supplied.
-4. Use the same result merge and WAV writing path.
+2. Require `clone_reference_text` in the first version. Qwen3-TTS only takes
+   the ICL voice-clone path when both `ref_audio` and `ref_text` are present;
+   silently omitting the transcript would produce a weaker/non-clone path.
+   Automatic ASR fill-in can be a later feature.
+3. Pass `ref_audio=str(request.clone_sample_path)`.
+4. Pass `ref_text=request.clone_reference_text`.
+5. Use the same alias resolution, load, result merge, and WAV writing path.
 
 `tts.design` remains unsupported even when a selected model could do voice design.
 That avoids a method-dispatch matrix across Qwen3 variants in the first version.
@@ -205,6 +232,12 @@ For `asr.transcribe`:
 The existing API language enum stays `auto | zh | en` in this first version.
 Broader multilingual UI/API support is a later change.
 
+Do not expose Qwen3 ForcedAligner as `asr.transcribe`. If a user configures a
+ForcedAligner repo id under the `mlx_audio` ASR capability, reject it with
+`UnsupportedCapability` explaining that forced alignment needs a future
+`asr.align`-style capability with transcript input. Add a unit test for this
+guard.
+
 ## Error Handling
 
 Wrap provider failures in `ProviderError` with local, actionable messages:
@@ -212,6 +245,11 @@ Wrap provider failures in `ProviderError` with local, actionable messages:
 - Missing dependency: install `voice-toolbox[mac]`.
 - Missing model-specific dependency: include the selected model id and the
   package hint from the dependency mapper.
+- Ming Omni/BailingMM missing conversion dependency or missing `campplus` file:
+  include the selected model id, upstream model id, and the `onnx`/`safetensors`
+  install hint.
+- ForcedAligner configured as ASR: reject as unsupported because it requires
+  transcript input and returns word alignment, not plain transcription.
 - Unsupported platform: `mlx_audio provider requires Apple Silicon macOS`.
 - Unknown model id: existing unsupported-model pattern.
 - Empty generation: `mlx_audio generated no audio`.
@@ -243,6 +281,14 @@ Update:
 - `docs/smoke/mlx-audio.md`: include a compact model-specific dependency
   matrix for Kokoro, Ming Omni BailingMM, Qwen3 ForcedAligner, Voxtral TTS, and
   non-WAV `ffmpeg` paths.
+- `docs/smoke/mlx-audio.md`: include a target-model smoke matrix:
+  - Qwen3 TTS 0.6B builtin short WAV.
+  - Qwen3 TTS 0.6B clone short WAV with required `ref_text`.
+  - Qwen3 ASR 0.6B short WAV.
+  - LongCat short WAV.
+  - Higgs Audio v3 short WAV when hardware memory allows.
+  - Ming Omni/BailingMM load-only plus a conversion-path note because the
+    16.8B model is large.
 
 Fallback config remains MiMo. MLX Audio is opt-in through TOML because it is
 platform-specific and has large model downloads.
@@ -258,12 +304,17 @@ Add focused tests for:
   model-specific packages such as `misaki`, `nagisa`, `soynlp`, or `onnx`.
 - `ConfiguredProvider` accepts `base_url = None` and `api_key_env = None` for
   `mlx_audio`.
+- provider-facing alias ids map to upstream model ids and avoid duplicate
+  configured model ids when one upstream repo supports multiple capabilities.
 - provider factory builds `MlxAudioProvider`.
 - provider summary marks `mlx_audio` as not requiring an API key.
 - key readiness check does not block local provider operations.
 - missing model-specific imports are converted to `ProviderError` messages with
   model id and install hint.
 - Ming Omni BailingMM model metadata exposes the `onnx`/`safetensors` note.
+- Ming Omni BailingMM loader passes `allow_patterns` that include `*.onnx`.
+- Qwen3 clone rejects missing `clone_reference_text`.
+- ForcedAligner model ids/configs are rejected for `asr.transcribe`.
 - TTS builtin calls fake model with expected kwargs and writes WAV bytes.
 - TTS clone passes `ref_audio` and `ref_text`.
 - ASR maps language and returns transcript text.
