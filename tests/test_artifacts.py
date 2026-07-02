@@ -512,6 +512,34 @@ def test_load_settings_reads_default_cwd_env_file(tmp_path, monkeypatch) -> None
     assert "MIMO_API_KEY" not in os.environ
 
 
+def test_load_settings_uses_first_network_provider_for_legacy_wrapper(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "voice_toolbox.toml").write_text(
+        """
+[[providers]]
+id = "mlx-audio"
+type = "mlx_audio"
+name = "MLX Audio"
+
+[[providers]]
+id = "mimo"
+type = "mimo"
+name = "MiMo"
+base_url = "https://api.xiaomimimo.com/v1"
+api_key_env = "MIMO_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.provider_id == "mimo"
+    assert settings.base_url == "https://api.xiaomimimo.com/v1"
+    assert settings.api_key_env == "MIMO_API_KEY"
+
+
 def test_has_mimo_api_key_detects_env_file_key(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("MIMO_API_KEY", raising=False)
     env_path = tmp_path / ".env"
