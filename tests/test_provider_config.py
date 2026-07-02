@@ -6,7 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from voice_toolbox.config import AppConfig, ConfiguredProvider, ProviderDefaultModels
-from voice_toolbox.defaults import make_default_mlx_audio_provider_config
+from voice_toolbox.defaults import (
+    make_default_fish_audio_provider_config,
+    make_default_mimo_provider_config,
+    make_default_mlx_audio_provider_config,
+    make_default_openrouter_provider_config,
+)
 from voice_toolbox.models import ASRRequest, ModelInfo, TTSMode, TTSRequest, VoiceInfo
 from voice_toolbox.providers.factory import build_provider_registry
 from voice_toolbox.providers.mlx_audio import MlxAudioProvider
@@ -143,3 +148,28 @@ def test_build_provider_registry_constructs_mlx_audio_without_api_key(tmp_path: 
     assert isinstance(provider, MlxAudioProvider)
     assert provider.id == "mlx-audio"
     assert provider.capabilities() >= {"tts.builtin", "tts.clone", "asr.transcribe"}
+
+
+def test_default_provider_factories_copy_default_models() -> None:
+    factories = [
+        make_default_mimo_provider_config,
+        make_default_fish_audio_provider_config,
+        make_default_openrouter_provider_config,
+        make_default_mlx_audio_provider_config,
+    ]
+
+    for factory in factories:
+        first = factory()
+        second = factory()
+
+        assert first.default_models is not None
+        assert second.default_models is not None
+        assert first.default_models is not second.default_models
+
+        second_default_tts = second.default_models.tts_builtin
+        first.default_models.tts_builtin = "mutated"
+
+        assert second.default_models.tts_builtin == second_default_tts
+        third = factory()
+        assert third.default_models is not None
+        assert third.default_models.tts_builtin == second_default_tts

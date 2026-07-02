@@ -258,7 +258,7 @@ def make_default_mimo_provider_config(
         base_url=base_url,
         api_key_env=api_key_env,
         default_voice="mimo_default",
-        default_models=DEFAULT_MIMO_MODELS,
+        default_models=DEFAULT_MIMO_MODELS.model_copy(deep=True),
         models=[model.model_copy() for model in MIMO_MODELS],
         voices=[voice.model_copy() for voice in MIMO_VOICES],
     )
@@ -278,7 +278,7 @@ def make_default_fish_audio_provider_config(
         base_url=base_url,
         api_key_env=api_key_env,
         default_voice=FISH_AUDIO_VOICES[0].id,
-        default_models=DEFAULT_FISH_AUDIO_MODELS,
+        default_models=DEFAULT_FISH_AUDIO_MODELS.model_copy(deep=True),
         models=[model.model_copy() for model in FISH_AUDIO_MODELS],
         voices=[voice.model_copy() for voice in FISH_AUDIO_VOICES],
     )
@@ -298,7 +298,7 @@ def make_default_openrouter_provider_config(
         base_url=base_url,
         api_key_env=api_key_env,
         default_voice="alloy",
-        default_models=DEFAULT_OPENROUTER_MODELS,
+        default_models=DEFAULT_OPENROUTER_MODELS.model_copy(deep=True),
         models=[model.model_copy() for model in OPENROUTER_MODELS],
         voices=[voice.model_copy() for voice in OPENROUTER_VOICES],
     )
@@ -316,7 +316,7 @@ def make_default_mlx_audio_provider_config(
         base_url=None,
         api_key_env=None,
         default_voice="Ryan",
-        default_models=DEFAULT_MLX_AUDIO_MODELS,
+        default_models=DEFAULT_MLX_AUDIO_MODELS.model_copy(deep=True),
         models=[model.model_copy() for model in MLX_AUDIO_MODELS],
         voices=[voice.model_copy() for voice in MLX_AUDIO_VOICES],
         options=[option.model_copy() for option in MLX_AUDIO_TTS_OPTIONS],
