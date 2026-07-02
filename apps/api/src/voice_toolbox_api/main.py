@@ -1366,8 +1366,11 @@ def _run_tts(
         **prepared.artifact_metadata,
         "tts_mode": prepared.request.mode.value,
     }
-    if prepared.artifact_metadata.get("source_kind") != "file":
-        mode_metadata["source_text_preview"] = _preview_text(prepared.request.text)
+    # Generate an 80-char preview for the history list. By this point
+    # prepared.request.text holds the resolved text whether the source was
+    # inline or an uploaded text file, so the file-source guard that used to
+    # live here starved every file upload of a preview.
+    mode_metadata["source_text_preview"] = _preview_text(prepared.request.text)
     try:
         if prepared.chunk_plan is not None and prepared.chunk_plan.chunking_enabled:
             artifact = _run_chunked_tts(

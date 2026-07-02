@@ -1163,7 +1163,10 @@ def test_tts_builtin_accepts_text_file(tmp_path: Path) -> None:
     metadata = response.json()["artifact"]["metadata"]
     assert metadata["source_kind"] == "file"
     assert metadata["uploaded_text_file_suffix"] == ".md"
-    assert "source_text_preview" not in metadata
+    # File sources now get the same history preview as inline text — the
+    # resolved (normalized) text is available at this point, so an 80-char
+    # preview is safe and is what the history list shows.
+    assert metadata["source_text_preview"].startswith("Title")
 
 
 def test_clone_endpoint_normalizes_markdown(tmp_path: Path) -> None:
