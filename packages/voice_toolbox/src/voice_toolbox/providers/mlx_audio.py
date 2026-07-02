@@ -522,7 +522,7 @@ def _dependency_error(
     request_language: str | None = None,
 ) -> ProviderError:
     module = _missing_module(exc)
-    text = str(exc)
+    text = str(exc) or exc.__class__.__name__
     hint = _install_hint(
         module,
         text,

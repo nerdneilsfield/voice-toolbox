@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterable, cast
+from typing import Any, Iterable, cast
 
 import pytest
 
 from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
 from voice_toolbox.models import ASRRequest, ModelInfo, TTSMode, TTSRequest, VoiceInfo
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
-from voice_toolbox.providers.mlx_audio import MlxAudioProvider, _dependency_error
+from voice_toolbox.providers.mlx_audio import (
+    DEFAULT_MLX_ALLOW_PATTERNS,
+    MlxAudioProvider,
+    _dependency_error,
+)
 
 
 def _config() -> ConfiguredProvider:
@@ -71,6 +75,26 @@ class FakeASRModel:
         )
 
 
+class StrictTTSModel:
+    sample_rate = 24000
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def generate(self, *, text: str, voice: str, lang_code: str):
+        self.calls.append({"text": text, "voice": voice, "lang_code": lang_code})
+        yield SimpleNamespace(audio=[0.0], sample_rate=24000)
+
+
+class StrictASRModel:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def generate(self, audio: str, *, language: str | None = None) -> object:
+        self.calls.append({"audio": audio, "language": language})
+        return SimpleNamespace(text="hello world", segments=[])
+
+
 def _writer(audio: object, sample_rate: int) -> bytes:
     return f"WAV:{sample_rate}:{list(cast(Iterable[object], audio))}".encode()
 
@@ -79,19 +103,19 @@ def _provider(
     tmp_path: Path,
     *,
     config: ConfiguredProvider | None = None,
-    tts_model: FakeTTSModel | None = None,
-    asr_model: FakeASRModel | None = None,
+    tts_model: Any | None = None,
+    asr_model: Any | None = None,
 ):
     tts = tts_model or FakeTTSModel()
     asr = asr_model or FakeASRModel()
     tts_calls: list[dict[str, object]] = []
     asr_calls: list[dict[str, object]] = []
 
-    def tts_loader(model_id: str, **kwargs: object) -> FakeTTSModel:
+    def tts_loader(model_id: str, **kwargs: object) -> Any:
         tts_calls.append({"model_id": model_id, **kwargs})
         return tts
 
-    def asr_loader(model_id: str, **kwargs: object) -> FakeASRModel:
+    def asr_loader(model_id: str, **kwargs: object) -> Any:
         asr_calls.append({"model_id": model_id, **kwargs})
         return asr
 
@@ -139,6 +163,21 @@ def test_tts_provider_options_cannot_override_core_kwargs(tmp_path: Path) -> Non
                 text="hello",
                 voice_id="Ryan",
                 provider_options={"text": "override"},
+            )
+        )
+
+
+def test_tts_provider_options_reject_unknown_strict_generate_kwarg(tmp_path: Path) -> None:
+    provider, _, _, _, _ = _provider(tmp_path, tts_model=StrictTTSModel())
+
+    with pytest.raises(ProviderError, match="unsupported mlx_audio provider option"):
+        provider.synthesize_bytes(
+            TTSRequest(
+                provider_id="mlx-audio",
+                mode=TTSMode.BUILTIN,
+                text="hello",
+                voice_id="Ryan",
+                provider_options={"temperature": 0.1},
             )
         )
 
@@ -243,9 +282,7 @@ def test_ming_loader_includes_onnx_allow_pattern(tmp_path: Path) -> None:
     )
 
     assert tts_calls[0]["model_id"] == "mlx-community/Ming-omni-tts-16.8B-A3B-bf16"
-    assert "*.onnx" in tts_calls[0]["allow_patterns"]
-    for pattern in ("*.json", "*.model", "*.tiktoken", "*.npz", "*.pth"):
-        assert pattern in tts_calls[0]["allow_patterns"]
+    assert tts_calls[0]["allow_patterns"] == [*DEFAULT_MLX_ALLOW_PATTERNS, "*.onnx"]
 
 
 def test_bailingmm_upstream_model_includes_onnx_allow_pattern(tmp_path: Path) -> None:
@@ -348,6 +385,24 @@ def test_asr_provider_options_cannot_override_core_audio_arg(tmp_path: Path) -> 
                 raw_byte_size=16,
                 base64_size=24,
                 provider_options={"language": "Japanese"},
+            )
+        )
+
+
+def test_asr_provider_options_reject_unknown_strict_generate_kwarg(tmp_path: Path) -> None:
+    provider, _, _, _, _ = _provider(tmp_path, asr_model=StrictASRModel())
+    audio = tmp_path / "speech.wav"
+    audio.write_bytes(b"RIFF0000WAVEfmt ")
+
+    with pytest.raises(ProviderError, match="unsupported mlx_audio provider option"):
+        provider.transcribe_payload(
+            ASRRequest(
+                provider_id="mlx-audio",
+                audio_path=audio,
+                mime_type="audio/wav",
+                raw_byte_size=16,
+                base64_size=24,
+                provider_options={"beam_size": 4},
             )
         )
 
@@ -467,6 +522,17 @@ def test_bailingmm_non_dependency_error_preserves_original_failure() -> None:
 
     assert "missing a dependency" not in str(error)
     assert "download timed out" in str(error)
+
+
+def test_empty_dependency_error_uses_exception_class_name() -> None:
+    error = _dependency_error(
+        Exception(""),
+        selected_model="qwen3-tts-0.6b-base",
+        upstream_model="mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+    )
+
+    assert str(error).endswith("failed: Exception")
+    assert not str(error).endswith("failed: ")
 
 
 def test_non_bailingmm_onnx_error_is_not_labeled_bailingmm() -> None:
