@@ -136,6 +136,19 @@ class BlockingTTSModel:
         yield SimpleNamespace(audio=[0.0], sample_rate=24000)
 
 
+class SelfClosingTTSModel:
+    sample_rate = 24000
+
+    def __init__(self) -> None:
+        self.provider: MlxAudioProvider | None = None
+
+    def generate(self, **kwargs: object):
+        if self.provider is None:
+            raise RuntimeError("test provider was not wired")
+        self.provider.close()
+        yield SimpleNamespace(audio=[0.0], sample_rate=24000)
+
+
 def _writer(audio: object, sample_rate: int) -> bytes:
     return f"WAV:{sample_rate}:{list(cast(Iterable[object], audio))}".encode()
 
@@ -454,6 +467,42 @@ def test_new_synthesize_bytes_is_rejected_after_close_begins() -> None:
         model.release.set()
         assert synthesize_future.result(timeout=2) == b"WAV:24000:[0.0]"
         close_future.result(timeout=2)
+
+
+def test_close_from_active_operation_raises_instead_of_deadlocking(tmp_path: Path) -> None:
+    model = SelfClosingTTSModel()
+    provider = MlxAudioProvider(
+        config=_config(),
+        artifact_root=tmp_path,
+        tts_loader=lambda model_id, **kwargs: model,
+        stt_loader=lambda model_id, **kwargs: FakeASRModel(),
+        wav_writer=_writer,
+        platform_check=lambda: None,
+    )
+    model.provider = provider
+    errors: list[BaseException] = []
+
+    def run_synthesize() -> None:
+        try:
+            provider.synthesize_bytes(
+                TTSRequest(
+                    provider_id="mlx-audio",
+                    mode=TTSMode.BUILTIN,
+                    text="hello",
+                    voice_id="Ryan",
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_synthesize, daemon=True)
+    thread.start()
+    thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ProviderError)
+    assert "cannot close mlx_audio provider" in str(errors[0])
 
 
 def test_ming_loader_includes_onnx_allow_pattern(tmp_path: Path) -> None:

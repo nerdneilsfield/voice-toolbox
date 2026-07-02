@@ -156,6 +156,8 @@ class MlxAudioProvider:
         return self._artifact_root
 
     def close(self) -> None:
+        if getattr(self._lease_state, "depth", 0) > 0:
+            raise ProviderError("cannot close mlx_audio provider while operation is active")
         with self._lifecycle_condition:
             self._closed = True
             while self._active_operations > 0:
