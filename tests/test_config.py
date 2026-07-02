@@ -13,6 +13,7 @@ from voice_toolbox.config import (
     replay_config_warnings,
 )
 from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
+from voice_toolbox.defaults import MLX_AUDIO_MODEL_ALIASES
 from voice_toolbox.models import (
     ModelInfo,
     ProviderOptionOverride,
@@ -749,18 +750,27 @@ name = "MLX Audio"
     assert provider.default_models.tts_builtin == "qwen3-tts-0.6b-base"
     assert provider.default_models.tts_clone == "qwen3-tts-0.6b-base-clone"
     assert provider.default_models.asr == "mlx-community/Qwen3-ASR-0.6B-8bit"
+    assert MLX_AUDIO_MODEL_ALIASES == {
+        "qwen3-tts-0.6b-base": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+        "qwen3-tts-0.6b-base-clone": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+        "qwen3-tts-1.7b-base-8bit": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+        "longcat-audiodit-1b": "mlx-community/LongCat-AudioDiT-1B-bf16",
+        "ming-omni-tts-16.8b-a3b": "mlx-community/Ming-omni-tts-16.8B-A3B-bf16",
+        "higgs-audio-v3-tts-4b": "bosonai/higgs-audio-v3-tts-4b",
+    }
 
     model_ids = {model.id for model in provider.models}
     assert model_ids >= {
         "qwen3-tts-0.6b-base",
         "qwen3-tts-0.6b-base-clone",
+        "qwen3-tts-1.7b-base-8bit",
         "longcat-audiodit-1b",
         "ming-omni-tts-16.8b-a3b",
         "higgs-audio-v3-tts-4b",
         "mlx-community/Qwen3-ASR-0.6B-8bit",
     }
     voice_ids = {voice.id for voice in provider.voices}
-    assert voice_ids >= {"Ryan", "Aiden", "Vivian", "default"}
+    assert voice_ids >= {"Ryan", "Aiden", "Vivian", "Serena", "default"}
     option_keys = {option.key for option in provider.options}
     assert option_keys >= {"lang_code", "temperature", "speed"}
     ming = next(model for model in provider.models if model.id == "ming-omni-tts-16.8b-a3b")
