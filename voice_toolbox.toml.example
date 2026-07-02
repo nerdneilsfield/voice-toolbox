@@ -96,6 +96,13 @@ capability = "asr.transcribe"
 # capability = "asr.transcribe"
 # default = "meeting"
 
+# Apple Silicon local provider. Requires: rtk uv sync --extra mac
+# [[providers]]
+# id = "mlx-audio"
+# type = "mlx_audio"
+# name = "MLX Audio"
+# default_voice = "Ryan"
+
 # To add another provider, copy the [[providers]] block and use another api_key_env,
 # for example MIMO_SGP_API_KEY. Do not put API key values in this file.
 #

@@ -53,6 +53,28 @@ to the selected provider, model, and capability. Multipart API calls pass option
 values as a `provider_options` JSON object string. The CLI does not expose
 provider-specific options yet.
 
+### MLX Audio on Apple Silicon
+
+MLX Audio is optional and local-only. Install it only on Apple Silicon macOS:
+
+```bash
+rtk uv sync --extra mac
+```
+
+Enable it with a provider block:
+
+```toml
+[[providers]]
+id = "mlx-audio"
+type = "mlx_audio"
+name = "MLX Audio"
+default_voice = "Ryan"
+```
+
+The first MLX Audio version supports `tts.builtin`, `tts.clone`, and
+`asr.transcribe`. Qwen3 clone requires `clone_reference_text` so the MLX model
+takes its ICL voice-clone path.
+
 When `voice_toolbox.toml` exists, it is the source of truth for `base_url`,
 `api.host`, and `api.port`. The `.env` values `MIMO_BASE_URL`,
 `VOICE_TOOLBOX_API_HOST`, and `VOICE_TOOLBOX_API_PORT` are fallback-only aliases
