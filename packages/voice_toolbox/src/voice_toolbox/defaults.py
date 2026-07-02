@@ -164,6 +164,16 @@ MLX_AUDIO_MODEL_ALIASES = {
     "higgs-audio-v3-tts-4b": "bosonai/higgs-audio-v3-tts-4b",
 }
 
+MLX_AUDIO_QWEN3_VOICES: list[VoiceInfo] = [
+    VoiceInfo(id="Vivian", name="Vivian", language="zh", gender="female"),
+    VoiceInfo(id="Serena", name="Serena", language="zh", gender="female"),
+    VoiceInfo(id="Uncle_Fu", name="Uncle Fu", language="zh", gender="male"),
+    VoiceInfo(id="Dylan", name="Dylan", language="zh", gender="male", note="Beijing dialect"),
+    VoiceInfo(id="Eric", name="Eric", language="zh", gender="male", note="Sichuan dialect"),
+    VoiceInfo(id="Ryan", name="Ryan", language="en", gender="male"),
+    VoiceInfo(id="Aiden", name="Aiden", language="en", gender="male"),
+]
+
 MLX_AUDIO_TTS_OPTIONS: list[ProviderOptionSpec] = [
     ProviderOptionSpec(
         key="lang_code",
@@ -200,6 +210,7 @@ MLX_AUDIO_MODELS: list[ModelInfo] = [
         id="qwen3-tts-0.6b-base",
         name="Qwen3 TTS 0.6B Base",
         capability="tts.builtin",
+        voices=[voice.model_copy() for voice in MLX_AUDIO_QWEN3_VOICES],
     ),
     ModelInfo(
         id="qwen3-tts-0.6b-base-clone",
@@ -211,6 +222,7 @@ MLX_AUDIO_MODELS: list[ModelInfo] = [
         id="qwen3-tts-1.7b-base-8bit",
         name="Qwen3 TTS 1.7B 8-bit",
         capability="tts.builtin",
+        voices=[voice.model_copy() for voice in MLX_AUDIO_QWEN3_VOICES],
     ),
     ModelInfo(
         id="longcat-audiodit-1b",
@@ -241,13 +253,7 @@ MLX_AUDIO_MODELS: list[ModelInfo] = [
     ),
 ]
 
-MLX_AUDIO_VOICES: list[VoiceInfo] = [
-    VoiceInfo(id="Ryan", name="Ryan", language="en", gender="male"),
-    VoiceInfo(id="Aiden", name="Aiden", language="en", gender="male"),
-    VoiceInfo(id="Vivian", name="Vivian", language="en", gender="female"),
-    VoiceInfo(id="Serena", name="Serena", language="en", gender="female"),
-    VoiceInfo(id="default", name="Default"),
-]
+MLX_AUDIO_VOICES: list[VoiceInfo] = []
 
 DEFAULT_MLX_AUDIO_MODELS = ProviderDefaultModels(
     tts_builtin="qwen3-tts-0.6b-base",

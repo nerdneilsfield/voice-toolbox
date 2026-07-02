@@ -181,12 +181,20 @@ def validate_configured_provider(provider: ConfiguredProvider) -> None:
     voice_ids = {voice.id for voice in provider.voices}
     if len(voice_ids) != len(provider.voices):
         raise ValueError(f"provider {provider.id} has duplicate voice ids")
-    if provider.default_voice is not None and provider.default_voice not in voice_ids:
+    model_voice_ids = {voice.id for model in provider.models for voice in model.voices}
+    if provider.default_voice is not None and provider.default_voice not in (
+        voice_ids | model_voice_ids
+    ):
         raise ValueError(f"provider {provider.id} default_voice is not configured")
     provider_option_ids = [(option.capability, option.key) for option in provider.options]
     if len(provider_option_ids) != len(set(provider_option_ids)):
         raise ValueError(f"provider {provider.id} has duplicate provider option keys")
     for model in provider.models:
+        model_voice_ids_for_model = {voice.id for voice in model.voices}
+        if len(model_voice_ids_for_model) != len(model.voices):
+            raise ValueError(
+                f"provider {provider.id} model {model.id} has duplicate voice ids"
+            )
         for option in model.options:
             if model.capability is not None and option.capability != model.capability:
                 raise ValueError(

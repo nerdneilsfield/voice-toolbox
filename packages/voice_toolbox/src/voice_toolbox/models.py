@@ -203,6 +203,7 @@ class ModelInfo(BaseModel):
     capability: str | None = None
     note: str | None = None
     options: list[ProviderOptionSpec | ProviderOptionOverride] = Field(default_factory=list)
+    voices: list[VoiceInfo] = Field(default_factory=list)
     transcript_capabilities: TranscriptCapabilities | None = None
 
     @field_validator("options", mode="before")

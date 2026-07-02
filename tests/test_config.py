@@ -106,6 +106,21 @@ gender = "female"
     assert [voice.id for voice in provider.voices] == ["Mia"]
 
 
+def test_model_info_accepts_model_scoped_voices() -> None:
+    model = ModelInfo(
+        id="qwen3-tts",
+        name="Qwen3 TTS",
+        capability="tts.builtin",
+        voices=[
+            VoiceInfo(id="Ryan", name="Ryan", language="en", gender="male"),
+            {"id": "Vivian", "name": "Vivian", "language": "zh", "gender": "female"},
+        ],
+    )
+
+    assert [voice.id for voice in model.voices] == ["Ryan", "Vivian"]
+    assert model.model_dump(mode="json")["voices"][1]["id"] == "Vivian"
+
+
 def test_legacy_env_applies_only_without_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -731,7 +746,7 @@ def test_network_provider_still_requires_url_and_key_env() -> None:
                 )
 
 
-def test_mlx_audio_toml_gets_default_models_and_voices(tmp_path: Path) -> None:
+def test_mlx_audio_toml_gets_default_models_and_model_scoped_voices(tmp_path: Path) -> None:
     path = tmp_path / "voice_toolbox.toml"
     path.write_text(
         """
@@ -771,11 +786,42 @@ name = "MLX Audio"
         "higgs-audio-v3-tts-4b",
         "mlx-community/Qwen3-ASR-0.6B-8bit",
     }
-    voice_ids = {voice.id for voice in provider.voices}
-    assert voice_ids >= {"Ryan", "Aiden", "Vivian", "Serena", "default"}
+    assert provider.voices == []
+    qwen3 = next(model for model in provider.models if model.id == "qwen3-tts-0.6b-base")
+    qwen3_17b = next(model for model in provider.models if model.id == "qwen3-tts-1.7b-base-8bit")
+    longcat = next(model for model in provider.models if model.id == "longcat-audiodit-1b")
+    assert {voice.id for voice in qwen3.voices} == {
+        "Aiden",
+        "Dylan",
+        "Eric",
+        "Ryan",
+        "Serena",
+        "Uncle_Fu",
+        "Vivian",
+    }
+    assert {voice.id for voice in qwen3_17b.voices} == {voice.id for voice in qwen3.voices}
+    assert longcat.voices == []
     option_keys = {option.key for option in provider.options}
     assert option_keys >= {"lang_code", "temperature", "speed"}
     ming = next(model for model in provider.models if model.id == "ming-omni-tts-16.8b-a3b")
     assert ming.note is not None
     assert "onnx" in ming.note
     assert "safetensors" in ming.note
+
+
+def test_mlx_audio_default_voice_can_reference_model_scoped_voice(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "mlx-audio"
+type = "mlx_audio"
+name = "MLX Audio"
+default_voice = "Ryan"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_app_config(path)
+
+    assert config.providers[0].default_voice == "Ryan"
