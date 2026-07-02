@@ -164,6 +164,8 @@ MLX_AUDIO_MODEL_ALIASES = {
     "higgs-audio-v3-tts-4b": "bosonai/higgs-audio-v3-tts-4b",
 }
 
+MLX_AUDIO_DEFAULT_VOICE_ID = "Ryan"
+
 MLX_AUDIO_QWEN3_VOICES: list[VoiceInfo] = [
     VoiceInfo(id="Vivian", name="Vivian", language="zh", gender="female"),
     VoiceInfo(id="Serena", name="Serena", language="zh", gender="female"),
@@ -333,7 +335,7 @@ def make_default_mlx_audio_provider_config(
         name=name,
         base_url=None,
         api_key_env=None,
-        default_voice="Ryan",
+        default_voice=MLX_AUDIO_DEFAULT_VOICE_ID,
         default_models=DEFAULT_MLX_AUDIO_MODELS.model_copy(deep=True),
         models=[model.model_copy() for model in MLX_AUDIO_MODELS],
         voices=[voice.model_copy() for voice in MLX_AUDIO_VOICES],

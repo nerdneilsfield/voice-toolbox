@@ -41,6 +41,12 @@ def test_output_format_accepts_wav_and_mp3() -> None:
     assert request.output_format == "mp3"
 
 
+def test_builtin_tts_request_allows_provider_without_voice_picker() -> None:
+    request = TTSRequest(mode=TTSMode.BUILTIN, text="hello", model="longcat-audiodit-1b")
+
+    assert request.voice_id is None
+
+
 def test_output_format_rejects_unknown_values() -> None:
     with pytest.raises(ValidationError):
         TTSRequest.model_validate(

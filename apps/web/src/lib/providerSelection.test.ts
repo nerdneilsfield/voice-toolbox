@@ -87,4 +87,16 @@ describe("provider selection", () => {
 
     expect(voicesForModel(mlxProvider, [], "longcat")).toEqual([]);
   });
+
+  it("respects empty model voices for non-mlx providers", () => {
+    const providerWithModelVoices: Provider = {
+      id: "future",
+      name: "Future",
+      capabilities: ["tts.builtin"],
+      models: [{ id: "plain", name: "Plain", capability: "tts.builtin", voices: [] }],
+      voices: [{ id: "provider-voice", name: "Provider Voice" }],
+    };
+
+    expect(voicesForModel(providerWithModelVoices, providerWithModelVoices.voices ?? [], "plain")).toEqual([]);
+  });
 });

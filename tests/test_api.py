@@ -422,6 +422,50 @@ def test_mlx_audio_tts_route_skips_api_key_readiness(tmp_path: Path) -> None:
     assert response.status_code == 200
 
 
+def test_mlx_audio_builtin_route_allows_model_without_voice(tmp_path: Path) -> None:
+    provider = RecordingMlxAudioProvider(tmp_path)
+    config = AppConfig(
+        config_path=None,
+        providers=[
+            ConfiguredProvider(
+                id="mlx-audio",
+                type="mlx_audio",
+                name="MLX Audio",
+                base_url=None,
+                api_key_env=None,
+                default_models=ProviderDefaultModels(tts_builtin="fake-tts"),
+                models=[
+                    ModelInfo(
+                        id="fake-tts",
+                        name="Fake TTS",
+                        capability="tts.builtin",
+                    ),
+                ],
+                voices=[],
+            )
+        ],
+    )
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=config,
+        env_values={},
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tts/builtin",
+        data={
+            "provider_id": "mlx-audio",
+            "text": "hello",
+            "model": "fake-tts",
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.tts_requests[0].voice_id is None
+
+
 def test_missing_key_blocks_only_operation_not_listing(tmp_path: Path) -> None:
     client, _ = _client(tmp_path, has_api_key=False)
 

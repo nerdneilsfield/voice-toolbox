@@ -181,11 +181,23 @@ def validate_configured_provider(provider: ConfiguredProvider) -> None:
     voice_ids = {voice.id for voice in provider.voices}
     if len(voice_ids) != len(provider.voices):
         raise ValueError(f"provider {provider.id} has duplicate voice ids")
-    model_voice_ids = {voice.id for model in provider.models for voice in model.voices}
-    if provider.default_voice is not None and provider.default_voice not in (
-        voice_ids | model_voice_ids
-    ):
-        raise ValueError(f"provider {provider.id} default_voice is not configured")
+    if provider.default_voice is not None and provider.default_voice not in voice_ids:
+        default_tts_model = (
+            provider.default_models.tts_builtin
+            if provider.default_models is not None
+            else None
+        )
+        if default_tts_model is None:
+            default_tts_model = next(
+                (model.id for model in provider.models if model.capability == "tts.builtin"),
+                None,
+            )
+        default_model_voice_ids = {
+            voice.id
+            for voice in model_by_id.get(default_tts_model).voices
+        } if default_tts_model in model_by_id else set()
+        if provider.default_voice not in default_model_voice_ids:
+            raise ValueError(f"provider {provider.id} default_voice is not configured")
     provider_option_ids = [(option.capability, option.key) for option in provider.options]
     if len(provider_option_ids) != len(set(provider_option_ids)):
         raise ValueError(f"provider {provider.id} has duplicate provider option keys")

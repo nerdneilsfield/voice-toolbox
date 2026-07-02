@@ -275,8 +275,6 @@ class TTSRequest(BaseModel):
         if self.mode == TTSMode.BUILTIN:
             if not self.text:
                 raise ValueError("builtin mode requires text")
-            if not self.voice_id:
-                raise ValueError("builtin mode requires voice_id")
 
         if self.mode == TTSMode.DESIGN:
             if not self.voice_description:

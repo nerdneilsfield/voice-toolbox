@@ -49,7 +49,7 @@ export function useProviderSelection(provider: Provider | null, voices: Voice[])
   useEffect(() => {
     setVoiceId((current) => {
       const modelVoices = voicesForModel(provider, voices, models.builtin);
-      if (modelVoices.length === 0) return provider?.default_voice ?? current ?? "";
+      if (modelVoices.length === 0) return "";
       return selectDefaultVoice(provider, modelVoices, current) ?? "";
     });
   }, [provider, voices, models.builtin]);
@@ -60,7 +60,7 @@ export function useProviderSelection(provider: Provider | null, voices: Voice[])
       if (capability === "builtin") {
         const modelVoices = voicesForModel(provider, voices, value);
         setVoiceId((current) => {
-          if (modelVoices.length === 0) return provider?.default_voice ?? current ?? "";
+          if (modelVoices.length === 0) return "";
           return selectDefaultVoice(provider, modelVoices, current) ?? "";
         });
       }

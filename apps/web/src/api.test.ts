@@ -59,6 +59,21 @@ describe("api client", () => {
     expect((body as FormData).get("voice_id")).toBe("Mia");
   });
 
+  it("omits empty built-in TTS voice id for models without preset voices", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonOperationResponse("audio"));
+
+    await synthesizeBuiltin({
+      providerId: "mlx-audio",
+      text: "hello",
+      textFormat: "plain",
+      voiceId: "",
+      model: "longcat-audiodit-1b",
+    });
+
+    const body = fetchMock.mock.calls[0][1]?.body as FormData;
+    expect(body.get("voice_id")).toBeNull();
+  });
+
   it("posts TTS file and provider options as JSON object string", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonOperationResponse("audio"));
     const file = new File(["# Hello"], "script.md", { type: "text/markdown" });

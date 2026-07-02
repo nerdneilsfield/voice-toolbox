@@ -767,6 +767,7 @@ name = "MLX Audio"
     assert provider.default_models.tts_builtin == "qwen3-tts-0.6b-base"
     assert provider.default_models.tts_clone == "qwen3-tts-0.6b-base-clone"
     assert provider.default_models.asr == "mlx-community/Qwen3-ASR-0.6B-8bit"
+    assert provider.default_voice == "Ryan"
     assert MLX_AUDIO_MODEL_ALIASES == {
         "qwen3-tts-0.6b-base": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
         "qwen3-tts-0.6b-base-clone": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
@@ -825,3 +826,23 @@ default_voice = "Ryan"
     config = load_app_config(path)
 
     assert config.providers[0].default_voice == "Ryan"
+
+
+def test_mlx_audio_default_voice_must_match_default_builtin_model(tmp_path: Path) -> None:
+    path = tmp_path / "voice_toolbox.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "mlx-audio"
+type = "mlx_audio"
+name = "MLX Audio"
+default_voice = "Ryan"
+
+[providers.default_models]
+tts_builtin = "longcat-audiodit-1b"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="default_voice"):
+        load_app_config(path)

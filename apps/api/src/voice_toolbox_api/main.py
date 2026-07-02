@@ -354,7 +354,7 @@ def create_app(
         text: Annotated[str | None, Form()] = None,
         text_file: Annotated[UploadFile | None, File()] = None,
         text_format: Annotated[Literal["plain", "markdown", "auto"] | None, Form()] = None,
-        voice_id: Annotated[str, Form()] = "",
+        voice_id: Annotated[str | None, Form()] = None,
         style_instruction: Annotated[str | None, Form()] = None,
         model: Annotated[str | None, Form()] = None,
         chunking_mode: Annotated[Literal["off", "auto", "force"] | None, Form()] = None,
@@ -377,6 +377,8 @@ def create_app(
             config=_config_from_request(http_request),
             mode=TTSMode.BUILTIN,
         )
+        if voice_id is not None and not voice_id.strip():
+            raise HTTPException(status_code=422, detail="voice_id must not be empty")
         prepared = _prepare_tts_or_422(
             raw_text=source,
             text_format=None,

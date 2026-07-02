@@ -44,11 +44,11 @@ export function voicesForModel(
   modelId?: string | null,
 ): Voice[] {
   const model = provider?.models.find((item) => item.id === modelId);
-  if (provider?.type === "mlx_audio") {
-    return model?.voices ?? [];
-  }
-  if (model?.voices && model.voices.length > 0) {
+  if (model?.voices !== undefined) {
     return model.voices;
+  }
+  if (provider?.type === "mlx_audio") {
+    return [];
   }
   return providerVoices;
 }

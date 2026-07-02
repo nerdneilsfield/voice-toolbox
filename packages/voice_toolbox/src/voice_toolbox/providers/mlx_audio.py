@@ -228,8 +228,10 @@ class MlxAudioProvider:
             "provider_id": self.id,
             "source_text_length": len(request.text or ""),
             "tts_mode": request.mode.value,
-            "voice_id": request.voice_id,
         }
+        applied_voice_id = self._applied_voice_id(request, selected=result.model)
+        if applied_voice_id is not None:
+            metadata["voice_id"] = applied_voice_id
         if request.clone_reference_text:
             metadata["clone_reference_text_length"] = len(request.clone_reference_text)
         if request.mode == TTSMode.CLONE:
@@ -478,6 +480,13 @@ class MlxAudioProvider:
             kwargs["ref_audio"] = str(request.clone_sample_path)
             kwargs["ref_text"] = request.clone_reference_text
         return kwargs
+
+    def _applied_voice_id(self, request: TTSRequest, *, selected: str) -> str | None:
+        model_info = self._models_by_id.get(selected)
+        model_voice_ids = {voice.id for voice in model_info.voices} if model_info else set()
+        if request.voice_id in model_voice_ids:
+            return request.voice_id
+        return None
 
     def _next_operation_id(self, operation: str) -> str:
         with self._counter_lock:

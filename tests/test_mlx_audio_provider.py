@@ -454,6 +454,24 @@ def test_tts_artifact_metadata_keeps_trusted_values_and_no_raw_clone_text(
     assert "clone_reference_text" not in artifact.metadata
 
 
+def test_tts_artifact_metadata_omits_unapplied_voice_for_no_preset_model(
+    tmp_path: Path,
+) -> None:
+    provider, _, _, _, _ = _provider(tmp_path)
+
+    artifact = provider.synthesize(
+        TTSRequest(
+            provider_id="mlx-audio",
+            mode=TTSMode.BUILTIN,
+            model="longcat-audiodit-1b",
+            text="hello",
+            voice_id="Ryan",
+        )
+    )
+
+    assert "voice_id" not in artifact.metadata
+
+
 def test_close_waits_for_in_flight_synthesize_before_temp_cleanup() -> None:
     model = BlockingTTSModel()
     provider = MlxAudioProvider(

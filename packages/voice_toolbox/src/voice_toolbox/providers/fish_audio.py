@@ -441,6 +441,8 @@ class FishAudioProvider:
     def _validate_tts_request(self, request: TTSRequest) -> None:
         if request.output_format != "wav":
             raise ProviderError("fish_audio TTS output format must be wav")
+        if request.mode == TTSMode.BUILTIN and not request.voice_id:
+            raise ProviderError("fish_audio TTS requires voice_id")
 
     def _validate_clone_request(self, request: TTSRequest) -> None:
         if request.clone_sample_path is None or request.clone_mime_type is None:

@@ -216,7 +216,7 @@ export function synthesizeBuiltin(form: BuiltinForm): Promise<OperationResponse>
     body.set("text", form.text);
   }
   body.set("text_format", form.textFormat);
-  body.set("voice_id", form.voiceId);
+  appendOptional(body, "voice_id", form.voiceId);
   appendOptional(body, "style_instruction", form.styleInstruction);
   appendOptional(body, "model", form.model);
   appendChunking(body, form);
