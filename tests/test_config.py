@@ -619,10 +619,10 @@ def test_mac_extra_installs_mlx_audio_without_model_specific_deps() -> None:
     mac_deps = pyproject["project"]["optional-dependencies"]["mac"]
     joined = "\n".join(mac_deps)
 
-    assert (
+    assert mac_deps == [
         "mlx-audio[tts,stt]>=0.4.4 ; "
         "sys_platform == 'darwin' and platform_machine == 'arm64'"
-    ) in mac_deps
+    ]
     assert "misaki" not in joined
     assert "nagisa" not in joined
     assert "soynlp" not in joined
@@ -700,3 +700,13 @@ def test_network_provider_still_requires_url_and_key_env() -> None:
             base_url="https://api.xiaomimimo.com/v1",
             api_key_env=None,
         )
+
+    for api_key_env in ("", "   "):
+        with pytest.raises(ValueError, match="api_key_env must not be empty"):
+            ConfiguredProvider(
+                id="mimo",
+                type="mimo",
+                name="MiMo",
+                base_url="https://api.xiaomimimo.com/v1",
+                api_key_env=api_key_env,
+            )

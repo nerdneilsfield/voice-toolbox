@@ -134,6 +134,16 @@ class ConfiguredProvider(BaseModel):
             raise ValueError("base_url must not include query or fragment")
         return value
 
+    @field_validator("api_key_env")
+    @classmethod
+    def validate_api_key_env(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("api_key_env must not be empty")
+        return stripped
+
     @model_validator(mode="after")
     def validate_provider_credentials(self) -> ConfiguredProvider:
         if self.type == "mlx_audio":
