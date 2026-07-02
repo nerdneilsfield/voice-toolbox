@@ -10,6 +10,7 @@ from typing import Any, Iterable, cast
 import pytest
 
 from voice_toolbox.config_models import ConfiguredProvider, ProviderDefaultModels
+from voice_toolbox.defaults import MLX_AUDIO_TTS_OPTIONS
 from voice_toolbox.models import ASRRequest, ModelInfo, TTSMode, TTSRequest, VoiceInfo
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.mlx_audio import (
@@ -50,6 +51,7 @@ def _config() -> ConfiguredProvider:
                 capability="asr.transcribe",
             ),
         ],
+        options=[option.model_copy() for option in MLX_AUDIO_TTS_OPTIONS],
         voices=[VoiceInfo(id="Ryan", name="Ryan")],
     )
 
@@ -232,6 +234,23 @@ def test_tts_provider_options_reject_unknown_strict_generate_kwarg(tmp_path: Pat
                 text="hello",
                 voice_id="Ryan",
                 provider_options={"temperature": 0.1},
+            )
+        )
+
+
+def test_tts_provider_options_reject_unknown_kwargs_even_with_var_kwargs(
+    tmp_path: Path,
+) -> None:
+    provider, _, _, _, _ = _provider(tmp_path)
+
+    with pytest.raises(ProviderError, match="unsupported mlx_audio provider option"):
+        provider.synthesize_bytes(
+            TTSRequest(
+                provider_id="mlx-audio",
+                mode=TTSMode.BUILTIN,
+                text="hello",
+                voice_id="Ryan",
+                provider_options={"malicious": "x"},
             )
         )
 
@@ -640,6 +659,24 @@ def test_asr_provider_options_reject_unknown_strict_generate_kwarg(tmp_path: Pat
                 raw_byte_size=16,
                 base64_size=24,
                 provider_options={"beam_size": 4},
+            )
+        )
+
+
+def test_asr_provider_options_reject_unknown_kwargs_even_with_var_kwargs(tmp_path: Path) -> None:
+    provider, _, _, _, _ = _provider(tmp_path)
+    audio = tmp_path / "speech.wav"
+    audio.write_bytes(b"RIFF0000WAVEfmt ")
+
+    with pytest.raises(ProviderError, match="unsupported mlx_audio provider option"):
+        provider.transcribe_payload(
+            ASRRequest(
+                provider_id="mlx-audio",
+                audio_path=audio,
+                mime_type="audio/wav",
+                raw_byte_size=16,
+                base64_size=24,
+                provider_options={"malicious": "x"},
             )
         )
 

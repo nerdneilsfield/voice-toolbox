@@ -277,7 +277,11 @@ class MlxAudioProvider:
         selected = self._resolve_tts_model(request)
         upstream = _upstream_model_id(selected)
         model, inference_lock = self._load_tts(selected, upstream)
-        kwargs = self._tts_kwargs(request)
+        kwargs = self._tts_kwargs(
+            request,
+            selected=selected,
+            capability=TTS_MODE_CAPABILITIES[request.mode],
+        )
         kwargs = _validated_generate_kwargs(model.generate, kwargs)
         try:
             with inference_lock:
@@ -357,6 +361,11 @@ class MlxAudioProvider:
         kwargs = _provider_options_without_core_collisions(
             request.provider_options,
             core_keys=ASR_CORE_OPTION_KEYS,
+        )
+        self._validate_provider_option_keys(
+            kwargs,
+            selected=selected,
+            capability=ASR_CAPABILITY,
         )
         language = _asr_language(request.language)
         if language is not None:
@@ -438,11 +447,18 @@ class MlxAudioProvider:
         if model_info.capability != expected_capability:
             raise ProviderError(f"unsupported MLX Audio model for {expected_capability}: {model}")
 
-    def _tts_kwargs(self, request: TTSRequest) -> dict[str, object]:
+    def _tts_kwargs(
+        self,
+        request: TTSRequest,
+        *,
+        selected: str,
+        capability: str,
+    ) -> dict[str, object]:
         kwargs = _provider_options_without_core_collisions(
             request.provider_options,
             core_keys=TTS_CORE_OPTION_KEYS,
         )
+        self._validate_provider_option_keys(kwargs, selected=selected, capability=capability)
         kwargs["text"] = request.text or ""
         if request.voice_id:
             kwargs["voice"] = request.voice_id
@@ -463,6 +479,29 @@ class MlxAudioProvider:
         with self._lifecycle_condition:
             if self._closed and getattr(self._lease_state, "depth", 0) == 0:
                 raise ProviderError("mlx_audio provider is closed")
+
+    def _validate_provider_option_keys(
+        self,
+        options: Mapping[str, object],
+        *,
+        selected: str,
+        capability: str,
+    ) -> None:
+        allowed = {
+            option.key
+            for option in self._config.options
+            if option.capability == capability
+        }
+        model_info = self._models_by_id.get(selected)
+        if model_info is not None:
+            allowed.update(
+                option.key
+                for option in model_info.options
+                if option.capability == capability
+            )
+        unsupported = sorted(set(options) - allowed)
+        if unsupported:
+            raise ProviderError(f"unsupported mlx_audio provider option: {unsupported[0]}")
 
 
 def _ensure_apple_silicon_macos() -> None:

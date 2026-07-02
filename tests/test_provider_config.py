@@ -136,6 +136,35 @@ def test_build_provider_registry_uses_config_and_env_values(tmp_path: Path) -> N
     assert provider.id == "mimo-sgp"
 
 
+@pytest.mark.parametrize(
+    ("config_factory", "provider_id", "api_key_env"),
+    [
+        (make_default_mimo_provider_config, "mimo", "MIMO_API_KEY"),
+        (make_default_fish_audio_provider_config, "fish-audio", "FISH_AUDIO_API_KEY"),
+        (make_default_openrouter_provider_config, "openrouter", "OPENROUTER_API_KEY"),
+    ],
+)
+@pytest.mark.parametrize("env_has_key", [True, False])
+def test_build_provider_registry_constructs_network_providers_with_or_without_env_key(
+    tmp_path: Path,
+    config_factory,
+    provider_id: str,
+    api_key_env: str,
+    env_has_key: bool,
+) -> None:
+    env_values = {api_key_env: "secret"} if env_has_key else {}
+
+    registry = build_provider_registry(
+        config=AppConfig(config_path=None, providers=[config_factory()]),
+        artifact_root=tmp_path,
+        env_values=env_values,
+    )
+
+    provider = registry.get(provider_id)
+
+    assert provider.id == provider_id
+
+
 def test_build_provider_registry_constructs_mlx_audio_without_api_key(tmp_path: Path) -> None:
     registry = build_provider_registry(
         config=AppConfig(config_path=None, providers=[make_default_mlx_audio_provider_config()]),
