@@ -817,6 +817,13 @@ name = "MLX Audio"
     }
     assert {voice.id for voice in qwen3_17b.voices} == {voice.id for voice in qwen3.voices}
     assert longcat.voices == []
+    asr_model = next(
+        model for model in provider.models if model.id == "mlx-community/Qwen3-ASR-0.6B-8bit"
+    )
+    assert asr_model.transcript_capabilities is not None
+    assert asr_model.transcript_capabilities.timestamps is True
+    assert asr_model.transcript_capabilities.segments is True
+    assert asr_model.transcript_capabilities.speakers is False
     option_keys = {option.key for option in provider.options}
     assert option_keys >= {"lang_code", "temperature", "speed"}
     temperature = next(option for option in provider.options if option.key == "temperature")

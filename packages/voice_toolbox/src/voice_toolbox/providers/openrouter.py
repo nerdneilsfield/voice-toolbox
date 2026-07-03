@@ -36,7 +36,7 @@ from voice_toolbox.models import (
 )
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES
-from voice_toolbox.transcripts import TranscriptPayload
+from voice_toolbox.transcripts import TranscriptPayload, TranscriptSegment
 
 GENERATION_TIMEOUT_SECONDS = 300.0
 TTS_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
@@ -278,7 +278,7 @@ class OpenRouterProvider:
             body,
             timeout=ASR_TIMEOUT_SECONDS,
         )
-        return TranscriptPayload(text=_extract_transcript(response))
+        return _extract_transcript_payload(response)
 
     def _post_json(
         self,
@@ -437,14 +437,39 @@ def _audio_format_from_mime(mime_type: str) -> str:
     raise ProviderError(f"unsupported OpenRouter audio MIME type: {mime_type}")
 
 
-def _extract_transcript(response: OpenRouterHTTPResponse) -> str:
+def _extract_transcript_payload(response: OpenRouterHTTPResponse) -> TranscriptPayload:
     try:
         payload = json.loads(response.content.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProviderError("openrouter STT response is not valid JSON") from exc
     if isinstance(payload, dict) and isinstance(payload.get("text"), str):
-        return payload["text"]
+        return TranscriptPayload(text=payload["text"], segments=_segments_from_payload(payload))
     raise ProviderError("openrouter STT response is missing transcript text")
+
+
+def _segments_from_payload(payload: Mapping[str, Any]) -> list[TranscriptSegment]:
+    raw_segments = payload.get("segments")
+    if not isinstance(raw_segments, list):
+        return []
+    segments: list[TranscriptSegment] = []
+    for raw in raw_segments:
+        if not isinstance(raw, Mapping):
+            continue
+        text = raw.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        start = raw.get("start", raw.get("start_time"))
+        end = raw.get("end", raw.get("end_time"))
+        speaker = raw.get("speaker")
+        segments.append(
+            TranscriptSegment(
+                text=text,
+                start_seconds=float(start) if start is not None else None,
+                end_seconds=float(end) if end is not None else None,
+                speaker=speaker if isinstance(speaker, str) else None,
+            )
+        )
+    return segments
 
 
 def _http_error_message(response: OpenRouterHTTPResponse) -> str:

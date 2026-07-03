@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { inspectWavFile, sliceWavFile } from "./audioChunks";
 
 describe("browser audio chunk helpers", () => {
@@ -39,12 +39,38 @@ describe("browser audio chunk helpers", () => {
     );
   });
 
-  it("throws for non-WAV input so callers can fallback to backend upload", async () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("decodes browser-supported non-WAV input and slices it as WAV chunks", async () => {
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        async decodeAudioData() {
+          return {
+            duration: 2.5,
+            length: 2500,
+            numberOfChannels: 1,
+            sampleRate: 1000,
+            getChannelData: () => new Float32Array(2500).fill(0.25),
+          };
+        }
+
+        async close() {
+          return undefined;
+        }
+      },
+    );
     const file = new File(["not wav"], "meeting.mp3", { type: "audio/mpeg" });
 
-    await expect(sliceWavFile(file, { targetSeconds: 30, overlapMs: 1000 })).rejects.toThrow(
-      "Browser chunking currently requires WAV input.",
-    );
+    const { chunks, sourceDurationMs } = await sliceWavFile(file, { targetSeconds: 1, overlapMs: 250 });
+
+    expect(sourceDurationMs).toBe(2500);
+    expect(chunks).toHaveLength(4);
+    expect(chunks.map((chunk) => chunk.offsetMs)).toEqual([0, 750, 1500, 2250]);
+    expect(chunks[0].fileName).toBe("meeting.0.wav");
+    expect(chunks[0].blob.type).toBe("audio/wav");
   });
 
   it("throws for non-PCM WAV input so callers can fallback to backend upload", async () => {

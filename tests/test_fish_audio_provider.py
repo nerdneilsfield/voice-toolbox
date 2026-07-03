@@ -383,7 +383,19 @@ def test_fish_voice_design_rejects_long_reference_text(tmp_path: Path) -> None:
 def test_fish_asr_posts_multipart_and_writes_transcript(tmp_path: Path) -> None:
     audio_path = tmp_path / "speech.wav"
     audio_path.write_bytes(b"RIFF0000WAVEfmt ")
-    client = FakeFishClient(_response(json.dumps({"text": "hello"}).encode()))
+    client = FakeFishClient(
+        _response(
+            json.dumps(
+                {
+                    "text": "hello world",
+                    "segments": [
+                        {"text": "hello", "start": 0.0, "end": 1.0},
+                        {"text": "world", "start": 1.0, "end": 2.0},
+                    ],
+                }
+            ).encode()
+        )
+    )
     provider = FishAudioProvider(
         config=make_default_fish_audio_provider_config(),
         api_key="secret",
@@ -402,8 +414,10 @@ def test_fish_asr_posts_multipart_and_writes_transcript(tmp_path: Path) -> None:
 
     artifact = provider.transcribe(request)
 
-    assert artifact.path.read_text(encoding="utf-8") == "hello"
+    assert artifact.path.read_text(encoding="utf-8") == "hello world"
     assert artifact.metadata["model"] == "fish-audio-asr"
+    assert artifact.metadata["transcript_has_timestamps"] is True
+    assert artifact.metadata["transcript_download_formats"] == ["txt", "json", "srt", "vtt"]
     assert client.calls == [
         {
             "path": "/v1/asr",
@@ -411,7 +425,7 @@ def test_fish_asr_posts_multipart_and_writes_transcript(tmp_path: Path) -> None:
             "json_body": None,
             "msgpack_body": None,
             "files": {"audio": ("speech.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-            "fields": {"language": "ja", "temperature": "0"},
+            "fields": {"ignore_timestamps": "false", "language": "ja", "temperature": "0"},
             "timeout": 300.0,
         }
     ]

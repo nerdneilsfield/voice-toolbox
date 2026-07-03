@@ -39,7 +39,7 @@ from voice_toolbox.models import (
 )
 from voice_toolbox.providers.base import ProviderError, UnsupportedCapability
 from voice_toolbox.providers.registry import ASR_CAPABILITY, TTS_MODE_CAPABILITIES
-from voice_toolbox.transcripts import TranscriptPayload
+from voice_toolbox.transcripts import TranscriptPayload, TranscriptSegment
 
 GENERATION_TIMEOUT_SECONDS = 300.0
 TTS_TIMEOUT_SECONDS = GENERATION_TIMEOUT_SECONDS
@@ -217,10 +217,11 @@ class FishAudioProvider:
         fields: dict[str, str] = (
             {"language": request.language} if request.language != "auto" else {}
         )
+        fields["ignore_timestamps"] = "false"
         for key, value in request.provider_options.items():
             if key == "language":
                 raise ProviderError("provider option language cannot override ASR language")
-            if key in {"model", "audio"}:
+            if key in {"model", "audio", "ignore_timestamps"}:
                 raise ProviderError(f"provider option {key} cannot override core ASR field")
             fields[key] = str(value)
         return {
@@ -353,7 +354,7 @@ class FishAudioProvider:
             fields=body["fields"],
             timeout=ASR_TIMEOUT_SECONDS,
         )
-        return TranscriptPayload(text=_extract_asr_text(response))
+        return _extract_asr_payload(response)
 
     def _post_json(
         self,
@@ -650,16 +651,44 @@ def _decode_audio_base64(value: str) -> bytes | None:
         return None
 
 
-def _extract_asr_text(response: FishHTTPResponse) -> str:
+def _extract_asr_payload(response: FishHTTPResponse) -> TranscriptPayload:
     payload = _json_response(response)
+    segments = _segments_from_payload(payload)
     if isinstance(payload, dict):
         for key in ("text", "transcript", "content"):
             value = payload.get(key)
             if isinstance(value, str):
-                return value
+                return TranscriptPayload(text=value, segments=segments)
     if isinstance(payload, str):
-        return payload
+        return TranscriptPayload(text=payload)
     raise ProviderError("fish_audio ASR response is missing transcript text")
+
+
+def _segments_from_payload(payload: Any) -> list[TranscriptSegment]:
+    if not isinstance(payload, dict):
+        return []
+    raw_segments = payload.get("segments")
+    if not isinstance(raw_segments, list):
+        return []
+    segments: list[TranscriptSegment] = []
+    for raw in raw_segments:
+        if not isinstance(raw, dict):
+            continue
+        text = raw.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        start = raw.get("start", raw.get("start_time"))
+        end = raw.get("end", raw.get("end_time"))
+        speaker = raw.get("speaker")
+        segments.append(
+            TranscriptSegment(
+                text=text,
+                start_seconds=float(start) if start is not None else None,
+                end_seconds=float(end) if end is not None else None,
+                speaker=speaker if isinstance(speaker, str) else None,
+            )
+        )
+    return segments
 
 
 def _json_response(response: FishHTTPResponse) -> Any:

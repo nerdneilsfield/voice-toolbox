@@ -76,11 +76,10 @@ export function AsrWorkspace({
   // Strategy hint: explain which upload path applies. Shown always (not just
   // after a file is picked) so the user understands the trade-off up front.
   const strategyHint = useMemo(() => {
-    const isWav = file && (file.type === "audio/wav" || file.type === "audio/x-wav" || /\.wav$/i.test(file.name));
     if (uploadStrategy === "backend") return t("asr.uploadHint.backend");
-    if (uploadStrategy === "browser") return isWav ? t("asr.uploadHint.browser") : t("asr.uploadHint.backend");
-    return isWav ? t("asr.uploadHint.browser") : t("asr.uploadHint.auto");
-  }, [file, uploadStrategy, t]);
+    if (uploadStrategy === "browser") return t("asr.uploadHint.browser");
+    return t("asr.uploadHint.auto");
+  }, [uploadStrategy, t]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();

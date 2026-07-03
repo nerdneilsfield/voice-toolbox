@@ -30,7 +30,26 @@ export async function sliceWavFile(
   },
 ): Promise<{ chunks: BrowserAudioChunk[]; sourceDurationMs: number }> {
   const buffer = await file.arrayBuffer();
+  if (!isWavBuffer(buffer)) {
+    const wavBuffer = await decodeAudioFileToWav(buffer);
+    return sliceParsedWavFile(wavBuffer, parseWav(wavBuffer), file, { targetSeconds, overlapMs });
+  }
   const wav = parseWav(buffer);
+  return sliceParsedWavFile(buffer, wav, file, { targetSeconds, overlapMs });
+}
+
+function sliceParsedWavFile(
+  buffer: ArrayBuffer,
+  wav: ParsedWav,
+  file: File,
+  {
+    targetSeconds,
+    overlapMs,
+  }: {
+    targetSeconds: number;
+    overlapMs: number;
+  },
+): { chunks: BrowserAudioChunk[]; sourceDurationMs: number } {
   const bytesPerMs = wav.byteRate / 1000 || 1;
   const requestedChunkMs = Math.max(1000, targetSeconds * 1000);
   if (overlapMs >= requestedChunkMs / 2) {
@@ -58,6 +77,60 @@ export async function sliceWavFile(
     offsetMs += strideMs;
   }
   return { chunks, sourceDurationMs: Math.round(wav.durationMs) };
+}
+
+async function decodeAudioFileToWav(buffer: ArrayBuffer): Promise<ArrayBuffer> {
+  const AudioContextCtor =
+    globalThis.AudioContext ??
+    (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextCtor) {
+    throw new Error("Browser chunking requires WAV input or browser audio decoding support.");
+  }
+  const context = new AudioContextCtor();
+  try {
+    const audioBuffer = await context.decodeAudioData(buffer.slice(0));
+    return audioBufferToWav(audioBuffer);
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
+function audioBufferToWav(audioBuffer: AudioBuffer): ArrayBuffer {
+  const channels = Math.max(1, audioBuffer.numberOfChannels);
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = channels * bytesPerSample;
+  const byteRate = audioBuffer.sampleRate * blockAlign;
+  const frames = audioBuffer.length;
+  const payload = new Uint8Array(frames * blockAlign);
+  const view = new DataView(payload.buffer);
+  const channelData = Array.from({ length: channels }, (_, channel) => audioBuffer.getChannelData(channel));
+
+  for (let frame = 0; frame < frames; frame += 1) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      const sample = Math.max(-1, Math.min(1, channelData[channel][frame] ?? 0));
+      const value = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      view.setInt16((frame * channels + channel) * bytesPerSample, value, true);
+    }
+  }
+
+  return buildWav(payload, {
+    audioFormat: 1,
+    channels,
+    sampleRate: audioBuffer.sampleRate,
+    byteRate,
+    blockAlign,
+    bitsPerSample,
+    dataOffset: WAV_HEADER_BYTES,
+    dataSize: payload.byteLength,
+    durationMs: audioBuffer.duration * 1000,
+  });
+}
+
+function isWavBuffer(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < 12) return false;
+  const view = new DataView(buffer);
+  return readAscii(view, 0, 4) === "RIFF" && readAscii(view, 8, 4) === "WAVE";
 }
 
 function inspectWavBuffer(buffer: ArrayBuffer): WavInfo {

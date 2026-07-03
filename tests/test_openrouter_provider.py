@@ -212,6 +212,44 @@ def test_openrouter_asr_posts_base64_input_audio_and_writes_transcript(tmp_path:
     ]
 
 
+def test_openrouter_asr_preserves_timestamp_segments_when_returned(tmp_path: Path) -> None:
+    audio_path = tmp_path / "speech.wav"
+    audio_path.write_bytes(b"RIFF0000WAVEfmt ")
+    client = FakeOpenRouterClient(
+        _response(
+            json.dumps(
+                {
+                    "text": "hello world",
+                    "segments": [
+                        {"text": "hello", "start": 0.0, "end": 1.0},
+                        {"text": "world", "start": 1.0, "end": 2.0},
+                    ],
+                }
+            ).encode()
+        )
+    )
+    provider = OpenRouterProvider(
+        config=make_default_openrouter_provider_config(),
+        api_key="secret",
+        artifact_root=tmp_path,
+        client=client,
+    )
+
+    artifact = provider.transcribe(
+        ASRRequest(
+            provider_id="openrouter",
+            audio_path=audio_path,
+            mime_type="audio/wav",
+            raw_byte_size=16,
+            base64_size=24,
+        )
+    )
+
+    assert artifact.path.read_text(encoding="utf-8") == "hello world"
+    assert artifact.metadata["transcript_has_timestamps"] is True
+    assert artifact.metadata["transcript_download_formats"] == ["txt", "json", "srt", "vtt"]
+
+
 def test_openrouter_asr_omits_auto_language(tmp_path: Path) -> None:
     audio_path = tmp_path / "speech.mp3"
     audio_path.write_bytes(b"ID3audio")

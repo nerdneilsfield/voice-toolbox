@@ -6,6 +6,7 @@ from voice_toolbox.models import (
     ProviderOptionChoice,
     ProviderOptionOverride,
     ProviderOptionSpec,
+    TranscriptCapabilities,
     VoiceInfo,
 )
 
@@ -91,7 +92,12 @@ FISH_AUDIO_MODELS: list[ModelInfo] = [
         capability="tts.clone",
         note="uses Fish Audio model header s2-pro with MessagePack references",
     ),
-    ModelInfo(id="fish-audio-asr", name="Fish Audio ASR", capability="asr.transcribe"),
+    ModelInfo(
+        id="fish-audio-asr",
+        name="Fish Audio ASR",
+        capability="asr.transcribe",
+        transcript_capabilities=TranscriptCapabilities(timestamps=True, segments=True),
+    ),
 ]
 
 FISH_AUDIO_VOICES: list[VoiceInfo] = [
@@ -431,11 +437,13 @@ MLX_AUDIO_MODELS: list[ModelInfo] = [
         id="mlx-community/Qwen3-ASR-0.6B-8bit",
         name="Qwen3 ASR 0.6B 8-bit",
         capability="asr.transcribe",
+        transcript_capabilities=TranscriptCapabilities(timestamps=True, segments=True),
     ),
     ModelInfo(
         id="mlx-community/Qwen3-ASR-1.7B-8bit",
         name="Qwen3 ASR 1.7B 8-bit",
         capability="asr.transcribe",
+        transcript_capabilities=TranscriptCapabilities(timestamps=True, segments=True),
     ),
 ]
 

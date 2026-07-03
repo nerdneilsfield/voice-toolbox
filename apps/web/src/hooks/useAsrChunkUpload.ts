@@ -38,7 +38,7 @@ function shouldUseBrowserChunks(file: File, mode: ChunkingMode, strategy: "auto"
     return false;
   }
   const isWav = file.type === "audio/wav" || file.type === "audio/x-wav" || /\.wav$/i.test(file.name);
-  return isWav && (strategy === "browser" || mode === "force" || file.size > BASE64_LIMIT_BYTES);
+  return strategy === "browser" || mode === "force" || isWav || file.size > BASE64_LIMIT_BYTES;
 }
 
 /**
