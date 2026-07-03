@@ -1123,18 +1123,22 @@ button:focus-visible,
   display: grid;
   grid-template-columns: 1fr 240px;
   gap: 16px;
-  align-items: end;
+  align-items: start;
 }
 
 .consent-checkbox {
   align-items: flex-start;
-  padding-bottom: 2px;
+  margin-top: calc(0.92rem * 1.6 + 8px);
 }
 
 @media (max-width: 819px) {
   .two-col-fields {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  .consent-checkbox {
+    margin-top: 0;
   }
 }
 
