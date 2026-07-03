@@ -2199,12 +2199,14 @@ def test_list_artifacts(tmp_path: Path) -> None:
     ]
     for sidecar in sidecars:
         (op_dir / f"{sidecar['id']}.json").write_text(json.dumps(sidecar))
+    (op_dir / "test2.txt").write_text("hello\ntranscript world", encoding="utf-8")
 
     response = client.get("/v1/artifacts?limit=2")
     assert response.status_code == 200
     data = response.json()
     assert len(data["artifacts"]) == 2
     assert data["artifacts"][0]["id"] == "test-artifact-2"  # newest first
+    assert data["artifacts"][0]["preview"] == "hello transcript world"
     assert data["artifacts"][1]["id"] == "test-artifact-1"
 
 

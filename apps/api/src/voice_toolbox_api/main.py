@@ -2233,7 +2233,10 @@ def _preview_text(text: str | None, max_length: int = 80) -> str:
 
 def _artifact_preview(artifact: Artifact) -> str:
     if artifact.kind.value == "transcript":
-        return ""
+        try:
+            return _preview_text(artifact.path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            return ""
     if isinstance(artifact.metadata, dict):
         return _preview_text(artifact.metadata.get("source_text_preview"))
     return ""
