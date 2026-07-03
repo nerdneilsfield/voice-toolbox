@@ -1380,7 +1380,7 @@ html[data-theme="dark"] .loading-state span {
 }
 
 .tag-card {
-  padding: 4px 18px 14px;
+  padding: 4px 0 14px;
 }
 
 .action-card {
