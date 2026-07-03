@@ -12,7 +12,7 @@ import {
 } from "../lib/providerOptions";
 import { AdvancedOptionsCard } from "./AdvancedOptionsCard";
 import { ChunkingControls } from "./ChunkingControls";
-import { Notice } from "./Primitives";
+import { FilePicker, Notice } from "./Primitives";
 import { TranscriptPanel } from "./TranscriptPanel";
 
 type AsrWorkspaceProps = {
@@ -116,13 +116,14 @@ export function AsrWorkspace({
         </div>
         <label className="field">
           <span className="field-title">{t("asr.audioFile")}</span>
-          <input
-            type="file"
+          <FilePicker
             accept={AUDIO_ACCEPT}
-            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            buttonLabel={t("audio.chooseFile")}
+            emptyLabel={t("audio.noFile")}
+            selectedName={file?.name}
+            onChange={setFile}
             required
           />
-          {file ? <span className="field-hint">{file.name}</span> : null}
         </label>
         <label className="field">
           <span className="field-title">{t("asr.language")}</span>

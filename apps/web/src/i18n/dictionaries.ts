@@ -22,6 +22,9 @@ export const en = {
   "providerDetails.missing": "missing",
   "providerDetails.notRequired": "not required",
 
+  "audio.chooseFile": "Choose file",
+  "audio.noFile": "No file selected",
+
   "nav.ariaSections": "Toolbox sections",
   "nav.ttsSection": "TTS",
   "nav.asrSection": "ASR",
@@ -208,6 +211,9 @@ export const zh: Record<keyof typeof en, string> = {
   "providerDetails.configured": "已配置",
   "providerDetails.missing": "缺失",
   "providerDetails.notRequired": "无需密钥",
+
+  "audio.chooseFile": "选择文件",
+  "audio.noFile": "未选择文件",
 
   "nav.ariaSections": "工具箱分区",
   "nav.ttsSection": "TTS",

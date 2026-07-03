@@ -18,6 +18,7 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --shell-x: 80px;
   --shadow-card: 0 1px 3px rgba(79, 70, 229, 0.06);
   --shadow-button: 0 4px 14px rgba(79, 70, 229, 0.28);
   /* Compatibility aliases for old tokens still referenced during migration */
@@ -83,7 +84,7 @@ p {
 .app-shell {
   width: min(1280px, calc(100vw - 80px));
   margin: 0 auto;
-  padding: 24px 80px 48px;
+  padding: 24px var(--shell-x) 48px;
 }
 
 .topbar {
@@ -96,8 +97,8 @@ p {
      background reaches the shell edges (x=80) instead of starting at the
      content edge (x=160) — otherwise a strip of page-grey shows on each side
      and the brand mark appears glued to the grey edge. */
-  margin: 0 -80px;
-  padding: 16px 80px;
+  margin: 0 calc(var(--shell-x) * -1);
+  padding: 16px var(--shell-x);
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--accent-border);
 }
@@ -176,8 +177,8 @@ p {
      background is continuous with the bar above it. No explicit width — the
      negative margins already expand the box and width:100% would be relative
      to the content box, leaving the right edge short. */
-  margin: 0 -80px;
-  padding: 10px 80px;
+  margin: 0 calc(var(--shell-x) * -1);
+  padding: 10px var(--shell-x);
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--accent-border);
   font-size: 0.72rem;
@@ -667,9 +668,13 @@ p {
 }
 
 @media (max-width: 819px) {
+  :root {
+    --shell-x: 24px;
+  }
+
   .app-shell {
     width: min(100vw - 32px, 1280px);
-    padding: 14px 24px 24px;
+    padding: 14px var(--shell-x) 24px;
   }
 
   .topbar {
@@ -1009,7 +1014,7 @@ input[type="number"]::-webkit-inner-spin-button {
   margin: 0;
 }
 
-input[type="file"] {
+input[type="file"]:not(.sr-only):not([hidden]) {
   width: 100%;
   padding: 8px 10px;
   border: 1px dashed var(--accent-border);
@@ -1019,7 +1024,7 @@ input[type="file"] {
   font-size: 0.85rem;
 }
 
-input[type="file"]::file-selector-button {
+input[type="file"]:not(.sr-only):not([hidden])::file-selector-button {
   margin-right: 12px;
   padding: 6px 12px;
   border: 0;
@@ -1031,8 +1036,55 @@ input[type="file"]::file-selector-button {
   cursor: pointer;
 }
 
-input[type="file"]::file-selector-button:hover {
+input[type="file"]:not(.sr-only):not([hidden])::file-selector-button:hover {
   background: var(--accent-hover);
+}
+
+.file-picker {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  color: var(--text-body);
+}
+
+.file-picker:focus-within {
+  outline: 2px solid rgba(79, 70, 229, 0.16);
+  border-color: var(--accent-muted);
+}
+
+.file-picker-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  box-shadow: var(--shadow-button);
+}
+
+.file-picker:hover .file-picker-button {
+  background: var(--accent-hover);
+}
+
+.file-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
 }
 
 input:focus,

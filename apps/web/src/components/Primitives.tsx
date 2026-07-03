@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import { useI18n } from "../i18n";
 import styles from "./Primitives.module.css";
 
@@ -29,5 +29,28 @@ export function LoadingState({ lines }: { lines: number }) {
         <span key={index} />
       ))}
     </div>
+  );
+}
+
+type FilePickerProps = {
+  accept: string;
+  buttonLabel: string;
+  emptyLabel: string;
+  selectedName?: string | null;
+  required?: boolean;
+  onChange: (file: File | null) => void;
+};
+
+export function FilePicker({ accept, buttonLabel, emptyLabel, selectedName, required, onChange }: FilePickerProps) {
+  function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    onChange(event.target.files?.[0] ?? null);
+  }
+
+  return (
+    <span className="file-picker">
+      <input className="sr-only" type="file" accept={accept} onChange={handleChange} required={required} />
+      <span className="file-picker-button">{buttonLabel}</span>
+      <span className="file-picker-name">{selectedName || emptyLabel}</span>
+    </span>
   );
 }

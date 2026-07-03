@@ -10,7 +10,7 @@ import {
   validateOptionValues,
 } from "../lib/providerOptions";
 import { AdvancedOptionsCard } from "./AdvancedOptionsCard";
-import { Notice } from "./Primitives";
+import { FilePicker, Notice } from "./Primitives";
 import { ScriptField } from "./ScriptField";
 import { TagRow } from "./TagRow";
 import { TextTools } from "./TextTools";
@@ -330,10 +330,12 @@ export function TtsWorkspace({
             </div>
             <label className="field">
               <span className="field-title">{t("tts.cloneSample")}</span>
-              <input
-                type="file"
+              <FilePicker
                 accept=".wav,.mp3,.flac,.m4a,.ogg,.webm,.aac,audio/*"
-                onChange={(event) => setCloneFile(event.target.files?.[0] ?? null)}
+                buttonLabel={t("audio.chooseFile")}
+                emptyLabel={t("audio.noFile")}
+                selectedName={cloneFile?.name}
+                onChange={setCloneFile}
                 required
               />
             </label>
