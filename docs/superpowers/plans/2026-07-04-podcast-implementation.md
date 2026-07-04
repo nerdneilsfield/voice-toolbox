@@ -4,7 +4,7 @@
 
 **Goal:** Build a Podcast workspace that parses multi-speaker scripts, maps speakers to built-in voices, generates each segment as TTS, and merges the segments into one audio artifact with a timing manifest.
 
-**Architecture:** Add a focused `voice_toolbox.podcast` package for parsing, manifest models, job state, and audio assembly. The FastAPI app owns the in-process podcast job store and exposes job create/poll/cancel endpoints. The web app adds a third `podcast` tab with Split Compose UI and uses polling to display progress.
+**Architecture:** Add a focused `voice_toolbox.podcast` package for parsing, manifest models, job state, and audio assembly. The FastAPI app owns a new in-process podcast job store, validates requests synchronously, dispatches generation through `BackgroundTasks`, and exposes job create/poll/cancel endpoints. The web app adds a third `podcast` tab with Split Compose UI and uses polling to display progress.
 
 **Tech Stack:** Python 3.11, FastAPI, Pydantic v2, pydub, PyYAML, pytest, React, TypeScript, Vitest.
 
@@ -25,6 +25,7 @@
 - Create `tests/test_podcast_audio.py`: per-segment pause and duration tests.
 - Modify `apps/web/src/api.ts`: podcast API client types/functions.
 - Modify `apps/web/src/api.test.ts`: podcast API client tests.
+- Create `apps/web/src/types.ts`: shared `MainTab` union for `App` and `Sidebar`.
 - Modify `apps/web/src/App.tsx`: add podcast state, tab routing, history behavior.
 - Modify `apps/web/src/components/Sidebar.tsx`: add Podcast nav item.
 - Create `apps/web/src/components/PodcastWorkspace.tsx`: Split Compose UI, local parse preview, speaker voice mapping, submit/polling.
@@ -58,16 +59,24 @@ from voice_toolbox.podcast.parser import PodcastParseError, parse_podcast_script
 
 
 def test_parse_speaker_colon_preserves_speakers_and_pause() -> None:
-    script = "Alice: Hello there [pause:800]\nBob: General Kenobi"
+    script = "Alice: Hello there [pause:800]\nBob: General Kenobi [pause:0]"
 
     parsed = parse_podcast_script(script, script_format="speaker_colon", default_pause_ms=350)
 
     assert [speaker.name for speaker in parsed.speakers] == ["Alice", "Bob"]
     assert [(segment.speaker_name, segment.text, segment.pause_after_ms) for segment in parsed.segments] == [
         ("Alice", "Hello there", 800),
-        ("Bob", "General Kenobi", 350),
+        ("Bob", "General Kenobi", 0),
     ]
     assert parsed.segments[0].source_line == 1
+
+
+def test_parse_standalone_pause_applies_to_previous_segment() -> None:
+    script = "Alice: Hello\n[pause:1200]\nBob: Next"
+
+    parsed = parse_podcast_script(script, script_format="speaker_colon", default_pause_ms=350)
+
+    assert [segment.pause_after_ms for segment in parsed.segments] == [1200, 350]
 
 
 def test_parse_markdown_headings_split_paragraphs() -> None:
@@ -98,8 +107,16 @@ def test_parse_json_and_yaml_lines() -> None:
 
 def test_parse_auto_detects_structured_and_markdown() -> None:
     assert parse_podcast_script('{"lines":[{"speaker":"A","text":"x"}]}').source_format == "json"
+    assert parse_podcast_script("lines:\n  - speaker: A\n    text: x").source_format == "yaml"
     assert parse_podcast_script("### A\nx").source_format == "markdown"
     assert parse_podcast_script("A: x").source_format == "speaker_colon"
+
+
+def test_parse_rejects_more_than_max_segments() -> None:
+    script = "\n".join(f"A: line {index}" for index in range(201))
+
+    with pytest.raises(PodcastParseError, match="more than 200"):
+        parse_podcast_script(script)
 
 
 def test_parse_errors_include_line_number() -> None:
@@ -252,6 +269,7 @@ from voice_toolbox.podcast.models import (
 
 MAX_PODCAST_SEGMENTS = 200
 PAUSE_PATTERN = re.compile(r"\[pause:(\d+)\]\s*$")
+STANDALONE_PAUSE_PATTERN = re.compile(r"^\s*\[pause:(\d+)\]\s*$")
 SPEAKER_COLON_PATTERN = re.compile(r"^\s*([^:\n]{1,80}):\s*(.*?)\s*$")
 HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,3}\s+(.+?)\s*$")
 SLUG_PATTERN = re.compile(r"[^a-zA-Z0-9_-]+")
@@ -305,6 +323,27 @@ def _parse_pause(text: str, *, line: int | None) -> tuple[str, int | None]:
     if not match:
         return text.strip(), None
     return text[: match.start()].strip(), int(match.group(1))
+
+
+def _standalone_pause_ms(text: str, *, line: int) -> int | None:
+    match = STANDALONE_PAUSE_PATTERN.match(text)
+    if match:
+        return int(match.group(1))
+    if "[pause:" in text:
+        raise PodcastParseError("invalid pause directive", line=line)
+    return None
+
+
+def _apply_pause_to_previous(
+    rows: list[tuple[str, str, int | None, int | None]],
+    pause_ms: int,
+    *,
+    line: int,
+) -> None:
+    if not rows:
+        raise PodcastParseError("pause directive requires a preceding segment", line=line)
+    speaker, text, _previous_pause, source_line = rows[-1]
+    rows[-1] = (speaker, text, pause_ms, source_line)
 
 
 def _speaker_id(name: str, existing: set[str]) -> str:
@@ -365,6 +404,10 @@ def _parse_speaker_colon(script: str, *, default_pause_ms: int) -> PodcastScript
     for line_no, line in enumerate(script.splitlines(), start=1):
         if not line.strip():
             continue
+        standalone_pause = _standalone_pause_ms(line, line=line_no)
+        if standalone_pause is not None:
+            _apply_pause_to_previous(rows, standalone_pause, line=line_no)
+            continue
         match = SPEAKER_COLON_PATTERN.match(line)
         if not match:
             raise PodcastParseError("expected 'Speaker: text'", line=line_no)
@@ -396,6 +439,11 @@ def _parse_markdown(script: str, *, default_pause_ms: int) -> PodcastScript:
         if heading:
             flush()
             current_speaker = heading.group(1).strip()
+            continue
+        standalone_pause = _standalone_pause_ms(line, line=line_no)
+        if standalone_pause is not None:
+            flush()
+            _apply_pause_to_previous(rows, standalone_pause, line=line_no)
             continue
         if current_speaker is None:
             if line.strip():
@@ -444,7 +492,7 @@ Create `packages/voice_toolbox/src/voice_toolbox/podcast/__init__.py`:
 
 ```python
 from voice_toolbox.podcast.models import PodcastManifest, PodcastScript, PodcastSegment, PodcastSpeaker
-from voice_toolbox.podcast.parser import MAX_PODCAST_SEGMENTS, PodcastParseError, parse_podcast_script
+from voice_toolbox.podcast.parser import PodcastParseError, parse_podcast_script
 
 __all__ = [
     "MAX_PODCAST_SEGMENTS",
@@ -697,6 +745,7 @@ rtk git commit -m "feat(podcast): merge spoken segments"
 
 **Files:**
 - Create: `packages/voice_toolbox/src/voice_toolbox/podcast/jobs.py`
+- Create: `tests/test_podcast_jobs.py`
 - Modify: `apps/api/src/voice_toolbox_api/main.py`
 - Modify: `tests/test_api.py`
 
@@ -705,6 +754,25 @@ rtk git commit -m "feat(podcast): merge spoken segments"
 Append to `tests/test_api.py`:
 
 ```python
+class RecordingWavProvider(RecordingMimoProvider):
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self.tts_requests.append(request)
+        return ProviderAudioResult(
+            audio=_wav_silence(100),
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=request.model,
+        )
+
+
+def _poll_podcast_job(client: TestClient, job_id: str) -> dict[str, object]:
+    for _ in range(20):
+        payload = client.get(f"/v1/podcast/jobs/{job_id}").json()
+        if payload["status"] in {"completed", "failed", "cancelled"}:
+            return payload
+    raise AssertionError("podcast job did not reach a terminal state")
+
+
 def test_podcast_job_generates_audio_and_manifest(tmp_path: Path) -> None:
     client, provider = _client(tmp_path)
 
@@ -723,7 +791,7 @@ def test_podcast_job_generates_audio_and_manifest(tmp_path: Path) -> None:
     assert created.status_code == 200
     payload = created.json()
     assert payload["status"] in {"queued", "running", "completed"}
-    job = client.get(f"/v1/podcast/jobs/{payload['job_id']}").json()
+    job = _poll_podcast_job(client, payload["job_id"])
     assert job["status"] == "completed"
     assert job["artifact"]["operation"] == "podcast"
     assert job["artifact"]["metadata"]["podcast_segment_count"] == 2
@@ -734,6 +802,39 @@ def test_podcast_job_generates_audio_and_manifest(tmp_path: Path) -> None:
     manifest = json.loads(sidecar.read_text(encoding="utf-8"))
     assert manifest["segments"][0]["speaker_name"] == "Alice"
     assert manifest["segments"][1]["pause_after_ms"] == 25
+
+
+def test_podcast_job_manifest_records_decoded_timing(tmp_path: Path) -> None:
+    provider = RecordingWavProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    client = TestClient(app)
+
+    created = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "model": "fake-tts",
+            "script": "Alice: Hello [pause:25]\nBob: Hi",
+            "script_format": "speaker_colon",
+            "default_pause_ms": "40",
+            "speaker_voices": json.dumps({"alice": "Mia", "bob": "Dean"}),
+        },
+    )
+    job = _poll_podcast_job(client, created.json()["job_id"])
+
+    artifact_id = job["artifact"]["id"]
+    sidecar = next((tmp_path / "data" / "artifacts").glob(f"*/{artifact_id}.podcast.json"))
+    manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert manifest["segments"][0]["start_ms"] == 0
+    assert manifest["segments"][0]["audio_duration_ms"] > 0
+    assert manifest["segments"][1]["start_ms"] == (
+        manifest["segments"][0]["end_ms"] + manifest["segments"][0]["pause_after_ms"]
+    )
 
 
 def test_podcast_job_rejects_missing_voice_mapping(tmp_path: Path) -> None:
@@ -765,7 +866,7 @@ def test_podcast_job_records_provider_failure(tmp_path: Path) -> None:
             "speaker_voices": json.dumps({"alice": "Mia", "bob": "Dean"}),
         },
     )
-    job = client.get(f"/v1/podcast/jobs/{created.json()['job_id']}").json()
+    job = _poll_podcast_job(client, created.json()["job_id"])
 
     assert job["status"] == "failed"
     assert job["failed_segment"]["index"] == 1
@@ -790,7 +891,7 @@ Create `packages/voice_toolbox/src/voice_toolbox/podcast/jobs.py`:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from threading import Lock
+from threading import RLock
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -827,13 +928,18 @@ class PodcastJobStore:
         self.max_jobs = max_jobs
         self._jobs: dict[str, PodcastJobStatus] = {}
         self._cancelled: set[str] = set()
-        self._lock = Lock()
+        self._lock = RLock()
 
-    def create(self) -> PodcastJobStatus:
+    def create(self, *, total_segments: int = 0) -> PodcastJobStatus:
         with self._lock:
             self.cleanup()
-            job = PodcastJobStatus(job_id=f"podcast-{uuid4().hex}", status="queued")
+            job = PodcastJobStatus(
+                job_id=f"podcast-{uuid4().hex}",
+                status="queued",
+                total_segments=total_segments,
+            )
             self._jobs[job.job_id] = job
+            self._trim_locked()
             return job
 
     def get(self, job_id: str) -> PodcastJobStatus | None:
@@ -843,7 +949,8 @@ class PodcastJobStore:
     def update(self, job_id: str, **changes: object) -> PodcastJobStatus:
         with self._lock:
             current = self._jobs[job_id]
-            updated = current.model_copy(update={**changes, "updated_at": datetime.now(UTC)})
+            timestamp = changes.pop("updated_at", datetime.now(UTC))
+            updated = current.model_copy(update={**changes, "updated_at": timestamp})
             self._jobs[job_id] = updated
             return updated
 
@@ -863,42 +970,95 @@ class PodcastJobStore:
             return job_id in self._cancelled
 
     def cleanup(self) -> None:
-        now = datetime.now(UTC)
-        expired = [
-            job_id
-            for job_id, job in self._jobs.items()
-            if now - job.updated_at > self.ttl
-        ]
-        for job_id in expired:
-            self._jobs.pop(job_id, None)
-            self._cancelled.discard(job_id)
+        with self._lock:
+            now = datetime.now(UTC)
+            expired = [
+                job_id
+                for job_id, job in self._jobs.items()
+                if now - job.updated_at > self.ttl
+            ]
+            for job_id in expired:
+                self._jobs.pop(job_id, None)
+                self._cancelled.discard(job_id)
+            self._trim_locked()
+
+    def _trim_locked(self) -> None:
         while len(self._jobs) > self.max_jobs:
             oldest = min(self._jobs.values(), key=lambda job: job.updated_at)
             self._jobs.pop(oldest.job_id, None)
             self._cancelled.discard(oldest.job_id)
 ```
 
-- [ ] **Step 4: Register job store in app state**
+- [ ] **Step 4: Add job store tests**
 
-Modify `create_app()` in `apps/api/src/voice_toolbox_api/main.py` after ASR store setup:
+Create `tests/test_podcast_jobs.py`:
 
 ```python
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from voice_toolbox.podcast.jobs import PodcastJobStore
+
+
+def test_podcast_job_store_cancel_and_cleanup() -> None:
+    store = PodcastJobStore(ttl_seconds=60, max_jobs=2)
+    first = store.create(total_segments=3)
+
+    cancelled = store.cancel(first.job_id)
+
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    assert store.is_cancelled(first.job_id) is True
+
+    store.create()
+    third = store.create()
+    assert store.get(first.job_id) is None
+    assert store.get(third.job_id) is not None
+
+
+def test_podcast_job_store_expires_old_jobs() -> None:
+    store = PodcastJobStore(ttl_seconds=1, max_jobs=10)
+    job = store.create()
+    store.update(job.job_id, updated_at=datetime.now(UTC) - timedelta(seconds=5))
+
+    store.cleanup()
+
+    assert store.get(job.job_id) is None
+```
+
+Run:
+
+```bash
+rtk uv run pytest tests/test_podcast_jobs.py -q
+```
+
+Expected: tests pass after the store supports cancellation and cleanup.
+
+- [ ] **Step 5: Register job store in app state**
+
+Modify `create_app()` in `apps/api/src/voice_toolbox_api/main.py` after ASR chunk-session store setup. This is a new in-process job store, not an ASR session-store subclass.
+
+```python
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from voice_toolbox.podcast.audio import PodcastAudioSegment, merge_podcast_audio
 from voice_toolbox.podcast.jobs import PodcastFailedSegment, PodcastJobStatus, PodcastJobStore
 from voice_toolbox.podcast.models import (
     PodcastManifest,
     PodcastManifestSegment,
     PodcastManifestSpeaker,
+    PodcastScript,
     PodcastScriptFormat,
+    PodcastSpeaker,
 )
-from voice_toolbox.podcast.parser import MAX_PODCAST_SEGMENTS, PodcastParseError, parse_podcast_script
+from voice_toolbox.podcast.parser import PodcastParseError, parse_podcast_script
 ```
 
 ```python
     app.state.podcast_jobs = PodcastJobStore()
 ```
 
-- [ ] **Step 5: Add endpoint skeleton**
+- [ ] **Step 6: Add endpoint skeleton**
 
 Add inside `create_app()` before artifact routes:
 
@@ -906,6 +1066,7 @@ Add inside `create_app()` before artifact routes:
     @app.post("/v1/podcast/jobs")
     def create_podcast_job(
         http_request: Request,
+        background_tasks: BackgroundTasks,
         provider_id: Annotated[str, Form()] = "mimo",
         model: Annotated[str | None, Form()] = None,
         script: Annotated[str, Form()] = "",
@@ -917,20 +1078,36 @@ Add inside `create_app()` before artifact routes:
         chunk_max_chars: Annotated[int | None, Form()] = None,
         chunk_silence_ms: Annotated[int | None, Form()] = None,
     ) -> dict[str, Any]:
-        job = http_request.app.state.podcast_jobs.create()
-        _run_podcast_job_sync(
-            http_request=http_request,
+        _ensure_provider_configured_for_operation(http_request, provider_id)
+        provider = _get_provider(_registry_from_request(http_request), provider_id)
+        _ensure_model_allowed(provider, model, expected_capability="tts.builtin")
+        parsed = _parse_podcast_script_or_422(script, script_format, default_pause_ms)
+        voices_by_key = _parse_speaker_voices(speaker_voices)
+        speaker_voice_ids = _resolve_podcast_voice_ids(parsed.speakers, voices_by_key)
+        validated_options, option_metadata = _validate_tts_provider_options(
+            http_request,
+            provider_id=provider_id,
+            model_id=model,
+            capability="tts.builtin",
+            raw_provider_options=provider_options,
+        )
+        job = http_request.app.state.podcast_jobs.create(total_segments=len(parsed.segments))
+        background_tasks.add_task(
+            _run_podcast_job,
+            app=http_request.app,
             job_id=job.job_id,
+            provider=provider,
             provider_id=provider_id,
             model=model,
-            script=script,
-            script_format=script_format,
+            parsed=parsed,
             default_pause_ms=default_pause_ms,
-            speaker_voices=speaker_voices,
-            provider_options=provider_options,
+            speaker_voice_ids=speaker_voice_ids,
+            provider_options=validated_options,
+            option_metadata=option_metadata,
             chunking_mode=chunking_mode,
             chunk_max_chars=chunk_max_chars,
             chunk_silence_ms=chunk_silence_ms,
+            script_preview_source=script,
         )
         return _podcast_job_payload(http_request.app.state.podcast_jobs.get(job.job_id))
 
@@ -949,9 +1126,9 @@ Add inside `create_app()` before artifact routes:
         return _podcast_job_payload(job)
 ```
 
-This is synchronous for deterministic tests; background execution can be added by wrapping `_run_podcast_job_sync` in FastAPI `BackgroundTasks` after tests cover state.
+`POST` performs request validation synchronously, then returns the queued job. Generation runs in `BackgroundTasks`, so `GET /v1/podcast/jobs/{job_id}` can observe `queued`, `running`, `completed`, `failed`, or `cancelled` states. FastAPI `TestClient` may execute background tasks before the response is returned, so tests should poll until a terminal status and allow the initial response to be `queued`, `running`, or `completed`.
 
-- [ ] **Step 6: Add job runner helpers**
+- [ ] **Step 7: Add job runner helpers**
 
 Add module-level helpers in `apps/api/src/voice_toolbox_api/main.py`:
 
@@ -977,47 +1154,52 @@ def _parse_speaker_voices(raw: str) -> dict[str, str]:
             raise HTTPException(status_code=422, detail="speaker_voices values must be non-empty strings")
         voices[key.strip()] = value.strip()
     return voices
-```
 
-Add `_run_podcast_job_sync(...)` with the exact signature from Step 5. The body should:
 
-```python
-    store: PodcastJobStore = http_request.app.state.podcast_jobs
-    provider_registry = _registry_from_request(http_request)
-    config = _config_from_request(http_request)
-    started_at = datetime.now(UTC)
+def _parse_podcast_script_or_422(
+    script: str,
+    script_format: PodcastScriptFormat,
+    default_pause_ms: int,
+) -> PodcastScript:
     try:
-        _ensure_provider_configured_for_operation(http_request, provider_id)
-        provider = _get_provider(provider_registry, provider_id)
-        _ensure_model_allowed(provider, model, expected_capability="tts.builtin")
-        parsed = parse_podcast_script(
+        return parse_podcast_script(
             script,
             script_format=script_format,
             default_pause_ms=default_pause_ms,
         )
-        voices_by_key = _parse_speaker_voices(speaker_voices)
-        validated_options, option_metadata = _validate_tts_provider_options(
-            http_request,
-            provider_id=provider_id,
-            model_id=model,
-            capability="tts.builtin",
-            raw_provider_options=provider_options,
-        )
-        missing = [
-            speaker.name
-            for speaker in parsed.speakers
-            if speaker.id not in voices_by_key and speaker.name not in voices_by_key
-        ]
-        if missing:
-            raise HTTPException(status_code=422, detail=f"missing voice mapping for: {', '.join(missing)}")
+    except PodcastParseError as exc:
+        detail = f"line {exc.line}: {exc}" if exc.line is not None else str(exc)
+        raise HTTPException(status_code=422, detail=detail) from exc
+
+
+def _resolve_podcast_voice_ids(
+    speakers: list[PodcastSpeaker],
+    voices_by_key: dict[str, str],
+) -> dict[str, str]:
+    missing = [
+        speaker.name
+        for speaker in speakers
+        if speaker.id not in voices_by_key and speaker.name not in voices_by_key
+    ]
+    if missing:
+        raise HTTPException(status_code=422, detail=f"missing voice mapping for: {', '.join(missing)}")
+    return {
+        speaker.id: voices_by_key.get(speaker.id) or voices_by_key[speaker.name]
+        for speaker in speakers
+    }
+```
+
+Add `_run_podcast_job(...)` with parameters matching `background_tasks.add_task` in Step 5. The body should:
+
+```python
+    store: PodcastJobStore = app.state.podcast_jobs
+    config: AppConfig = app.state.config
+    started_at = datetime.now(UTC)
+    try:
         store.update(job_id, status="running", total_segments=len(parsed.segments))
         audio_segments: list[PodcastAudioSegment] = []
         manifest_segments: list[PodcastManifestSegment] = []
         voice_lookup = {voice.id: voice.name for voice in provider.list_voices()}
-        speaker_voice_ids = {
-            speaker.id: voices_by_key.get(speaker.id) or voices_by_key[speaker.name]
-            for speaker in parsed.speakers
-        }
         for index, segment in enumerate(parsed.segments):
             if store.is_cancelled(job_id):
                 store.update(job_id, status="cancelled")
@@ -1030,7 +1212,7 @@ Add `_run_podcast_job_sync(...)` with the exact signature from Step 5. The body 
                 current_text_preview=_preview_text(segment.text, 80),
             )
             prepared = _prepare_tts_or_422(
-                raw_text=TextSource(text=segment.text, metadata={"source_kind": "inline"}),
+                raw_text=TextSource(text=segment.text),
                 text_format=None,
                 config=config,
                 chunking_mode=chunking_mode,
@@ -1049,7 +1231,11 @@ Add `_run_podcast_job_sync(...)` with the exact signature from Step 5. The body 
             audio_segments.append(
                 PodcastAudioSegment(
                     result=result,
-                    pause_after_ms=segment.pause_after_ms or default_pause_ms,
+                    pause_after_ms=(
+                        segment.pause_after_ms
+                        if segment.pause_after_ms is not None
+                        else default_pause_ms
+                    ),
                 )
             )
             manifest_segments.append(
@@ -1060,7 +1246,11 @@ Add `_run_podcast_job_sync(...)` with the exact signature from Step 5. The body 
                     voice_id=voice_id,
                     text=segment.text,
                     source_line=segment.source_line,
-                    pause_after_ms=segment.pause_after_ms or default_pause_ms,
+                    pause_after_ms=(
+                        segment.pause_after_ms
+                        if segment.pause_after_ms is not None
+                        else default_pause_ms
+                    ),
                 )
             )
         merged = merge_podcast_audio(audio_segments, output_format="wav")
@@ -1084,7 +1274,8 @@ Add `_run_podcast_job_sync(...)` with the exact signature from Step 5. The body 
             segments=manifest_segments,
         )
         operation_id = job_id
-        artifact = ArtifactStore(http_request.app.state.artifact_root).write_audio(
+        store_obj = ArtifactStore(app.state.artifact_root)
+        artifact = store_obj.write_audio(
             operation_id=operation_id,
             provider_id=provider_id,
             operation="podcast",
@@ -1096,7 +1287,7 @@ Add `_run_podcast_job_sync(...)` with the exact signature from Step 5. The body 
                 "operation": "podcast",
                 "model": model,
                 "source_text": script,
-                "source_text_preview": _preview_text(script),
+                "source_text_preview": _preview_text(script_preview_source),
                 "podcast_mode": "builtin",
                 "podcast_default_pause_ms": default_pause_ms,
                 "podcast_manifest_version": 1,
@@ -1108,7 +1299,7 @@ Add `_run_podcast_job_sync(...)` with the exact signature from Step 5. The body 
             },
         )
         _write_podcast_manifest(artifact.path, manifest)
-        ArtifactStore(http_request.app.state.artifact_root).record_operation(
+        store_obj.record_operation(
             OperationResult(
                 operation_id=operation_id,
                 operation="podcast",
@@ -1119,10 +1310,6 @@ Add `_run_podcast_job_sync(...)` with the exact signature from Step 5. The body 
             )
         )
         store.update(job_id, status="completed", artifact=artifact)
-    except HTTPException:
-        raise
-    except PodcastParseError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ProviderError as exc:
         store.update(
             job_id,
@@ -1133,7 +1320,11 @@ Add `_run_podcast_job_sync(...)` with the exact signature from Step 5. The body 
                 speaker=(store.get(job_id).current_speaker if store.get(job_id) else "") or "",
             ),
         )
+    except Exception as exc:
+        store.update(job_id, status="failed", error_summary=str(exc))
 ```
+
+Failed jobs are intentionally not inserted into the operations table and do not appear in History because there is no completed artifact. They remain available through `GET /v1/podcast/jobs/{job_id}` until TTL cleanup.
 
 Add `_synthesize_prepared_segment` and `_write_podcast_manifest`:
 
@@ -1158,7 +1349,7 @@ def _write_podcast_manifest(audio_path: Path, manifest: PodcastManifest) -> None
     manifest_path.chmod(0o600)
 ```
 
-- [ ] **Step 7: Run focused API tests**
+- [ ] **Step 8: Run focused API tests**
 
 Run:
 
@@ -1168,33 +1359,33 @@ rtk uv run pytest tests/test_api.py -q -k podcast
 
 Expected: all podcast API tests pass.
 
-- [ ] **Step 8: Run broader backend tests**
+- [ ] **Step 9: Run broader backend tests**
 
 Run:
 
 ```bash
-rtk uv run pytest tests/test_podcast_parser.py tests/test_podcast_audio.py tests/test_api.py -q
+rtk uv run pytest tests/test_podcast_parser.py tests/test_podcast_audio.py tests/test_podcast_jobs.py tests/test_api.py -q
 ```
 
 Expected: all selected tests pass.
 
-- [ ] **Step 9: Run lint**
+- [ ] **Step 10: Run lint**
 
 Run:
 
 ```bash
-rtk uv run ruff check apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_api.py
-rtk uv run ruff format --check apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_api.py
+rtk uv run ruff check apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_api.py tests/test_podcast_jobs.py
+rtk uv run ruff format --check apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_api.py tests/test_podcast_jobs.py
 ```
 
 Expected: no errors.
 
-- [ ] **Step 10: Commit Task 3**
+- [ ] **Step 11: Commit Task 3**
 
 Run:
 
 ```bash
-rtk git add apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_api.py
+rtk git add apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_api.py tests/test_podcast_jobs.py
 rtk git commit -m "feat(api): add podcast jobs"
 ```
 
@@ -1228,9 +1419,9 @@ Apply fixes in the smallest affected files. Add or update regression tests for e
 Run:
 
 ```bash
-rtk uv run pytest tests/test_podcast_parser.py tests/test_podcast_audio.py tests/test_api.py -q
-rtk uv run ruff check apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_podcast_parser.py tests/test_podcast_audio.py tests/test_api.py
-rtk uv run ruff format --check apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_podcast_parser.py tests/test_podcast_audio.py tests/test_api.py
+rtk uv run pytest tests/test_podcast_parser.py tests/test_podcast_audio.py tests/test_podcast_jobs.py tests/test_api.py -q
+rtk uv run ruff check apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_podcast_parser.py tests/test_podcast_audio.py tests/test_podcast_jobs.py tests/test_api.py
+rtk uv run ruff format --check apps/api/src/voice_toolbox_api/main.py packages/voice_toolbox/src/voice_toolbox/podcast tests/test_podcast_parser.py tests/test_podcast_audio.py tests/test_podcast_jobs.py tests/test_api.py
 ```
 
 Expected: all pass.
@@ -1321,6 +1512,24 @@ describe("podcast script preview parser", () => {
     const parsed = parsePodcastScriptPreview("not valid", "speaker_colon", 350);
 
     expect(parsed.errors[0].line).toBe(1);
+  });
+
+  it("previews markdown and json scripts", () => {
+    const markdown = parsePodcastScriptPreview("### Alice\nHi\n\n### Bob\nYo", "markdown", 350);
+    const json = parsePodcastScriptPreview(
+      '{"lines":[{"speaker":"Alice","text":"Hi","pause_after_ms":0}]}',
+      "json",
+      350,
+    );
+    const yaml = parsePodcastScriptPreview(
+      "lines:\n  - speaker: Bob\n    text: Yo\n    pause_after_ms: 0",
+      "yaml",
+      350,
+    );
+
+    expect(markdown.segments.map((segment) => segment.speakerName)).toEqual(["Alice", "Bob"]);
+    expect(json.segments[0]).toMatchObject({ speakerName: "Alice", pauseAfterMs: 0 });
+    expect(yaml.segments[0]).toMatchObject({ speakerName: "Bob", pauseAfterMs: 0 });
   });
 });
 ```
@@ -1416,6 +1625,7 @@ export type PodcastPreview = {
 };
 
 const speakerLinePattern = /^\s*([^:\n]{1,80}):\s*(.*?)\s*$/;
+const headingPattern = /^\s{0,3}#{1,3}\s+(.+?)\s*$/;
 const pausePattern = /\[pause:(\d+)\]\s*$/;
 
 export function parsePodcastScriptPreview(
@@ -1424,9 +1634,9 @@ export function parsePodcastScriptPreview(
   defaultPauseMs: number,
 ): PodcastPreview {
   const resolved = format === "auto" ? "speaker_colon" : format;
-  if (resolved !== "speaker_colon") {
-    return { speakers: [], segments: [], errors: [{ message: "Preview currently supports speaker lines" }] };
-  }
+  if (resolved === "markdown") return parseMarkdownPreview(script, defaultPauseMs);
+  if (resolved === "json") return parseJsonPreview(script, defaultPauseMs);
+  if (resolved === "yaml") return parseYamlPreview(script, defaultPauseMs);
   const speakers = new Map<string, PodcastPreviewSpeaker>();
   const usedSpeakerIds = new Set<string>();
   const segments: PodcastPreviewSegment[] = [];
@@ -1457,6 +1667,131 @@ export function parsePodcastScriptPreview(
     });
   }
   return { speakers: Array.from(speakers.values()), segments, errors };
+}
+
+function parseMarkdownPreview(script: string, defaultPauseMs: number): PodcastPreview {
+  const speakers = new Map<string, PodcastPreviewSpeaker>();
+  const usedSpeakerIds = new Set<string>();
+  const segments: PodcastPreviewSegment[] = [];
+  const errors: PodcastPreviewError[] = [];
+  let currentSpeaker = "";
+  let paragraph: string[] = [];
+  let paragraphLine = 1;
+  const flush = () => {
+    if (!currentSpeaker || paragraph.length === 0) {
+      paragraph = [];
+      return;
+    }
+    addPreviewSegment(speakers, usedSpeakerIds, segments, errors, currentSpeaker, paragraph.join(" "), paragraphLine, defaultPauseMs);
+    paragraph = [];
+  };
+  for (const [offset, line] of script.split(/\r?\n/).entries()) {
+    const lineNo = offset + 1;
+    const heading = headingPattern.exec(line);
+    if (heading) {
+      flush();
+      currentSpeaker = heading[1].trim();
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    if (!currentSpeaker) {
+      errors.push({ line: lineNo, message: "Expected speaker heading" });
+      continue;
+    }
+    if (paragraph.length === 0) paragraphLine = lineNo;
+    paragraph.push(line.trim());
+  }
+  flush();
+  return { speakers: Array.from(speakers.values()), segments, errors };
+}
+
+function parseJsonPreview(script: string, defaultPauseMs: number): PodcastPreview {
+  const speakers = new Map<string, PodcastPreviewSpeaker>();
+  const usedSpeakerIds = new Set<string>();
+  const segments: PodcastPreviewSegment[] = [];
+  const errors: PodcastPreviewError[] = [];
+  try {
+    const payload = JSON.parse(script) as { lines?: Array<{ speaker?: unknown; text?: unknown; pause_after_ms?: unknown }> };
+    for (const [index, line] of (payload.lines ?? []).entries()) {
+      if (typeof line.speaker !== "string" || typeof line.text !== "string") {
+        errors.push({ line: index + 1, message: "Line requires speaker and text" });
+        continue;
+      }
+      const pause = typeof line.pause_after_ms === "number" ? line.pause_after_ms : defaultPauseMs;
+      addPreviewSegment(speakers, usedSpeakerIds, segments, errors, line.speaker, `${line.text} [pause:${pause}]`, index + 1, defaultPauseMs);
+    }
+  } catch {
+    errors.push({ message: "Invalid JSON" });
+  }
+  return { speakers: Array.from(speakers.values()), segments, errors };
+}
+
+function parseYamlPreview(script: string, defaultPauseMs: number): PodcastPreview {
+  const speakers = new Map<string, PodcastPreviewSpeaker>();
+  const usedSpeakerIds = new Set<string>();
+  const segments: PodcastPreviewSegment[] = [];
+  const errors: PodcastPreviewError[] = [];
+  let current: { speaker?: string; text?: string; pause?: number; line: number } | null = null;
+  const flush = () => {
+    if (!current) return;
+    if (!current.speaker || !current.text) {
+      errors.push({ line: current.line, message: "Line requires speaker and text" });
+    } else {
+      const pause = current.pause ?? defaultPauseMs;
+      addPreviewSegment(speakers, usedSpeakerIds, segments, errors, current.speaker, `${current.text} [pause:${pause}]`, current.line, defaultPauseMs);
+    }
+    current = null;
+  };
+  for (const [offset, rawLine] of script.split(/\r?\n/).entries()) {
+    const lineNo = offset + 1;
+    const line = rawLine.trim();
+    if (line.startsWith("- ")) {
+      flush();
+      current = { line: lineNo };
+      const speaker = /^-\s*speaker:\s*(.+)$/.exec(line);
+      if (speaker) current.speaker = speaker[1].trim();
+      continue;
+    }
+    if (!current) continue;
+    const speaker = /^speaker:\s*(.+)$/.exec(line);
+    const text = /^text:\s*(.+)$/.exec(line);
+    const pause = /^pause_after_ms:\s*(\d+)$/.exec(line);
+    if (speaker) current.speaker = speaker[1].trim();
+    if (text) current.text = text[1].trim();
+    if (pause) current.pause = Number(pause[1]);
+  }
+  flush();
+  return { speakers: Array.from(speakers.values()), segments, errors };
+}
+
+function addPreviewSegment(
+  speakers: Map<string, PodcastPreviewSpeaker>,
+  usedSpeakerIds: Set<string>,
+  segments: PodcastPreviewSegment[],
+  errors: PodcastPreviewError[],
+  name: string,
+  rawText: string,
+  line: number,
+  defaultPauseMs: number,
+) {
+  if (!speakers.has(name)) speakers.set(name, { id: slugSpeaker(name, usedSpeakerIds), name });
+  const parsedText = parsePause(rawText, defaultPauseMs);
+  if (parsedText.error) {
+    errors.push({ line, message: parsedText.error });
+    return;
+  }
+  if (!parsedText.text) return;
+  const speaker = speakers.get(name)!;
+  segments.push({
+    speakerId: speaker.id,
+    speakerName: speaker.name,
+    text: parsedText.text,
+    pauseAfterMs: parsedText.pauseAfterMs,
+    line,
+  });
 }
 
 function parsePause(raw: string, defaultPauseMs: number): { text: string; pauseAfterMs: number; error?: string } {
@@ -1502,19 +1837,36 @@ rtk git commit -m "feat(web): add podcast API client"
 ## Task 6: Podcast Workspace UI
 
 **Files:**
+- Create: `apps/web/src/types.ts`
 - Create: `apps/web/src/components/PodcastWorkspace.tsx`
 - Modify: `apps/web/src/App.tsx`
 - Modify: `apps/web/src/components/Sidebar.tsx`
 - Modify: `apps/web/src/styles.css`
 - Modify: `apps/web/src/i18n/dictionaries.ts`
 
-- [ ] **Step 1: Add Podcast nav types**
+- [ ] **Step 1: Add shared MainTab type**
+
+Create `apps/web/src/types.ts`:
+
+```ts
+export type MainTab = "tts" | "asr" | "podcast";
+```
 
 Modify `apps/web/src/App.tsx`:
 
 ```ts
-type MainTab = "tts" | "asr" | "podcast";
+import type { MainTab } from "./types";
 ```
+
+Remove the local `type MainTab = "tts" | "asr";` declaration.
+
+Modify `apps/web/src/components/Sidebar.tsx`:
+
+```ts
+import type { MainTab } from "../types";
+```
+
+Remove the local `type MainTab = "tts" | "asr";` declaration.
 
 Add state:
 
@@ -1530,13 +1882,9 @@ setPodcastArtifact(null);
 setPodcastState("idle");
 ```
 
+Podcast reuses `selection.models.builtin`; do not add a `podcast` key to `ModelSelection` or `useProviderSelection`.
+
 - [ ] **Step 2: Update Sidebar**
-
-Modify `apps/web/src/components/Sidebar.tsx`:
-
-```ts
-type MainTab = "tts" | "asr" | "podcast";
-```
 
 Add a Podcast section button after TTS and before ASR:
 
@@ -1597,7 +1945,7 @@ Create `apps/web/src/components/PodcastWorkspace.tsx`:
 
 ```tsx
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import type { Artifact, PodcastJobStatus, PodcastScriptFormat, Provider } from "../api";
+import type { Artifact, PodcastJobStatus, PodcastScriptFormat, Provider, TextFormat } from "../api";
 import { createPodcastJob, getPodcastJob } from "../api";
 import { useI18n } from "../i18n";
 import { parsePodcastScriptPreview } from "../lib/podcastScript";
@@ -1704,7 +2052,14 @@ export function PodcastWorkspace({
               <option value="yaml">YAML</option>
             </select>
           </div>
-          <ScriptField label={t("podcast.script")} value={script} onChange={setScript} importable required />
+          <ScriptField
+            label={t("podcast.script")}
+            value={script}
+            onChange={setScript}
+            importable
+            required
+            onImportFormat={(format) => setScriptFormat(podcastFormatForTextImport(format))}
+          />
           <div className="podcast-preview-list">
             {parsed.errors.map((item, index) => (
               <Notice key={index} variant="error">
@@ -1763,9 +2118,13 @@ export function PodcastWorkspace({
     </form>
   );
 }
+
+function podcastFormatForTextImport(format: TextFormat): PodcastScriptFormat {
+  return format === "markdown" ? "markdown" : "speaker_colon";
+}
 ```
 
-The existing `ScriptField` accepts `label`, `value`, `onChange`, `importable`, and `required`; keep those props exactly.
+The existing `ScriptField` emits `onImportFormat`; wire it so imported Markdown switches the podcast parser to `markdown` instead of silently staying in `speaker_colon`.
 
 - [ ] **Step 5: Wire PodcastWorkspace in App**
 
@@ -1842,7 +2201,7 @@ Modify `apps/web/src/styles.css`:
   gap: 10px;
   align-items: center;
   padding: 8px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--accent-border);
   border-radius: 8px;
 }
 
@@ -1853,7 +2212,7 @@ Modify `apps/web/src/styles.css`:
 }
 ```
 
-Use the existing border token present in `apps/web/src/styles.css`. If the file has no `--border` token, use the same border color used by `.card`.
+Use `--accent-border` to match the existing `.card` border color.
 
 - [ ] **Step 7: Run web tests/build**
 

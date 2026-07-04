@@ -53,8 +53,8 @@ Parsing rules:
 - JSON/YAML mode accepts either:
   - `{ "lines": [{ "speaker": "Alice", "text": "..." }] }`
   - `{ "speakers": [...], "lines": [...] }`
-- YAML parsing uses the existing project dependency set; if `pyyaml` is only transitive, promote it to a direct dependency before implementing YAML support.
-- `[pause:800]` may appear as a standalone segment directive or at the end of a line. The value overrides `default_pause_ms` after that segment.
+- YAML parsing promotes `pyyaml` to a direct runtime dependency so base installs can parse YAML without relying on optional MLX dependencies.
+- `[pause:800]` may appear at the end of a spoken line or as a standalone line immediately after a spoken segment. The value overrides `default_pause_ms` after that segment. `[pause:0]` is valid and means no inserted pause.
 - Invalid pause values, missing speaker names, empty parsed output, and malformed structured input produce parser errors with line numbers when available.
 - Speaker IDs are stable slugs generated from names, with suffixes for collisions. Display keeps the original speaker name.
 
@@ -96,7 +96,7 @@ Progress fields:
 - `error_summary`
 - `failed_segment`
 
-The first implementation can run jobs in a lightweight in-process job store. Jobs need process-local status only; completed output is persisted through artifacts. The job store should have a bounded history and TTL cleanup to avoid unbounded memory growth.
+The first implementation runs jobs in a lightweight in-process job store and dispatches generation in a background task. `POST /v1/podcast/jobs` returns after synchronous validation with a `queued` job, while generation updates status and progress for polling. Jobs need process-local status only; completed output is persisted through artifacts. The job store should have a bounded history and TTL cleanup to avoid unbounded memory growth. Failed jobs do not appear in history because they have no completed artifact; they remain pollable in the job store until TTL cleanup.
 
 ## Generation Flow
 
@@ -176,7 +176,7 @@ Output panel:
 
 Navigation:
 
-- Update `MainTab` to include `podcast`.
+- Add a shared `MainTab` type that includes `podcast`, and import it from both `App` and `Sidebar`.
 - Keep TTS mode state separate from Podcast state.
 - Switching providers clears incompatible podcast model/voice selections, matching existing TTS behavior.
 
