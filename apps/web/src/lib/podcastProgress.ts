@@ -6,7 +6,10 @@ export type PodcastProgressTiming = {
 };
 
 export function podcastProgressTiming(
-  job: Pick<PodcastJobStatus, "created_at" | "updated_at" | "current_segment" | "total_segments">,
+  job: Pick<
+    PodcastJobStatus,
+    "created_at" | "updated_at" | "current_segment" | "total_segments" | "recent_segment_durations_ms"
+  >,
   nowMs = Date.now(),
 ): PodcastProgressTiming {
   const startedMs = parseJobTime(job.created_at) ?? parseJobTime(job.updated_at) ?? nowMs;
@@ -14,12 +17,21 @@ export function podcastProgressTiming(
   const totalSegments = safeSegmentCount(job.total_segments);
   const currentSegment = safeSegmentCount(job.current_segment);
   const completedSegments = Math.min(Math.max(currentSegment - 1, 0), totalSegments);
+  const recentDurationsMs = validDurations(job.recent_segment_durations_ms);
 
   if (elapsedSeconds <= 0 || totalSegments <= 0 || completedSegments <= 0) {
     return { elapsedSeconds, remainingSeconds: null };
   }
 
   const remainingSegments = Math.max(totalSegments - completedSegments, 0);
+  if (recentDurationsMs.length > 0) {
+    const averageMs = recentDurationsMs.reduce((total, durationMs) => total + durationMs, 0) / recentDurationsMs.length;
+    return {
+      elapsedSeconds,
+      remainingSeconds: Math.ceil((averageMs * remainingSegments) / 1000),
+    };
+  }
+
   return {
     elapsedSeconds,
     remainingSeconds: Math.ceil((elapsedSeconds / completedSegments) * remainingSegments),
@@ -48,4 +60,9 @@ function parseJobTime(value: string | null | undefined): number | null {
 function safeSegmentCount(value: number | null | undefined): number {
   if (value === null || value === undefined || !Number.isFinite(value)) return 0;
   return Math.max(0, Math.floor(value));
+}
+
+function validDurations(values: number[] | null | undefined): number[] {
+  if (!Array.isArray(values)) return [];
+  return values.filter((value) => Number.isFinite(value) && value >= 0).slice(-5);
 }

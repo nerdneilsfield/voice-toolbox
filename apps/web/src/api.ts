@@ -204,6 +204,7 @@ export type PodcastJobStatus = {
   total_segments?: number;
   current_speaker?: string | null;
   current_text_preview?: string | null;
+  recent_segment_durations_ms?: number[];
   artifact?: Artifact | null;
   error_summary?: string | null;
   failed_segment?: { index: number; speaker: string } | null;

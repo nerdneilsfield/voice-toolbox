@@ -63,6 +63,18 @@ def test_podcast_job_store_does_not_overwrite_cancelled_with_completed() -> None
     assert completed.status == "cancelled"
 
 
+def test_podcast_job_store_keeps_last_five_segment_durations() -> None:
+    store = PodcastJobStore(ttl_seconds=60, max_jobs=2)
+    job = store.create(total_segments=8)
+
+    for index in range(8):
+        store.record_segment_duration_ms(job.job_id, 100 + index)
+
+    updated = store.get(job.job_id)
+    assert updated is not None
+    assert updated.recent_segment_durations_ms == [103, 104, 105, 106, 107]
+
+
 def test_podcast_job_store_expires_old_jobs() -> None:
     store = PodcastJobStore(ttl_seconds=1, max_jobs=10)
     job = store.create()

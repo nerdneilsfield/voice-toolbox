@@ -2,18 +2,19 @@ import { describe, expect, it } from "vitest";
 import { formatPodcastDuration, podcastProgressTiming } from "./podcastProgress";
 
 describe("podcastProgressTiming", () => {
-  it("estimates remaining time from completed segments", () => {
+  it("estimates remaining time from recent segment durations", () => {
     const timing = podcastProgressTiming(
       {
         created_at: "2026-07-04T00:00:00.000Z",
         updated_at: "2026-07-04T00:02:00.000Z",
-        current_segment: 3,
-        total_segments: 5,
+        current_segment: 8,
+        total_segments: 10,
+        recent_segment_durations_ms: [10000, 20000, 30000, 40000, 50000],
       },
       Date.parse("2026-07-04T00:02:00.000Z"),
     );
 
-    expect(timing).toEqual({ elapsedSeconds: 120, remainingSeconds: 180 });
+    expect(timing).toEqual({ elapsedSeconds: 120, remainingSeconds: 90 });
   });
 
   it("waits for a completed segment before estimating remaining time", () => {

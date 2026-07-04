@@ -9,6 +9,7 @@ from uuid import uuid4
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated, Any, Literal, cast
 
 from fastapi.exceptions import RequestValidationError
@@ -2141,6 +2142,7 @@ def _run_podcast_job(
                 current_speaker=segment.speaker_name,
                 current_text_preview=_preview_text(segment.text, 80),
             )
+            segment_started_at = perf_counter()
             prepared = _prepare_tts_or_422(
                 raw_text=TextSource(text=segment.text),
                 text_format=None,
@@ -2158,6 +2160,10 @@ def _run_podcast_job(
                 artifact_metadata=option_metadata,
             )
             result = _synthesize_prepared_segment(provider, prepared)
+            store.record_segment_duration_ms(
+                job_id,
+                round((perf_counter() - segment_started_at) * 1000),
+            )
             pause_after_ms = (
                 segment.pause_after_ms if segment.pause_after_ms is not None else default_pause_ms
             )

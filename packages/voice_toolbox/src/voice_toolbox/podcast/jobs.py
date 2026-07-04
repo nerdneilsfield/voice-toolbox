@@ -36,6 +36,7 @@ class PodcastJobStatus(BaseModel):
     artifact: AudioArtifact | None = None
     error_summary: str | None = None
     failed_segment: PodcastFailedSegment | None = None
+    recent_segment_durations_ms: list[int] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -81,6 +82,19 @@ class PodcastJobStore:
                 return current
             timestamp = changes.pop("updated_at", datetime.now(UTC))
             updated = current.model_copy(update={**changes, "updated_at": timestamp})
+            self._jobs[job_id] = updated
+            return updated
+
+    def record_segment_duration_ms(self, job_id: str, duration_ms: int) -> PodcastJobStatus:
+        with self._lock:
+            current = self._jobs[job_id]
+            recent = [*current.recent_segment_durations_ms, max(0, int(duration_ms))][-5:]
+            updated = current.model_copy(
+                update={
+                    "recent_segment_durations_ms": recent,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
             self._jobs[job_id] = updated
             return updated
 

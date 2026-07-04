@@ -2346,6 +2346,8 @@ def test_podcast_job_generates_audio_and_manifest(tmp_path: Path) -> None:
     assert job["status"] == "completed"
     assert job["artifact"]["operation"] == "podcast"  # type: ignore[index]
     assert job["artifact"]["metadata"]["podcast_segment_count"] == 2  # type: ignore[index]
+    assert len(job["recent_segment_durations_ms"]) == 2
+    assert all(isinstance(duration, int) for duration in job["recent_segment_durations_ms"])
     assert [request.voice_id for request in provider.tts_requests] == ["Mia", "Dean"]
 
     artifact_id = job["artifact"]["id"]  # type: ignore[index]
