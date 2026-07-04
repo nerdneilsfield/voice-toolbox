@@ -2,6 +2,8 @@ export type Capability = "tts.builtin" | "tts.design" | "tts.clone" | "asr.trans
 
 export type TextFormat = "plain" | "markdown" | "auto";
 
+export type PodcastScriptFormat = "auto" | "speaker_colon" | "markdown" | "json" | "yaml";
+
 export type ProviderModel = {
   id: string;
   name: string;
@@ -193,6 +195,31 @@ export type ASRChunkFinish = {
   signal?: AbortSignal;
 };
 
+export type PodcastJobStatus = {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  current_segment?: number;
+  total_segments?: number;
+  current_speaker?: string | null;
+  current_text_preview?: string | null;
+  artifact?: Artifact | null;
+  error_summary?: string | null;
+  failed_segment?: { index: number; speaker: string } | null;
+};
+
+export type PodcastJobCreate = {
+  providerId: string;
+  model?: string | null;
+  script: string;
+  scriptFormat: PodcastScriptFormat;
+  defaultPauseMs: number;
+  speakerVoices: Record<string, string>;
+  providerOptions?: Record<string, unknown>;
+  chunkingMode?: ChunkingMode;
+  chunkMaxChars?: number;
+  chunkSilenceMs?: number;
+};
+
 export async function getProviders(): Promise<Provider[]> {
   const payload = await requestJson<{ providers: Provider[] }>("/v1/providers");
   return payload.providers;
@@ -291,6 +318,27 @@ export async function deleteAsrChunkSession(sessionId: string, signal?: AbortSig
     method: "DELETE",
     signal,
   });
+}
+
+export function createPodcastJob(form: PodcastJobCreate): Promise<PodcastJobStatus> {
+  const body = new FormData();
+  body.set("provider_id", form.providerId);
+  appendOptional(body, "model", form.model);
+  body.set("script", form.script);
+  body.set("script_format", form.scriptFormat);
+  body.set("default_pause_ms", String(form.defaultPauseMs));
+  body.set("speaker_voices", JSON.stringify(form.speakerVoices));
+  appendProviderOptions(body, form.providerOptions);
+  appendChunking(body, form);
+  return requestForm("/v1/podcast/jobs", body);
+}
+
+export function getPodcastJob(jobId: string): Promise<PodcastJobStatus> {
+  return requestJson(`/v1/podcast/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function cancelPodcastJob(jobId: string): Promise<PodcastJobStatus> {
+  return requestJson(`/v1/podcast/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
 }
 
 export async function getArtifacts(limit = 20): Promise<Artifact[]> {

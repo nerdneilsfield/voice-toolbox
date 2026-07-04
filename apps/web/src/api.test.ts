@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  cancelPodcastJob,
+  createPodcastJob,
   createAsrChunkSession,
   deleteAsrChunkSession,
   finishAsrChunkSession,
   getArtifacts,
+  getPodcastJob,
   synthesizeBuiltin,
   transcriptDownloadUrl,
   uploadAsrChunk,
@@ -221,6 +224,57 @@ describe("api client", () => {
       "/v1/artifacts/a%2Fb/transcript?format=txt&timestamps=true&speakers=true",
     );
     expect(transcriptDownloadUrl("artifact-1", "vtt")).toBe("/v1/artifacts/artifact-1/transcript?format=vtt");
+  });
+
+  it("creates podcast jobs with speaker voices JSON", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ job_id: "podcast-1", status: "queued" }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await createPodcastJob({
+      providerId: "mimo",
+      model: "fake-tts",
+      script: "Alice: hello",
+      scriptFormat: "speaker_colon",
+      defaultPauseMs: 350,
+      speakerVoices: { alice: "Mia" },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/v1/podcast/jobs");
+    const body = init?.body as FormData;
+    expect(body.get("provider_id")).toBe("mimo");
+    expect(body.get("model")).toBe("fake-tts");
+    expect(body.get("script")).toBe("Alice: hello");
+    expect(body.get("script_format")).toBe("speaker_colon");
+    expect(body.get("default_pause_ms")).toBe("350");
+    expect(body.get("speaker_voices")).toBe(JSON.stringify({ alice: "Mia" }));
+  });
+
+  it("fetches podcast job status", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ job_id: "podcast-1", status: "completed" }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await getPodcastJob("podcast/1");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith("/v1/podcast/jobs/podcast%2F1");
+  });
+
+  it("cancels podcast jobs", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ job_id: "podcast-1", status: "cancelled" }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await cancelPodcastJob("podcast/1");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith("/v1/podcast/jobs/podcast%2F1", { method: "DELETE" });
   });
 });
 
