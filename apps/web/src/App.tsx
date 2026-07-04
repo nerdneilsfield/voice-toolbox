@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AsrWorkspace } from "./components/AsrWorkspace";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { PodcastWorkspace } from "./components/PodcastWorkspace";
 import { ProviderDetails } from "./components/ProviderDetails";
 import { ResultPanel } from "./components/ResultPanel";
 import { Sidebar } from "./components/Sidebar";
@@ -13,8 +14,7 @@ import { useI18n } from "./i18n";
 import type { Artifact, Voice } from "./api";
 import { getArtifacts, getVoices } from "./api";
 import { voicesForModel } from "./lib/providerSelection";
-
-type MainTab = "tts" | "asr";
+import type { MainTab } from "./types";
 
 function ttsCapability(mode: TtsMode): string {
   return mode === "builtin" ? "tts.builtin" : mode === "design" ? "tts.design" : "tts.clone";
@@ -40,9 +40,11 @@ function App() {
 
   const [ttsArtifact, setTtsArtifact] = useState<Artifact | null>(null);
   const [asrArtifact, setAsrArtifact] = useState<Artifact | null>(null);
+  const [podcastArtifact, setPodcastArtifact] = useState<Artifact | null>(null);
   const [asrTranscript, setAsrTranscript] = useState("");
   const [ttsState, setTtsState] = useState<"idle" | "loading" | "error">("idle");
   const [asrState, setAsrState] = useState<"idle" | "loading" | "error">("idle");
+  const [podcastState, setPodcastState] = useState<"idle" | "loading" | "error">("idle");
 
   const selection = useProviderSelection(selectedProvider, voices);
 
@@ -101,9 +103,11 @@ function App() {
     if (selectedProviderId && selectedProviderId !== lastProviderId.current && lastProviderId.current !== "") {
       setTtsArtifact(null);
       setAsrArtifact(null);
+      setPodcastArtifact(null);
       setAsrTranscript("");
       setTtsState("idle");
       setAsrState("idle");
+      setPodcastState("idle");
     }
     lastProviderId.current = selectedProviderId;
   }, [selectedProviderId]);
@@ -138,6 +142,12 @@ function App() {
   // user in whatever mode was active.
   async function selectHistoryItem(artifact: Artifact) {
     if (artifact.kind === "audio") {
+      if (artifact.operation === "podcast") {
+        setPodcastArtifact(artifact);
+        setPodcastState("idle");
+        setTab("podcast");
+        return;
+      }
       const mode = String(artifact.metadata?.tts_mode ?? "builtin");
       if (mode === "builtin" || mode === "design" || mode === "clone") {
         setTtsMode(mode);
@@ -179,7 +189,7 @@ function App() {
 
       {globalError ? <div className="notice error">{globalError}</div> : null}
 
-      <div className="workspace">
+      <div className={["workspace", tab === "podcast" ? "podcast-workspace-shell" : ""].filter(Boolean).join(" ")}>
         <Sidebar
           activeMode={ttsMode}
           onModeChange={setTtsMode}
@@ -206,6 +216,20 @@ function App() {
             }}
             onModelSummary={() => {}}
           />
+        ) : tab === "podcast" ? (
+          <PodcastWorkspace
+            provider={selectedProvider}
+            providerId={selectedProviderId}
+            model={selection.models.builtin}
+            onModelChange={(value) => selection.setModel("builtin", value)}
+            voices={ttsVoices}
+            onResult={(artifact) => {
+              setPodcastArtifact(artifact);
+              setPodcastState("idle");
+              if (artifact) void refreshHistory();
+            }}
+            onStateChange={setPodcastState}
+          />
         ) : (
           <AsrWorkspace
             provider={selectedProvider}
@@ -231,6 +255,9 @@ function App() {
           </div>
           {tab === "tts" && (ttsArtifact || ttsState === "loading") ? (
             <ResultPanel artifact={ttsArtifact} state={ttsState} />
+          ) : null}
+          {tab === "podcast" && (podcastArtifact || podcastState === "loading") ? (
+            <ResultPanel artifact={podcastArtifact} state={podcastState} />
           ) : null}
           {historyError ? <div className="notice error compact">{historyError}</div> : null}
           <HistoryPanel artifacts={history} providers={providers} onSelect={selectHistoryItem} />

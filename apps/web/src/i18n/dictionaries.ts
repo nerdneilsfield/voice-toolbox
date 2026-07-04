@@ -27,6 +27,8 @@ export const en = {
 
   "nav.ariaSections": "Toolbox sections",
   "nav.ttsSection": "TTS",
+  "nav.podcastSection": "Podcast",
+  "nav.podcast": "Podcast",
   "nav.asrSection": "ASR",
   "nav.transcribe": "Transcribe",
 
@@ -76,6 +78,17 @@ export const en = {
   "tts.mode.design": "Design",
   "tts.mode.clone": "Clone",
 
+  "podcast.script": "Podcast script",
+  "podcast.scriptFormat": "Script format",
+  "podcast.parsePreview": "Parse preview",
+  "podcast.speakers": "Speakers",
+  "podcast.defaultPause": "Default pause",
+  "podcast.generate": "Generate podcast",
+  "podcast.generating": "Generating podcast...",
+  "podcast.progress": "{current} / {total} · {speaker}",
+  "podcast.missingVoice": "Choose a voice for every speaker.",
+  "podcast.noSegments": "No speakable segments parsed.",
+
   "asr.unsupported": "Selected provider does not support ASR.",
   "asr.audio": "Audio",
   "asr.audioFile": "Audio file",
@@ -98,7 +111,8 @@ export const en = {
   "asr.uploadStrategy.auto": "auto",
   "asr.uploadStrategy.browser": "prefer browser chunks",
   "asr.uploadStrategy.backend": "backend upload",
-  "asr.uploadHint.browser": "Browser-decodable audio is sliced locally; unsupported formats fall back to backend upload.",
+  "asr.uploadHint.browser":
+    "Browser-decodable audio is sliced locally; unsupported formats fall back to backend upload.",
   "asr.uploadHint.backend": "The whole file is uploaded once and chunked server-side.",
   "asr.uploadHint.auto": "Audio is sliced locally when possible or when provider payload limits require it.",
   "asr.timestamps": "Timestamps",
@@ -217,6 +231,8 @@ export const zh: Record<keyof typeof en, string> = {
 
   "nav.ariaSections": "工具箱分区",
   "nav.ttsSection": "TTS",
+  "nav.podcastSection": "播客",
+  "nav.podcast": "播客",
   "nav.asrSection": "ASR",
   "nav.transcribe": "转录",
 
@@ -265,6 +281,17 @@ export const zh: Record<keyof typeof en, string> = {
   "tts.mode.builtin": "内置",
   "tts.mode.design": "设计",
   "tts.mode.clone": "克隆",
+
+  "podcast.script": "播客脚本",
+  "podcast.scriptFormat": "脚本格式",
+  "podcast.parsePreview": "解析预览",
+  "podcast.speakers": "说话人",
+  "podcast.defaultPause": "默认停顿",
+  "podcast.generate": "生成播客",
+  "podcast.generating": "播客生成中…",
+  "podcast.progress": "{current} / {total} · {speaker}",
+  "podcast.missingVoice": "请为每个说话人选择音色。",
+  "podcast.noSegments": "未解析出可合成的片段。",
 
   "asr.unsupported": "所选提供方不支持 ASR。",
   "asr.audio": "音频",

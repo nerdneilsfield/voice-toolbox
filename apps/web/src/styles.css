@@ -667,6 +667,12 @@ p {
   }
 }
 
+@media (max-width: 980px) {
+  .podcast-compose {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 819px) {
   :root {
     --shell-x: 24px;
@@ -689,6 +695,14 @@ p {
 
   .workspace {
     grid-template-columns: 1fr;
+  }
+
+  .workspace.podcast-workspace-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace.podcast-workspace-shell .output-panel {
+    grid-column: 1;
   }
 
   .sidebar {
@@ -1391,6 +1405,108 @@ html[data-theme="dark"] .loading-state span {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.compact-select {
+  width: auto;
+  min-width: 132px;
+  font-size: 0.82rem;
+  padding: 6px 10px;
+}
+
+.podcast-canvas .card-label,
+.podcast-canvas .import-btn {
+  white-space: nowrap;
+}
+
+.podcast-compose {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.podcast-script-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.podcast-preview-card,
+.podcast-speakers-card {
+  min-width: 0;
+}
+
+.podcast-preview-list {
+  display: grid;
+  gap: 8px;
+}
+
+.podcast-segment-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.25fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  color: var(--text-body);
+}
+
+.podcast-segment-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.podcast-segment-row span:first-child,
+.podcast-segment-row span:last-child {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.workspace.podcast-workspace-shell {
+  grid-template-columns: 190px minmax(0, 1fr);
+}
+
+.workspace.podcast-workspace-shell .output-panel {
+  grid-column: 2;
+  position: static;
+  max-height: none;
+  overflow-y: visible;
+}
+
+@media (max-width: 819px) {
+  .workspace.podcast-workspace-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace.podcast-workspace-shell .output-panel {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 560px) {
+  .podcast-canvas .card-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .podcast-canvas .card-label {
+    flex: 1 0 100%;
+  }
+
+  .podcast-canvas .card-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .podcast-canvas .compact-select {
+    flex: 1 1 150px;
+    min-width: 0;
+  }
 }
 
 .checkbox-line.disabled,

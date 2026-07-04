@@ -1,7 +1,6 @@
 import { useI18n } from "../i18n";
+import type { MainTab } from "../types";
 import type { TtsMode } from "./TtsWorkspace";
-
-type MainTab = "tts" | "asr";
 
 const TTS_MODES: { id: TtsMode; icon: string }[] = [
   { id: "builtin", icon: "🔊" },
@@ -51,6 +50,18 @@ export function Sidebar({
             </button>
           );
         })}
+      </div>
+      <div>
+        <div className="sidebar-section">{t("nav.podcastSection")}</div>
+        <button
+          className={["nav-item", tab === "podcast" ? "active" : ""].filter(Boolean).join(" ")}
+          type="button"
+          disabled={!supportsCapability("tts.builtin")}
+          onClick={() => onTabChange("podcast")}
+        >
+          <span>🎧</span>
+          <span>{t("nav.podcast")}</span>
+        </button>
       </div>
       <div>
         <div className="sidebar-section">{t("nav.asrSection")}</div>
