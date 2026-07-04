@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from threading import Event
+from time import monotonic, sleep
 
 from fastapi.testclient import TestClient
 
@@ -158,6 +160,18 @@ class RecordingWavProvider(RecordingMimoProvider):
         )
 
 
+class BlockingWavProvider(RecordingWavProvider):
+    def __init__(self, artifact_root: Path) -> None:
+        super().__init__(artifact_root)
+        self.started = Event()
+        self.release = Event()
+
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self.started.set()
+        self.release.wait(timeout=2)
+        return super().synthesize_bytes(request)
+
+
 class RecordingMlxAudioProvider(RecordingMimoProvider):
     id = "mlx-audio"
     name = "MLX Audio"
@@ -240,6 +254,7 @@ def _poll_podcast_job(client: TestClient, job_id: str) -> dict[str, object]:
         payload = client.get(f"/v1/podcast/jobs/{job_id}").json()
         if payload["status"] in {"completed", "failed", "cancelled"}:
             return payload
+        sleep(0.05)
     raise AssertionError("podcast job did not reach a terminal state")
 
 
@@ -2317,7 +2332,7 @@ def test_podcast_job_generates_audio_and_manifest(tmp_path: Path) -> None:
         data={
             "provider_id": "mimo",
             "model": "fake-tts",
-            "script": "Alice: Hello\nBob: Hi [pause:25]",
+            "script": "Alice: Hello [pause:25]\nBob: Hi",
             "script_format": "speaker_colon",
             "default_pause_ms": "40",
             "speaker_voices": json.dumps({"alice": "Mia", "bob": "Dean"}),
@@ -2337,7 +2352,40 @@ def test_podcast_job_generates_audio_and_manifest(tmp_path: Path) -> None:
     sidecar = next((tmp_path / "data" / "artifacts").glob(f"*/{artifact_id}.podcast.json"))
     manifest = json.loads(sidecar.read_text(encoding="utf-8"))
     assert manifest["segments"][0]["speaker_name"] == "Alice"
-    assert manifest["segments"][1]["pause_after_ms"] == 25
+    assert manifest["segments"][0]["pause_after_ms"] == 25
+    assert manifest["segments"][1]["pause_after_ms"] == 0
+
+
+def test_podcast_job_returns_before_generation_finishes(tmp_path: Path) -> None:
+    provider = BlockingWavProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    with TestClient(app) as client:
+        start = monotonic()
+        created = client.post(
+            "/v1/podcast/jobs",
+            data={
+                "provider_id": "mimo",
+                "model": "fake-tts",
+                "script": "Alice: Hello",
+                "speaker_voices": json.dumps({"alice": "Mia"}),
+            },
+        )
+        elapsed = monotonic() - start
+        assert created.status_code == 200
+        assert elapsed < 1
+        payload = created.json()
+        assert payload["status"] in {"queued", "running"}
+        assert payload["artifact"] is None
+        assert provider.started.wait(timeout=1)
+        provider.release.set()
+        job = _poll_podcast_job(client, payload["job_id"])
+
+    assert job["status"] == "completed"
 
 
 def test_podcast_job_manifest_records_decoded_timing(tmp_path: Path) -> None:
@@ -2469,8 +2517,8 @@ def test_podcast_job_rejects_large_pause(tmp_path: Path) -> None:
         "/v1/podcast/jobs",
         data={
             "provider_id": "mimo",
-            "script": "Alice: Hello [pause:60001]",
-            "speaker_voices": json.dumps({"alice": "Mia"}),
+            "script": "Alice: Hello [pause:60001]\nBob: Hi",
+            "speaker_voices": json.dumps({"alice": "Mia", "bob": "Dean"}),
         },
     )
 

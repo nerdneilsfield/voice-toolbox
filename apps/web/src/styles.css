@@ -1466,6 +1466,13 @@ html[data-theme="dark"] .loading-state span {
   font-weight: 800;
 }
 
+.podcast-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
 .workspace.podcast-workspace-shell {
   grid-template-columns: 190px minmax(0, 1fr);
 }

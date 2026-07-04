@@ -125,14 +125,17 @@ The Vite dev server proxies `/v1/*` to `http://127.0.0.1:8000`.
 
 ## Podcast Generation
 
-The Podcast workspace turns a multi-speaker script into one audio file. Use one
-TTS provider/model, map each speaker to a built-in voice, and generate.
+The Podcast workspace turns a multi-speaker script into one audio file. A v1
+podcast uses one TTS provider/model for the whole episode; map each speaker in
+the script to one built-in voice from that same model, then generate. The web UI
+creates a queued job, polls progress, and can cancel a queued/running job.
 
 Supported speaker-line scripts:
 
 ```text
 Alice: Welcome to the show. [pause:600]
 Bob: Thanks for having me.
+[pause:800]
 ```
 
 Markdown headings are also accepted:
@@ -145,10 +148,18 @@ Welcome to the show.
 Thanks for having me.
 ```
 
-JSON/YAML accepts a `lines` list with `speaker`, `text`, and optional
-`pause_after_ms`. The generated artifact includes a `.podcast.json` manifest
-with speakers, voices, segment text, pauses, and timing when duration can be
-decoded.
+`[pause:N]` and `pause_after_ms` are segment-after pauses in milliseconds. A
+standalone pause line applies to the previous segment. The final segment has no
+following segment, so its pause is ignored and recorded as `0` in the manifest.
+
+JSON/YAML accepts a `lines` list with:
+
+- `speaker`: speaker display name.
+- `text`: segment text.
+- `pause_after_ms`: optional segment-after pause in milliseconds.
+
+The generated artifact includes a `.podcast.json` manifest with speakers,
+voices, segment text, effective pauses, and timing when duration can be decoded.
 
 ## Make Targets
 

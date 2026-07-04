@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from concurrent.futures import Future, ThreadPoolExecutor
 from hashlib import sha1
 from hashlib import sha256
 from uuid import uuid4
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 from fastapi.exceptions import RequestValidationError
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from loguru import logger
@@ -112,6 +113,7 @@ MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
 MAX_TEXT_INPUT_LENGTH = 200_000
 MAX_PODCAST_PAUSE_MS = 60_000
 MAX_PODCAST_TOTAL_PAUSE_MS = 3_600_000
+MAX_PODCAST_WORKERS = 2
 PROVIDER_NATIVE_UPLOAD_FORMATS = {"wav", "mp3"}
 DOWNLOAD_AUDIO_FORMATS: set[DownloadAudioFormat] = {
     "wav",
@@ -168,6 +170,14 @@ def create_app(
     )
     app.state.asr_chunk_sessions.cleanup_expired()
     app.state.podcast_jobs = PodcastJobStore()
+    app.state.podcast_executor = ThreadPoolExecutor(
+        max_workers=MAX_PODCAST_WORKERS,
+        thread_name_prefix="voice-toolbox-podcast",
+    )
+    app.router.add_event_handler(
+        "shutdown",
+        lambda: app.state.podcast_executor.shutdown(wait=False, cancel_futures=True),
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -747,7 +757,6 @@ def create_app(
     @app.post("/v1/podcast/jobs")
     def create_podcast_job(
         http_request: Request,
-        background_tasks: BackgroundTasks,
         provider_id: Annotated[str, Form()] = "mimo",
         model: Annotated[str | None, Form()] = None,
         script: Annotated[str, Form()] = "",
@@ -783,23 +792,32 @@ def create_app(
             job = http_request.app.state.podcast_jobs.create(total_segments=len(parsed.segments))
         except PodcastJobStoreError as exc:
             raise HTTPException(status_code=429, detail=str(exc)) from exc
-        background_tasks.add_task(
-            _run_podcast_job,
-            app=http_request.app,
-            job_id=job.job_id,
-            provider=provider,
-            provider_id=provider_id,
-            model=model,
-            parsed=parsed,
-            default_pause_ms=default_pause_ms,
-            speaker_voice_ids=speaker_voice_ids,
-            provider_options=validated_options,
-            option_metadata=option_metadata,
-            chunking_mode=chunking_mode,
-            chunk_max_chars=chunk_max_chars,
-            chunk_silence_ms=chunk_silence_ms,
-            script_preview_source=script,
-        )
+        try:
+            future = http_request.app.state.podcast_executor.submit(
+                _run_podcast_job,
+                app=http_request.app,
+                job_id=job.job_id,
+                provider=provider,
+                provider_id=provider_id,
+                model=model,
+                parsed=parsed,
+                default_pause_ms=default_pause_ms,
+                speaker_voice_ids=speaker_voice_ids,
+                provider_options=validated_options,
+                option_metadata=option_metadata,
+                chunking_mode=chunking_mode,
+                chunk_max_chars=chunk_max_chars,
+                chunk_silence_ms=chunk_silence_ms,
+                script_preview_source=script,
+            )
+        except RuntimeError as exc:
+            http_request.app.state.podcast_jobs.update(
+                job.job_id,
+                status="failed",
+                error_summary="podcast executor is unavailable",
+            )
+            raise HTTPException(status_code=503, detail="podcast executor is unavailable") from exc
+        future.add_done_callback(_log_podcast_future_error)
         return _podcast_job_payload(http_request.app.state.podcast_jobs.get(job.job_id))
 
     @app.get("/v1/podcast/jobs/{job_id}")
@@ -2040,16 +2058,17 @@ def _validate_podcast_pauses(parsed: PodcastScript, default_pause_ms: int) -> No
             detail=f"default_pause_ms must be less than or equal to {MAX_PODCAST_PAUSE_MS}",
         )
     total_pause_ms = 0
-    for segment in parsed.segments:
+    for index, segment in enumerate(parsed.segments):
         pause_ms = (
             segment.pause_after_ms if segment.pause_after_ms is not None else default_pause_ms
         )
-        if pause_ms > MAX_PODCAST_PAUSE_MS:
+        if index < len(parsed.segments) - 1 and pause_ms > MAX_PODCAST_PAUSE_MS:
             raise HTTPException(
                 status_code=422,
                 detail=f"pause must be less than or equal to {MAX_PODCAST_PAUSE_MS}",
             )
-        total_pause_ms += pause_ms
+        if index < len(parsed.segments) - 1:
+            total_pause_ms += pause_ms
     if total_pause_ms > MAX_PODCAST_TOTAL_PAUSE_MS:
         raise HTTPException(
             status_code=422,
@@ -2110,6 +2129,7 @@ def _run_podcast_job(
         audio_segments: list[PodcastAudioSegment] = []
         manifest_segments: list[PodcastManifestSegment] = []
         voice_lookup = {voice.id: voice.name for voice in provider.list_voices()}
+        segment_count = len(parsed.segments)
         for index, segment in enumerate(parsed.segments):
             if store.is_cancelled(job_id):
                 store.update(job_id, status="cancelled")
@@ -2141,6 +2161,8 @@ def _run_podcast_job(
             pause_after_ms = (
                 segment.pause_after_ms if segment.pause_after_ms is not None else default_pause_ms
             )
+            if index == segment_count - 1:
+                pause_after_ms = 0
             audio_segments.append(PodcastAudioSegment(result=result, pause_after_ms=pause_after_ms))
             manifest_segments.append(
                 PodcastManifestSegment(
@@ -2241,6 +2263,13 @@ def _run_podcast_job(
     except Exception as exc:
         logger.exception("podcast job {} failed unexpectedly: {}", job_id, exc)
         store.update(job_id, status="failed", error_summary="podcast generation failed")
+
+
+def _log_podcast_future_error(future: Future[None]) -> None:
+    try:
+        future.result()
+    except Exception as exc:  # pragma: no cover - _run_podcast_job catches normal failures.
+        logger.exception("podcast executor task failed outside job handler: {}", exc)
 
 
 def _synthesize_prepared_segment(

@@ -72,6 +72,13 @@ class PodcastJobStore:
     def update(self, job_id: str, **changes: object) -> PodcastJobStatus:
         with self._lock:
             current = self._jobs[job_id]
+            next_status = changes.get("status")
+            if (
+                current.status == "cancelled"
+                and next_status is not None
+                and next_status != "cancelled"
+            ):
+                return current
             timestamp = changes.pop("updated_at", datetime.now(UTC))
             updated = current.model_copy(update={**changes, "updated_at": timestamp})
             self._jobs[job_id] = updated
@@ -83,7 +90,7 @@ class PodcastJobStore:
             if job is None:
                 return None
             self._cancelled.add(job_id)
-            if job.status == "queued":
+            if job.status in ACTIVE_JOB_STATUSES:
                 job = job.model_copy(
                     update={"status": "cancelled", "updated_at": datetime.now(UTC)}
                 )

@@ -50,6 +50,19 @@ def test_podcast_job_store_rejects_when_active_jobs_reach_limit() -> None:
         store.create()
 
 
+def test_podcast_job_store_does_not_overwrite_cancelled_with_completed() -> None:
+    store = PodcastJobStore(ttl_seconds=60, max_jobs=2)
+    job = store.create()
+    store.update(job.job_id, status="running")
+
+    cancelled = store.cancel(job.job_id)
+    completed = store.update(job.job_id, status="completed")
+
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    assert completed.status == "cancelled"
+
+
 def test_podcast_job_store_expires_old_jobs() -> None:
     store = PodcastJobStore(ttl_seconds=1, max_jobs=10)
     job = store.create()

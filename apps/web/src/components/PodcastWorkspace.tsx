@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { Artifact, PodcastJobStatus, PodcastScriptFormat, Provider, TextFormat } from "../api";
-import { createPodcastJob, getPodcastJob } from "../api";
+import { cancelPodcastJob, createPodcastJob, getPodcastJob } from "../api";
 import { useI18n } from "../i18n";
 import { parsePodcastScriptPreview } from "../lib/podcastScript";
 import { Notice } from "./Primitives";
@@ -32,6 +32,7 @@ export function PodcastWorkspace({
   const [speakerVoices, setSpeakerVoices] = useState<Record<string, string>>({});
   const [job, setJob] = useState<PodcastJobStatus | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [cancelState, setCancelState] = useState<"idle" | "loading">("idle");
   const [error, setError] = useState("");
   const providerIdRef = useRef(providerId);
 
@@ -50,6 +51,7 @@ export function PodcastWorkspace({
     setJob(null);
     setError("");
     setState("idle");
+    setCancelState("idle");
   }, [providerId]);
 
   useEffect(() => {
@@ -82,6 +84,7 @@ export function PodcastWorkspace({
             setState("error");
           } else if (next.status === "cancelled") {
             setState("idle");
+            setCancelState("idle");
           }
         })
         .catch((err) => {
@@ -119,6 +122,22 @@ export function PodcastWorkspace({
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Podcast generation failed");
+      setState("error");
+    }
+  }
+
+  async function cancelJob() {
+    if (!job || (job.status !== "queued" && job.status !== "running")) return;
+    setCancelState("loading");
+    try {
+      const cancelled = await cancelPodcastJob(job.job_id);
+      setJob(cancelled);
+      setState("idle");
+      setCancelState("idle");
+      onResult(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Podcast generation failed");
+      setCancelState("idle");
       setState("error");
     }
   }
@@ -232,16 +251,28 @@ export function PodcastWorkspace({
 
       <div className="card action-card">
         {error ? <Notice variant="error">{error}</Notice> : null}
-        <button className="primary-action" type="submit" disabled={state === "loading" || !canSubmit}>
-          {state === "loading" ? (
-            <>
-              <span className="spinner" aria-hidden="true" />
-              {t("podcast.generating")}
-            </>
-          ) : (
-            t("podcast.generate")
-          )}
-        </button>
+        <div className="podcast-action-row">
+          <button className="primary-action" type="submit" disabled={state === "loading" || !canSubmit}>
+            {state === "loading" ? (
+              <>
+                <span className="spinner" aria-hidden="true" />
+                {t("podcast.generating")}
+              </>
+            ) : (
+              t("podcast.generate")
+            )}
+          </button>
+          {job && state === "loading" ? (
+            <button
+              className="btn btn-secondary"
+              type="button"
+              disabled={cancelState === "loading"}
+              onClick={() => void cancelJob()}
+            >
+              {cancelState === "loading" ? t("podcast.canceling") : t("podcast.cancel")}
+            </button>
+          ) : null}
+        </div>
       </div>
     </form>
   );
