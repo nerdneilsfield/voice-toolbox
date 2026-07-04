@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from pydub import AudioSegment
 
-from voice_toolbox.audio_conversion import DownloadAudioFormat
+from voice_toolbox.audio_conversion import AudioConversionError, DownloadAudioFormat
 from voice_toolbox.chunking.audio import decode_audio_result, export_audio_segment
 from voice_toolbox.models import ProviderAudioResult
 
@@ -36,24 +36,17 @@ def merge_podcast_audio(
     rendered = AudioSegment.silent(duration=0)
     cursor_ms = 0
     timings: list[PodcastAudioTiming] = []
-    all_decoded = True
     for index, segment in enumerate(segments):
         try:
             audio = decode_audio_result(segment.result)
-        except Exception:
-            all_decoded = False
-            timings.append(
-                PodcastAudioTiming(
-                    start_ms=None,
-                    end_ms=None,
-                    audio_duration_ms=None,
-                )
-            )
-            continue
-        start_ms = cursor_ms if all_decoded else None
+        except AudioConversionError as exc:
+            raise AudioConversionError(
+                f"podcast segment {index + 1} audio could not be decoded"
+            ) from exc
+        start_ms = cursor_ms
         rendered += audio
         cursor_ms += len(audio)
-        end_ms = cursor_ms if all_decoded else None
+        end_ms = cursor_ms
         timings.append(
             PodcastAudioTiming(
                 start_ms=start_ms,
@@ -69,8 +62,6 @@ def merge_podcast_audio(
             AudioSegment.silent(duration=0),
             output_format=output_format,
         )
-    elif all_decoded:
-        audio_result = export_audio_segment(rendered, output_format=output_format)
     else:
-        audio_result = segments[0].result
+        audio_result = export_audio_segment(rendered, output_format=output_format)
     return PodcastAudioMergeResult(audio=audio_result, segments=timings)

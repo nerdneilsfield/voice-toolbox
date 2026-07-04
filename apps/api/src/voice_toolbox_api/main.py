@@ -105,6 +105,8 @@ CORS_METHODS = ["GET", "POST", "DELETE"]
 CORS_HEADERS = ["Accept", "Content-Type"]
 MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
 MAX_TEXT_INPUT_LENGTH = 200_000
+MAX_PODCAST_PAUSE_MS = 60_000
+MAX_PODCAST_TOTAL_PAUSE_MS = 3_600_000
 PROVIDER_NATIVE_UPLOAD_FORMATS = {"wav", "mp3"}
 DOWNLOAD_AUDIO_FORMATS: set[DownloadAudioFormat] = {
     "wav",
@@ -761,8 +763,10 @@ def create_app(
                 detail=f"script exceeds {MAX_TEXT_INPUT_LENGTH} characters",
             )
         parsed = _parse_podcast_script_or_422(script, script_format, default_pause_ms)
+        _validate_podcast_pauses(parsed, default_pause_ms)
         voices_by_key = _parse_speaker_voices(speaker_voices)
         speaker_voice_ids = _resolve_podcast_voice_ids(parsed.speakers, voices_by_key)
+        _validate_podcast_voice_ids(provider, model, speaker_voice_ids)
         validated_options, option_metadata = _validate_tts_provider_options(
             http_request,
             provider_id=provider_id,
@@ -2021,6 +2025,51 @@ def _resolve_podcast_voice_ids(
     }
 
 
+def _validate_podcast_pauses(parsed: PodcastScript, default_pause_ms: int) -> None:
+    if default_pause_ms > MAX_PODCAST_PAUSE_MS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"default_pause_ms must be less than or equal to {MAX_PODCAST_PAUSE_MS}",
+        )
+    total_pause_ms = 0
+    for segment in parsed.segments:
+        pause_ms = (
+            segment.pause_after_ms if segment.pause_after_ms is not None else default_pause_ms
+        )
+        if pause_ms > MAX_PODCAST_PAUSE_MS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"pause must be less than or equal to {MAX_PODCAST_PAUSE_MS}",
+            )
+        total_pause_ms += pause_ms
+    if total_pause_ms > MAX_PODCAST_TOTAL_PAUSE_MS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"total podcast pause must be less than or equal to {MAX_PODCAST_TOTAL_PAUSE_MS}",
+        )
+
+
+def _validate_podcast_voice_ids(
+    provider: Any,
+    model_id: str | None,
+    speaker_voice_ids: Mapping[str, str],
+) -> None:
+    available_voice_ids = {voice.id for voice in provider.list_voices()}
+    for model_info in provider.list_models():
+        if model_id is None or model_info.id == model_id:
+            available_voice_ids.update(voice.id for voice in model_info.voices)
+    if not available_voice_ids:
+        return
+    unknown = sorted(
+        {voice_id for voice_id in speaker_voice_ids.values() if voice_id not in available_voice_ids}
+    )
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown voice_id for podcast: {', '.join(unknown)}",
+        )
+
+
 def _run_podcast_job(
     *,
     app: FastAPI,
@@ -2089,7 +2138,13 @@ def _run_podcast_job(
                     pause_after_ms=pause_after_ms,
                 )
             )
+        if store.is_cancelled(job_id):
+            store.update(job_id, status="cancelled")
+            return
         merged = merge_podcast_audio(audio_segments, output_format="wav")
+        if store.is_cancelled(job_id):
+            store.update(job_id, status="cancelled")
+            return
         for segment, timing in zip(manifest_segments, merged.segments, strict=True):
             segment.start_ms = timing.start_ms
             segment.end_ms = timing.end_ms
@@ -2146,6 +2201,17 @@ def _run_podcast_job(
             )
         )
         store.update(job_id, status="completed", artifact=artifact)
+    except AudioConversionError as exc:
+        current = store.get(job_id)
+        store.update(
+            job_id,
+            status="failed",
+            error_summary=str(exc),
+            failed_segment=PodcastFailedSegment(
+                index=max(0, (current.current_segment if current else 1) - 1),
+                speaker=(current.current_speaker if current else "") or "",
+            ),
+        )
     except ProviderError as exc:
         current = store.get(job_id)
         store.update(
@@ -2158,7 +2224,8 @@ def _run_podcast_job(
             ),
         )
     except Exception as exc:
-        store.update(job_id, status="failed", error_summary=str(exc))
+        logger.exception("podcast job {} failed unexpectedly: {}", job_id, exc)
+        store.update(job_id, status="failed", error_summary="podcast generation failed")
 
 
 def _synthesize_prepared_segment(
@@ -2179,16 +2246,17 @@ def _synthesize_prepared_segment(
 
 
 def _write_podcast_manifest(audio_path: Path, manifest: PodcastManifest) -> None:
-    manifest_path = audio_path.with_suffix(".podcast.json")
-    manifest_path.write_text(
-        json.dumps(
-            manifest.model_dump(mode="json"),
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+    manifest_path = audio_path.with_suffix(".podcast.json").resolve(strict=False)
+    if manifest_path.parent != audio_path.parent.resolve(strict=False):
+        raise ValueError("podcast manifest path escapes artifact directory")
+    payload = json.dumps(
+        manifest.model_dump(mode="json"),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
     )
+    with manifest_path.open("x", encoding="utf-8") as handle:
+        handle.write(payload)
     manifest_path.chmod(0o600)
 
 

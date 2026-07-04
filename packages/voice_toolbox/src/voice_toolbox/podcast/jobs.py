@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from threading import RLock
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from voice_toolbox.models import AudioArtifact
+
+PodcastJobState = Literal["queued", "running", "completed", "failed", "cancelled"]
+ACTIVE_JOB_STATUSES: set[PodcastJobState] = {"queued", "running"}
 
 
 class PodcastFailedSegment(BaseModel):
@@ -20,7 +24,7 @@ class PodcastJobStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     job_id: str
-    status: str
+    status: PodcastJobState
     current_segment: int = 0
     total_segments: int = 0
     current_speaker: str | None = None
@@ -85,7 +89,9 @@ class PodcastJobStore:
         with self._lock:
             now = datetime.now(UTC)
             expired = [
-                job_id for job_id, job in self._jobs.items() if now - job.updated_at > self.ttl
+                job_id
+                for job_id, job in self._jobs.items()
+                if job.status not in ACTIVE_JOB_STATUSES and now - job.updated_at > self.ttl
             ]
             for job_id in expired:
                 self._jobs.pop(job_id, None)
@@ -94,6 +100,11 @@ class PodcastJobStore:
 
     def _trim_locked(self) -> None:
         while len(self._jobs) > self.max_jobs:
-            oldest = min(self._jobs.values(), key=lambda job: job.updated_at)
+            terminal_jobs = [
+                job for job in self._jobs.values() if job.status not in ACTIVE_JOB_STATUSES
+            ]
+            if not terminal_jobs:
+                break
+            oldest = min(terminal_jobs, key=lambda job: job.updated_at)
             self._jobs.pop(oldest.job_id, None)
             self._cancelled.discard(oldest.job_id)

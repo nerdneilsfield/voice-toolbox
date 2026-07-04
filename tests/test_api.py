@@ -173,6 +173,11 @@ class ExplodingProvider(RecordingMimoProvider):
         raise RuntimeError("raw traceback secret /Users/private/path")
 
 
+class ExplodingBytesProvider(RecordingMimoProvider):
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        raise RuntimeError("raw traceback secret /Users/private/path")
+
+
 class NoCloneProvider(RecordingMimoProvider):
     def capabilities(self) -> set[str]:
         return {"tts.builtin", "asr.transcribe"}
@@ -2298,7 +2303,14 @@ def test_tts_mode_persisted_in_artifact_metadata(tmp_path: Path) -> None:
 
 
 def test_podcast_job_generates_audio_and_manifest(tmp_path: Path) -> None:
-    client, provider = _client(tmp_path)
+    provider = RecordingWavProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    client = TestClient(app)
 
     created = client.post(
         "/v1/podcast/jobs",
@@ -2395,6 +2407,40 @@ def test_podcast_job_rejects_unknown_voice_mapping(tmp_path: Path) -> None:
     assert provider.tts_requests == []
 
 
+def test_podcast_job_rejects_unknown_voice_id(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "script": "Alice: Hello",
+            "speaker_voices": json.dumps({"alice": "not-a-real-voice"}),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "unknown voice_id" in response.json()["detail"]
+    assert provider.tts_requests == []
+
+
+def test_podcast_job_rejects_large_pause(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "script": "Alice: Hello [pause:60001]",
+            "speaker_voices": json.dumps({"alice": "Mia"}),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "pause" in response.json()["detail"]
+    assert provider.tts_requests == []
+
+
 def test_podcast_job_rejects_oversized_script(tmp_path: Path) -> None:
     client, provider = _client(tmp_path)
 
@@ -2429,3 +2475,28 @@ def test_podcast_job_records_provider_failure(tmp_path: Path) -> None:
     assert job["status"] == "failed"
     assert job["failed_segment"]["index"] == 1  # type: ignore[index]
     assert "chunk failed" in str(job["error_summary"])
+
+
+def test_podcast_job_hides_unexpected_error_details(tmp_path: Path) -> None:
+    provider = ExplodingBytesProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    client = TestClient(app)
+
+    created = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "script": "Alice: Hello",
+            "speaker_voices": json.dumps({"alice": "Mia"}),
+        },
+    )
+    job = _poll_podcast_job(client, created.json()["job_id"])
+
+    assert job["status"] == "failed"
+    assert job["error_summary"] == "podcast generation failed"
+    assert "secret" not in json.dumps(job)

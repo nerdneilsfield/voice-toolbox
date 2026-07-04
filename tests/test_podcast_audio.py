@@ -4,7 +4,9 @@ import io
 import wave
 
 from pydub import AudioSegment
+import pytest
 
+from voice_toolbox.audio_conversion import AudioConversionError
 from voice_toolbox.models import ProviderAudioResult
 from voice_toolbox.podcast.audio import PodcastAudioSegment, merge_podcast_audio
 
@@ -53,21 +55,18 @@ def test_merge_podcast_audio_uses_per_segment_pauses() -> None:
     assert 125 <= (merged.segments[1].start_ms or 0) <= 135
 
 
-def test_merge_podcast_audio_omits_timing_for_unreadable_audio() -> None:
-    merged = merge_podcast_audio(
-        [
-            PodcastAudioSegment(
-                result=ProviderAudioResult(
-                    audio=b"not-audio",
-                    mime_type="audio/mpeg",
-                    suffix=".mp3",
-                ),
-                pause_after_ms=10,
-            )
-        ],
-        output_format="mp3",
-    )
-
-    assert merged.segments[0].start_ms is None
-    assert merged.segments[0].end_ms is None
-    assert merged.segments[0].audio_duration_ms is None
+def test_merge_podcast_audio_fails_for_unreadable_audio() -> None:
+    with pytest.raises(AudioConversionError, match="podcast segment 1"):
+        merge_podcast_audio(
+            [
+                PodcastAudioSegment(
+                    result=ProviderAudioResult(
+                        audio=b"not-audio",
+                        mime_type="audio/mpeg",
+                        suffix=".mp3",
+                    ),
+                    pause_after_ms=10,
+                )
+            ],
+            output_format="mp3",
+        )
