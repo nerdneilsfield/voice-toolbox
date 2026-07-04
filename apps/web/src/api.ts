@@ -198,6 +198,8 @@ export type ASRChunkFinish = {
 export type PodcastJobStatus = {
   job_id: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  created_at?: string;
+  updated_at?: string;
   current_segment?: number;
   total_segments?: number;
   current_speaker?: string | null;

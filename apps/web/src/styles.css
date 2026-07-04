@@ -1466,6 +1466,15 @@ html[data-theme="dark"] .loading-state span {
   font-weight: 800;
 }
 
+.podcast-progress {
+  display: grid;
+  gap: 4px;
+}
+
+.podcast-progress .field-hint {
+  margin: 0;
+}
+
 .podcast-action-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

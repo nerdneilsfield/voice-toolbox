@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { Artifact, PodcastJobStatus, PodcastScriptFormat, Provider, TextFormat } from "../api";
 import { cancelPodcastJob, createPodcastJob, getPodcastJob } from "../api";
 import { useI18n } from "../i18n";
+import { formatPodcastDuration, podcastProgressTiming } from "../lib/podcastProgress";
 import { parsePodcastScriptPreview } from "../lib/podcastScript";
 import { Notice } from "./Primitives";
 import { ScriptField } from "./ScriptField";
@@ -45,6 +46,7 @@ export function PodcastWorkspace({
   const missingVoice = parsed.speakers.some((speaker) => !speakerVoices[speaker.id]);
   const canSubmit =
     Boolean(provider && selectedModel && parsed.segments.length > 0) && parsed.errors.length === 0 && !missingVoice;
+  const progressTiming = useMemo(() => (job ? podcastProgressTiming(job) : null), [job]);
 
   useEffect(() => {
     providerIdRef.current = providerId;
@@ -238,13 +240,26 @@ export function PodcastWorkspace({
           ))}
           {missingVoice ? <Notice variant="error">{t("podcast.missingVoice")}</Notice> : null}
           {job && state === "loading" ? (
-            <p className="field-hint">
-              {t("podcast.progress", {
-                current: job.current_segment ?? 0,
-                total: job.total_segments ?? 0,
-                speaker: job.current_speaker ?? "",
-              })}
-            </p>
+            <div className="podcast-progress" aria-live="polite">
+              <p className="field-hint">
+                {t("podcast.progress", {
+                  current: job.current_segment ?? 0,
+                  total: job.total_segments ?? 0,
+                  speaker: job.current_speaker ?? "",
+                })}
+              </p>
+              {progressTiming ? (
+                <p className="field-hint">
+                  {t("podcast.timing", {
+                    elapsed: formatPodcastDuration(progressTiming.elapsedSeconds),
+                    remaining:
+                      progressTiming.remainingSeconds === null
+                        ? t("podcast.remainingUnknown")
+                        : formatPodcastDuration(progressTiming.remainingSeconds),
+                  })}
+                </p>
+              ) : null}
+            </div>
           ) : null}
         </section>
       </div>

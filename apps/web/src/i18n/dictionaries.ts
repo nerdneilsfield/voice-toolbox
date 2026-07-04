@@ -88,6 +88,8 @@ export const en = {
   "podcast.cancel": "Cancel",
   "podcast.canceling": "Canceling...",
   "podcast.progress": "{current} / {total} · {speaker}",
+  "podcast.timing": "Elapsed {elapsed} · remaining {remaining}",
+  "podcast.remainingUnknown": "estimating",
   "podcast.missingVoice": "Choose a voice for every speaker.",
   "podcast.noSegments": "No speakable segments parsed.",
 
@@ -295,6 +297,8 @@ export const zh: Record<keyof typeof en, string> = {
   "podcast.cancel": "取消",
   "podcast.canceling": "取消中…",
   "podcast.progress": "{current} / {total} · {speaker}",
+  "podcast.timing": "已用 {elapsed} · 预计剩余 {remaining}",
+  "podcast.remainingUnknown": "估算中",
   "podcast.missingVoice": "请为每个说话人选择音色。",
   "podcast.noSegments": "未解析出可合成的片段。",
 
