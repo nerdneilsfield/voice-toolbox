@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { Artifact, Provider } from "../api";
 import { useI18n } from "../i18n";
-import type { TranslationKey } from "../i18n/types";
+import { formatHistoryTitle } from "./historyTitle";
 
 export function HistoryPanel({
   artifacts,
@@ -60,23 +60,6 @@ export function HistoryPanel({
       </div>
     </div>
   );
-}
-
-function formatHistoryTitle(
-  artifact: Artifact,
-  t: (key: TranslationKey, values?: Record<string, string | number>) => string,
-): string {
-  const op = artifact.operation ?? "unknown";
-  const kind = artifact.kind ?? "unknown";
-  if (op === "tts" && kind === "audio") {
-    const mode = String(artifact.metadata?.tts_mode ?? "unknown");
-    if (mode === "builtin") return t("history.titleTtsBuiltin");
-    if (mode === "design") return t("history.titleTtsDesign");
-    if (mode === "clone") return t("history.titleTtsClone");
-    return t("history.titleUnknown", { op, kind });
-  }
-  if (op === "asr" || kind === "transcript") return t("history.titleAsr");
-  return t("history.titleUnknown", { op, kind });
 }
 
 function formatHistoryTime(iso: string): string {

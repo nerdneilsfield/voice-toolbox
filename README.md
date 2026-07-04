@@ -123,6 +123,33 @@ rtk make frontend-server
 
 The Vite dev server proxies `/v1/*` to `http://127.0.0.1:8000`.
 
+## Podcast Generation
+
+The Podcast workspace turns a multi-speaker script into one audio file. Use one
+TTS provider/model, map each speaker to a built-in voice, and generate.
+
+Supported speaker-line scripts:
+
+```text
+Alice: Welcome to the show. [pause:600]
+Bob: Thanks for having me.
+```
+
+Markdown headings are also accepted:
+
+```markdown
+### Alice
+Welcome to the show.
+
+### Bob
+Thanks for having me.
+```
+
+JSON/YAML accepts a `lines` list with `speaker`, `text`, and optional
+`pause_after_ms`. The generated artifact includes a `.podcast.json` manifest
+with speakers, voices, segment text, pauses, and timing when duration can be
+decoded.
+
 ## Make Targets
 
 ```bash

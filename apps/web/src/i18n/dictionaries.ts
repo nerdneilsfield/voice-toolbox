@@ -146,6 +146,7 @@ export const en = {
   "history.titleTtsDesign": "TTS • Design",
   "history.titleTtsClone": "TTS • Clone",
   "history.titleAsr": "ASR • Transcribe",
+  "history.podcastTitle": "podcast · {speakers} speakers · {segments} segments",
   "history.titleUnknown": "{op} • {kind}",
 
   "result.output": "Output",
@@ -349,6 +350,7 @@ export const zh: Record<keyof typeof en, string> = {
   "history.titleTtsDesign": "TTS • 设计",
   "history.titleTtsClone": "TTS • 克隆",
   "history.titleAsr": "ASR • 转录",
+  "history.podcastTitle": "播客 · {speakers} 人 · {segments} 段",
   "history.titleUnknown": "{op} • {kind}",
 
   "result.output": "输出",
