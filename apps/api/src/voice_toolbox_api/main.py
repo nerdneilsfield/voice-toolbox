@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from hashlib import sha1
 from hashlib import sha256
 from uuid import uuid4
@@ -97,6 +98,7 @@ from voice_toolbox.podcast.models import (
     PodcastManifestSpeaker,
     PodcastScript,
     PodcastScriptFormat,
+    PodcastSegment,
     PodcastSpeaker,
 )
 from voice_toolbox.podcast.parser import PodcastParseError, parse_podcast_script
@@ -114,7 +116,9 @@ MAX_UPLOAD_RAW_BYTES = (MAX_BASE64_AUDIO_SIZE // 4) * 3
 MAX_TEXT_INPUT_LENGTH = 200_000
 MAX_PODCAST_PAUSE_MS = 60_000
 MAX_PODCAST_TOTAL_PAUSE_MS = 3_600_000
-MAX_PODCAST_WORKERS = 4
+MAX_PODCAST_WORKERS = 8
+MAX_PODCAST_SEGMENT_WORKERS = 8
+LOCAL_PODCAST_PROVIDER_IDS = {"mlx-audio", "mlx_audio"}
 PROVIDER_NATIVE_UPLOAD_FORMATS = {"wav", "mp3"}
 DOWNLOAD_AUDIO_FORMATS: set[DownloadAudioFormat] = {
     "wav",
@@ -2105,6 +2109,20 @@ def _validate_podcast_voice_ids(
         )
 
 
+@dataclass(frozen=True)
+class _PodcastSegmentSynthesis:
+    index: int
+    speaker_name: str
+    text_preview: str
+    duration_ms: int
+    audio_segment: PodcastAudioSegment
+    manifest_segment: PodcastManifestSegment
+
+
+class _PodcastJobCancelled(RuntimeError):
+    pass
+
+
 def _run_podcast_job(
     *,
     app: FastAPI,
@@ -2127,60 +2145,25 @@ def _run_podcast_job(
     started_at = datetime.now(UTC)
     try:
         store.update(job_id, status="running", total_segments=len(parsed.segments))
-        audio_segments: list[PodcastAudioSegment] = []
-        manifest_segments: list[PodcastManifestSegment] = []
         voice_lookup = {voice.id: voice.name for voice in provider.list_voices()}
-        segment_count = len(parsed.segments)
-        for index, segment in enumerate(parsed.segments):
-            if store.is_cancelled(job_id):
-                store.update(job_id, status="cancelled")
-                return
-            voice_id = speaker_voice_ids[segment.speaker_id]
-            store.update(
-                job_id,
-                current_segment=index + 1,
-                current_speaker=segment.speaker_name,
-                current_text_preview=_preview_text(segment.text, 80),
-            )
-            segment_started_at = perf_counter()
-            prepared = _prepare_tts_or_422(
-                raw_text=TextSource(text=segment.text),
-                text_format=None,
-                config=config,
-                chunking_mode=chunking_mode,
-                chunk_max_chars=chunk_max_chars,
-                chunk_silence_ms=chunk_silence_ms,
-                fields={
-                    "provider_id": provider_id,
-                    "mode": TTSMode.BUILTIN,
-                    "model": model,
-                    "voice_id": voice_id,
-                    "provider_options": provider_options,
-                },
-                artifact_metadata=option_metadata,
-            )
-            result = _synthesize_prepared_segment(provider, prepared)
-            store.record_segment_duration_ms(
-                job_id,
-                round((perf_counter() - segment_started_at) * 1000),
-            )
-            pause_after_ms = (
-                segment.pause_after_ms if segment.pause_after_ms is not None else default_pause_ms
-            )
-            if index == segment_count - 1:
-                pause_after_ms = 0
-            audio_segments.append(PodcastAudioSegment(result=result, pause_after_ms=pause_after_ms))
-            manifest_segments.append(
-                PodcastManifestSegment(
-                    index=index,
-                    speaker_id=segment.speaker_id,
-                    speaker_name=segment.speaker_name,
-                    voice_id=voice_id,
-                    text=segment.text,
-                    source_line=segment.source_line,
-                    pause_after_ms=pause_after_ms,
-                )
-            )
+        segment_results = _synthesize_podcast_segments(
+            store=store,
+            job_id=job_id,
+            provider=provider,
+            provider_id=provider_id,
+            config=config,
+            model=model,
+            parsed=parsed,
+            default_pause_ms=default_pause_ms,
+            speaker_voice_ids=speaker_voice_ids,
+            provider_options=provider_options,
+            option_metadata=option_metadata,
+            chunking_mode=chunking_mode,
+            chunk_max_chars=chunk_max_chars,
+            chunk_silence_ms=chunk_silence_ms,
+        )
+        audio_segments = [result.audio_segment for result in segment_results]
+        manifest_segments = [result.manifest_segment for result in segment_results]
         if store.is_cancelled(job_id):
             store.update(job_id, status="cancelled")
             return
@@ -2244,6 +2227,8 @@ def _run_podcast_job(
             )
         )
         store.update(job_id, status="completed", artifact=artifact)
+    except _PodcastJobCancelled:
+        store.update(job_id, status="cancelled")
     except AudioConversionError as exc:
         current = store.get(job_id)
         store.update(
@@ -2276,6 +2261,199 @@ def _log_podcast_future_error(future: Future[None]) -> None:
         future.result()
     except Exception as exc:  # pragma: no cover - _run_podcast_job catches normal failures.
         logger.exception("podcast executor task failed outside job handler: {}", exc)
+
+
+def _synthesize_podcast_segments(
+    *,
+    store: PodcastJobStore,
+    job_id: str,
+    provider: Any,
+    provider_id: str,
+    config: AppConfig,
+    model: str | None,
+    parsed: PodcastScript,
+    default_pause_ms: int,
+    speaker_voice_ids: dict[str, str],
+    provider_options: dict[str, object],
+    option_metadata: Mapping[str, object],
+    chunking_mode: Literal["off", "auto", "force"] | None,
+    chunk_max_chars: int | None,
+    chunk_silence_ms: int | None,
+) -> list[_PodcastSegmentSynthesis]:
+    segment_count = len(parsed.segments)
+    worker_count = _podcast_segment_worker_count(provider_id, provider, segment_count)
+    if worker_count == 1:
+        results: list[_PodcastSegmentSynthesis] = []
+        for index, segment in enumerate(parsed.segments):
+            if store.is_cancelled(job_id):
+                raise _PodcastJobCancelled
+            result = _synthesize_podcast_segment(
+                index=index,
+                segment_count=segment_count,
+                segment=segment,
+                provider=provider,
+                provider_id=provider_id,
+                config=config,
+                model=model,
+                default_pause_ms=default_pause_ms,
+                voice_id=speaker_voice_ids[segment.speaker_id],
+                provider_options=provider_options,
+                option_metadata=option_metadata,
+                chunking_mode=chunking_mode,
+                chunk_max_chars=chunk_max_chars,
+                chunk_silence_ms=chunk_silence_ms,
+            )
+            results.append(result)
+            _record_podcast_segment_progress(store, job_id, result, len(results), segment_count)
+        return results
+
+    results: list[_PodcastSegmentSynthesis | None] = [None] * segment_count
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="voice-toolbox-podcast-segment",
+    ) as executor:
+        futures: dict[Future[_PodcastSegmentSynthesis], int] = {}
+        for index, segment in enumerate(parsed.segments):
+            if store.is_cancelled(job_id):
+                raise _PodcastJobCancelled
+            futures[
+                executor.submit(
+                    _synthesize_podcast_segment,
+                    index=index,
+                    segment_count=segment_count,
+                    segment=segment,
+                    provider=provider,
+                    provider_id=provider_id,
+                    config=config,
+                    model=model,
+                    default_pause_ms=default_pause_ms,
+                    voice_id=speaker_voice_ids[segment.speaker_id],
+                    provider_options=provider_options,
+                    option_metadata=option_metadata,
+                    chunking_mode=chunking_mode,
+                    chunk_max_chars=chunk_max_chars,
+                    chunk_silence_ms=chunk_silence_ms,
+                )
+            ] = index
+
+        completed_count = 0
+        for future in as_completed(futures):
+            if store.is_cancelled(job_id):
+                _cancel_pending_futures(futures)
+                raise _PodcastJobCancelled
+            try:
+                result = future.result()
+            except (AudioConversionError, ProviderError):
+                failed_index = futures[future]
+                failed_segment = parsed.segments[failed_index]
+                store.update(
+                    job_id,
+                    current_segment=failed_index + 1,
+                    current_speaker=failed_segment.speaker_name,
+                    current_text_preview=_preview_text(failed_segment.text, 80),
+                )
+                _cancel_pending_futures(futures)
+                raise
+            completed_count += 1
+            results[result.index] = result
+            _record_podcast_segment_progress(
+                store,
+                job_id,
+                result,
+                completed_count,
+                segment_count,
+            )
+    return [cast(_PodcastSegmentSynthesis, result) for result in results]
+
+
+def _synthesize_podcast_segment(
+    *,
+    index: int,
+    segment_count: int,
+    segment: PodcastSegment,
+    provider: Any,
+    provider_id: str,
+    config: AppConfig,
+    model: str | None,
+    default_pause_ms: int,
+    voice_id: str,
+    provider_options: dict[str, object],
+    option_metadata: Mapping[str, object],
+    chunking_mode: Literal["off", "auto", "force"] | None,
+    chunk_max_chars: int | None,
+    chunk_silence_ms: int | None,
+) -> _PodcastSegmentSynthesis:
+    segment_started_at = perf_counter()
+    prepared = _prepare_tts_or_422(
+        raw_text=TextSource(text=segment.text),
+        text_format=None,
+        config=config,
+        chunking_mode=chunking_mode,
+        chunk_max_chars=chunk_max_chars,
+        chunk_silence_ms=chunk_silence_ms,
+        fields={
+            "provider_id": provider_id,
+            "mode": TTSMode.BUILTIN,
+            "model": model,
+            "voice_id": voice_id,
+            "provider_options": provider_options,
+        },
+        artifact_metadata=option_metadata,
+    )
+    result = _synthesize_prepared_segment(provider, prepared)
+    pause_after_ms = (
+        segment.pause_after_ms if segment.pause_after_ms is not None else default_pause_ms
+    )
+    if index == segment_count - 1:
+        pause_after_ms = 0
+    return _PodcastSegmentSynthesis(
+        index=index,
+        speaker_name=segment.speaker_name,
+        text_preview=_preview_text(segment.text, 80),
+        duration_ms=round((perf_counter() - segment_started_at) * 1000),
+        audio_segment=PodcastAudioSegment(result=result, pause_after_ms=pause_after_ms),
+        manifest_segment=PodcastManifestSegment(
+            index=index,
+            speaker_id=segment.speaker_id,
+            speaker_name=segment.speaker_name,
+            voice_id=voice_id,
+            text=segment.text,
+            source_line=segment.source_line,
+            pause_after_ms=pause_after_ms,
+        ),
+    )
+
+
+def _record_podcast_segment_progress(
+    store: PodcastJobStore,
+    job_id: str,
+    result: _PodcastSegmentSynthesis,
+    completed_count: int,
+    segment_count: int,
+) -> None:
+    store.record_segment_duration_ms(job_id, result.duration_ms)
+    store.update(
+        job_id,
+        current_segment=min(completed_count + 1, segment_count),
+        completed_segments=completed_count,
+        current_speaker=result.speaker_name,
+        current_text_preview=result.text_preview,
+    )
+
+
+def _cancel_pending_futures(futures: Mapping[Future[_PodcastSegmentSynthesis], int]) -> None:
+    for pending in futures:
+        pending.cancel()
+
+
+def _podcast_segment_worker_count(provider_id: str, provider: Any, segment_count: int) -> int:
+    if segment_count <= 0:
+        return 1
+    if provider_id in LOCAL_PODCAST_PROVIDER_IDS or provider.__class__.__module__.endswith(
+        ".mlx_audio"
+    ):
+        return 1
+    return min(MAX_PODCAST_SEGMENT_WORKERS, segment_count)
 
 
 def _synthesize_prepared_segment(

@@ -30,6 +30,7 @@ class PodcastJobStatus(BaseModel):
     job_id: str
     status: PodcastJobState
     current_segment: int = 0
+    completed_segments: int = 0
     total_segments: int = 0
     current_speaker: str | None = None
     current_text_preview: str | None = None

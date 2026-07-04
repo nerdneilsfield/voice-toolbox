@@ -8,7 +8,12 @@ export type PodcastProgressTiming = {
 export function podcastProgressTiming(
   job: Pick<
     PodcastJobStatus,
-    "created_at" | "updated_at" | "current_segment" | "total_segments" | "recent_segment_durations_ms"
+    | "created_at"
+    | "updated_at"
+    | "current_segment"
+    | "completed_segments"
+    | "total_segments"
+    | "recent_segment_durations_ms"
   >,
   nowMs = Date.now(),
 ): PodcastProgressTiming {
@@ -16,7 +21,10 @@ export function podcastProgressTiming(
   const elapsedSeconds = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
   const totalSegments = safeSegmentCount(job.total_segments);
   const currentSegment = safeSegmentCount(job.current_segment);
-  const completedSegments = Math.min(Math.max(currentSegment - 1, 0), totalSegments);
+  const completedSegments = Math.min(
+    job.completed_segments === undefined ? Math.max(currentSegment - 1, 0) : safeSegmentCount(job.completed_segments),
+    totalSegments,
+  );
   const recentDurationsMs = validDurations(job.recent_segment_durations_ms);
 
   if (elapsedSeconds <= 0 || totalSegments <= 0 || completedSegments <= 0) {

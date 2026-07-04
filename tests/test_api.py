@@ -172,6 +172,26 @@ class BlockingWavProvider(RecordingWavProvider):
         return super().synthesize_bytes(request)
 
 
+class ParallelBlockingWavProvider(RecordingMimoProvider):
+    def __init__(self, artifact_root: Path, *, expected_started: int) -> None:
+        super().__init__(artifact_root)
+        self.expected_started = expected_started
+        self.started = Event()
+        self.release = Event()
+
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self.tts_requests.append(request)
+        if len(self.tts_requests) >= self.expected_started:
+            self.started.set()
+        self.release.wait(timeout=2)
+        return ProviderAudioResult(
+            audio=_wav_silence(100),
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=request.model,
+        )
+
+
 class RecordingMlxAudioProvider(RecordingMimoProvider):
     id = "mlx-audio"
     name = "MLX Audio"
@@ -2344,6 +2364,7 @@ def test_podcast_job_generates_audio_and_manifest(tmp_path: Path) -> None:
     assert payload["status"] in {"queued", "running", "completed"}
     job = _poll_podcast_job(client, payload["job_id"])
     assert job["status"] == "completed"
+    assert job["completed_segments"] == 2
     assert job["artifact"]["operation"] == "podcast"  # type: ignore[index]
     assert job["artifact"]["metadata"]["podcast_segment_count"] == 2  # type: ignore[index]
     assert len(job["recent_segment_durations_ms"]) == 2
@@ -2388,6 +2409,59 @@ def test_podcast_job_returns_before_generation_finishes(tmp_path: Path) -> None:
         job = _poll_podcast_job(client, payload["job_id"])
 
     assert job["status"] == "completed"
+
+
+def test_podcast_job_synthesizes_remote_segments_in_parallel(tmp_path: Path) -> None:
+    segment_count = 8
+    provider = ParallelBlockingWavProvider(tmp_path, expected_started=segment_count)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    script = "\n".join(f"Speaker{index}: line {index}" for index in range(segment_count))
+    speaker_voices = {f"speaker{index}": "Mia" for index in range(segment_count)}
+
+    with TestClient(app) as client:
+        try:
+            created = client.post(
+                "/v1/podcast/jobs",
+                data={
+                    "provider_id": "mimo",
+                    "model": "fake-tts",
+                    "script": script,
+                    "speaker_voices": json.dumps(speaker_voices),
+                },
+            )
+            assert created.status_code == 200
+            assert provider.started.wait(timeout=1)
+        finally:
+            provider.release.set()
+        job = _poll_podcast_job(client, created.json()["job_id"])
+
+    assert job["status"] == "completed"
+    assert job["completed_segments"] == segment_count
+    assert len(provider.tts_requests) == segment_count
+
+
+def test_podcast_segment_workers_keep_mlx_audio_serial(tmp_path: Path) -> None:
+    assert (
+        api_main._podcast_segment_worker_count(
+            "mlx-audio",
+            RecordingMlxAudioProvider(tmp_path),
+            8,
+        )
+        == 1
+    )
+    assert (
+        api_main._podcast_segment_worker_count(
+            "mimo",
+            RecordingWavProvider(tmp_path),
+            12,
+        )
+        == 8
+    )
 
 
 def test_podcast_job_manifest_records_decoded_timing(tmp_path: Path) -> None:

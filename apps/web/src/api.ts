@@ -201,6 +201,7 @@ export type PodcastJobStatus = {
   created_at?: string;
   updated_at?: string;
   current_segment?: number;
+  completed_segments?: number;
   total_segments?: number;
   current_speaker?: string | null;
   current_text_preview?: string | null;
