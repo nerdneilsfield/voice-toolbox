@@ -10,9 +10,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from loguru import logger
 from pydantic import ValidationError
@@ -82,6 +82,17 @@ from voice_toolbox.models import (
 from voice_toolbox.normalizers.base import NormalizationRequest
 from voice_toolbox.normalizers.registry import NormalizerRegistry
 from voice_toolbox.pipeline import PreparedTTSRequest, prepare_tts_request
+from voice_toolbox.podcast.audio import PodcastAudioSegment, merge_podcast_audio
+from voice_toolbox.podcast.jobs import PodcastFailedSegment, PodcastJobStatus, PodcastJobStore
+from voice_toolbox.podcast.models import (
+    PodcastManifest,
+    PodcastManifestSegment,
+    PodcastManifestSpeaker,
+    PodcastScript,
+    PodcastScriptFormat,
+    PodcastSpeaker,
+)
+from voice_toolbox.podcast.parser import PodcastParseError, parse_podcast_script
 from voice_toolbox.logging_config import configure_logging, sanitize_log_metadata
 from voice_toolbox.providers.base import ProviderError
 from voice_toolbox.providers.factory import build_provider_registry
@@ -149,6 +160,7 @@ def create_app(
         max_upload_mb=config.chunking.asr.max_upload_mb,
     )
     app.state.asr_chunk_sessions.cleanup_expired()
+    app.state.podcast_jobs = PodcastJobStore()
 
     app.add_middleware(
         CORSMiddleware,
@@ -725,6 +737,73 @@ def create_app(
             raise HTTPException(status_code=404, detail="chunk session not found")
         return {"deleted": True}
 
+    @app.post("/v1/podcast/jobs")
+    def create_podcast_job(
+        http_request: Request,
+        background_tasks: BackgroundTasks,
+        provider_id: Annotated[str, Form()] = "mimo",
+        model: Annotated[str | None, Form()] = None,
+        script: Annotated[str, Form()] = "",
+        script_format: Annotated[PodcastScriptFormat, Form()] = "auto",
+        default_pause_ms: Annotated[int, Form()] = 350,
+        speaker_voices: Annotated[str, Form()] = "{}",
+        provider_options: Annotated[str | None, Form()] = None,
+        chunking_mode: Annotated[Literal["off", "auto", "force"] | None, Form()] = None,
+        chunk_max_chars: Annotated[int | None, Form()] = None,
+        chunk_silence_ms: Annotated[int | None, Form()] = None,
+    ) -> dict[str, Any]:
+        _ensure_provider_configured_for_operation(http_request, provider_id)
+        provider = _get_provider(_registry_from_request(http_request), provider_id)
+        _ensure_model_allowed(provider, model, expected_capability="tts.builtin")
+        if len(script) > MAX_TEXT_INPUT_LENGTH:
+            raise HTTPException(
+                status_code=413,
+                detail=f"script exceeds {MAX_TEXT_INPUT_LENGTH} characters",
+            )
+        parsed = _parse_podcast_script_or_422(script, script_format, default_pause_ms)
+        voices_by_key = _parse_speaker_voices(speaker_voices)
+        speaker_voice_ids = _resolve_podcast_voice_ids(parsed.speakers, voices_by_key)
+        validated_options, option_metadata = _validate_tts_provider_options(
+            http_request,
+            provider_id=provider_id,
+            model_id=model,
+            capability="tts.builtin",
+            raw_provider_options=provider_options,
+        )
+        job = http_request.app.state.podcast_jobs.create(total_segments=len(parsed.segments))
+        background_tasks.add_task(
+            _run_podcast_job,
+            app=http_request.app,
+            job_id=job.job_id,
+            provider=provider,
+            provider_id=provider_id,
+            model=model,
+            parsed=parsed,
+            default_pause_ms=default_pause_ms,
+            speaker_voice_ids=speaker_voice_ids,
+            provider_options=validated_options,
+            option_metadata=option_metadata,
+            chunking_mode=chunking_mode,
+            chunk_max_chars=chunk_max_chars,
+            chunk_silence_ms=chunk_silence_ms,
+            script_preview_source=script,
+        )
+        return _podcast_job_payload(http_request.app.state.podcast_jobs.get(job.job_id))
+
+    @app.get("/v1/podcast/jobs/{job_id}")
+    def get_podcast_job(job_id: str, http_request: Request) -> dict[str, Any]:
+        job = http_request.app.state.podcast_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="podcast job not found")
+        return _podcast_job_payload(job)
+
+    @app.delete("/v1/podcast/jobs/{job_id}")
+    def cancel_podcast_job(job_id: str, http_request: Request) -> dict[str, Any]:
+        job = http_request.app.state.podcast_jobs.cancel(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="podcast job not found")
+        return _podcast_job_payload(job)
+
     @app.get("/v1/artifacts")
     def list_artifacts(
         http_request: Request,
@@ -737,7 +816,7 @@ def create_app(
         sidecars = artifact_root.glob("*/*.json")
         artifacts: list[Artifact] = []
         for sidecar_path in sidecars:
-            if sidecar_path.name.endswith(".transcript.json"):
+            if sidecar_path.name.endswith((".transcript.json", ".podcast.json")):
                 continue
             try:
                 artifacts.append(_read_artifact_sidecar_path(sidecar_path, root))
@@ -1872,6 +1951,245 @@ def _run_chunked_asr(
         )
     )
     return artifact
+
+
+def _podcast_job_payload(job: PodcastJobStatus | None) -> dict[str, Any]:
+    if job is None:
+        raise HTTPException(status_code=404, detail="podcast job not found")
+    payload = job.model_dump(mode="json", exclude={"artifact"})
+    payload["artifact"] = _safe_artifact_payload(job.artifact) if job.artifact is not None else None
+    return payload
+
+
+def _parse_speaker_voices(raw: str) -> dict[str, str]:
+    try:
+        data = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="speaker_voices must be JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="speaker_voices must be an object")
+    voices: dict[str, str] = {}
+    for key, value in data.items():
+        if not isinstance(key, str) or not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="speaker_voices values must be non-empty strings",
+            )
+        voices[key.strip()] = value.strip()
+    return voices
+
+
+def _parse_podcast_script_or_422(
+    script: str,
+    script_format: PodcastScriptFormat,
+    default_pause_ms: int,
+) -> PodcastScript:
+    try:
+        return parse_podcast_script(
+            script,
+            script_format=script_format,
+            default_pause_ms=default_pause_ms,
+        )
+    except PodcastParseError as exc:
+        detail = f"line {exc.line}: {exc}" if exc.line is not None else str(exc)
+        raise HTTPException(status_code=422, detail=detail) from exc
+
+
+def _resolve_podcast_voice_ids(
+    speakers: list[PodcastSpeaker],
+    voices_by_key: dict[str, str],
+) -> dict[str, str]:
+    allowed_keys = {speaker.id for speaker in speakers} | {speaker.name for speaker in speakers}
+    unknown = sorted(key for key in voices_by_key if key not in allowed_keys)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown speaker voice mapping for: {', '.join(unknown)}",
+        )
+    missing = [
+        speaker.name
+        for speaker in speakers
+        if speaker.id not in voices_by_key and speaker.name not in voices_by_key
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422, detail=f"missing voice mapping for: {', '.join(missing)}"
+        )
+    return {
+        speaker.id: voices_by_key.get(speaker.id) or voices_by_key[speaker.name]
+        for speaker in speakers
+    }
+
+
+def _run_podcast_job(
+    *,
+    app: FastAPI,
+    job_id: str,
+    provider: Any,
+    provider_id: str,
+    model: str | None,
+    parsed: PodcastScript,
+    default_pause_ms: int,
+    speaker_voice_ids: dict[str, str],
+    provider_options: dict[str, object],
+    option_metadata: Mapping[str, object],
+    chunking_mode: Literal["off", "auto", "force"] | None,
+    chunk_max_chars: int | None,
+    chunk_silence_ms: int | None,
+    script_preview_source: str,
+) -> None:
+    store: PodcastJobStore = app.state.podcast_jobs
+    config: AppConfig = app.state.config
+    started_at = datetime.now(UTC)
+    try:
+        store.update(job_id, status="running", total_segments=len(parsed.segments))
+        audio_segments: list[PodcastAudioSegment] = []
+        manifest_segments: list[PodcastManifestSegment] = []
+        voice_lookup = {voice.id: voice.name for voice in provider.list_voices()}
+        for index, segment in enumerate(parsed.segments):
+            if store.is_cancelled(job_id):
+                store.update(job_id, status="cancelled")
+                return
+            voice_id = speaker_voice_ids[segment.speaker_id]
+            store.update(
+                job_id,
+                current_segment=index + 1,
+                current_speaker=segment.speaker_name,
+                current_text_preview=_preview_text(segment.text, 80),
+            )
+            prepared = _prepare_tts_or_422(
+                raw_text=TextSource(text=segment.text),
+                text_format=None,
+                config=config,
+                chunking_mode=chunking_mode,
+                chunk_max_chars=chunk_max_chars,
+                chunk_silence_ms=chunk_silence_ms,
+                fields={
+                    "provider_id": provider_id,
+                    "mode": TTSMode.BUILTIN,
+                    "model": model,
+                    "voice_id": voice_id,
+                    "provider_options": provider_options,
+                },
+                artifact_metadata=option_metadata,
+            )
+            result = _synthesize_prepared_segment(provider, prepared)
+            pause_after_ms = (
+                segment.pause_after_ms if segment.pause_after_ms is not None else default_pause_ms
+            )
+            audio_segments.append(PodcastAudioSegment(result=result, pause_after_ms=pause_after_ms))
+            manifest_segments.append(
+                PodcastManifestSegment(
+                    index=index,
+                    speaker_id=segment.speaker_id,
+                    speaker_name=segment.speaker_name,
+                    voice_id=voice_id,
+                    text=segment.text,
+                    source_line=segment.source_line,
+                    pause_after_ms=pause_after_ms,
+                )
+            )
+        merged = merge_podcast_audio(audio_segments, output_format="wav")
+        for segment, timing in zip(manifest_segments, merged.segments, strict=True):
+            segment.start_ms = timing.start_ms
+            segment.end_ms = timing.end_ms
+            segment.audio_duration_ms = timing.audio_duration_ms
+        manifest = PodcastManifest(
+            provider_id=provider_id,
+            model=model,
+            default_pause_ms=default_pause_ms,
+            speakers=[
+                PodcastManifestSpeaker(
+                    id=speaker.id,
+                    name=speaker.name,
+                    voice_id=speaker_voice_ids[speaker.id],
+                    voice_name=voice_lookup.get(speaker_voice_ids[speaker.id]),
+                )
+                for speaker in parsed.speakers
+            ],
+            segments=manifest_segments,
+        )
+        operation_id = job_id
+        artifact_store = ArtifactStore(app.state.artifact_root)
+        artifact = artifact_store.write_audio(
+            operation_id=operation_id,
+            provider_id=provider_id,
+            operation="podcast",
+            audio=merged.audio.audio,
+            mime_type=merged.audio.mime_type,
+            suffix=merged.audio.suffix,
+            metadata={
+                **dict(option_metadata),
+                "operation": "podcast",
+                "model": model,
+                "source_text": script_preview_source,
+                "source_text_preview": _preview_text(script_preview_source),
+                "podcast_mode": "builtin",
+                "podcast_default_pause_ms": default_pause_ms,
+                "podcast_manifest_version": 1,
+                "podcast_manifest_sidecar": True,
+                "podcast_speaker_count": len(parsed.speakers),
+                "podcast_segment_count": len(parsed.segments),
+                "podcast_speakers": [speaker.name for speaker in parsed.speakers],
+                "podcast_voice_ids": list(speaker_voice_ids.values()),
+            },
+        )
+        _write_podcast_manifest(artifact.path, manifest)
+        artifact_store.record_operation(
+            OperationResult(
+                operation_id=operation_id,
+                operation="podcast",
+                status=OperationStatus.COMPLETED,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                artifact_ids=[artifact.id],
+            )
+        )
+        store.update(job_id, status="completed", artifact=artifact)
+    except ProviderError as exc:
+        current = store.get(job_id)
+        store.update(
+            job_id,
+            status="failed",
+            error_summary=str(exc),
+            failed_segment=PodcastFailedSegment(
+                index=max(0, (current.current_segment if current else 1) - 1),
+                speaker=(current.current_speaker if current else "") or "",
+            ),
+        )
+    except Exception as exc:
+        store.update(job_id, status="failed", error_summary=str(exc))
+
+
+def _synthesize_prepared_segment(
+    provider: Any,
+    prepared: PreparedTTSRequest,
+) -> ProviderAudioResult:
+    if prepared.chunk_plan is None or not prepared.chunk_plan.chunking_enabled:
+        return provider.synthesize_bytes(prepared.request)
+    results = [
+        provider.synthesize_bytes(prepared.request.model_copy(update={"text": chunk.text}))
+        for chunk in prepared.chunk_plan.chunks
+    ]
+    return merge_audio_results(
+        results,
+        silence_ms=prepared.chunk_plan.silence_ms,
+        output_format="wav",
+    )
+
+
+def _write_podcast_manifest(audio_path: Path, manifest: PodcastManifest) -> None:
+    manifest_path = audio_path.with_suffix(".podcast.json")
+    manifest_path.write_text(
+        json.dumps(
+            manifest.model_dump(mode="json"),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    manifest_path.chmod(0o600)
 
 
 def _operation_payload(

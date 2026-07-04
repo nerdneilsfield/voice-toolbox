@@ -147,6 +147,17 @@ class RecordingMimoProvider(FakeProvider):
         return payload
 
 
+class RecordingWavProvider(RecordingMimoProvider):
+    def synthesize_bytes(self, request: TTSRequest) -> ProviderAudioResult:
+        self.tts_requests.append(request)
+        return ProviderAudioResult(
+            audio=_wav_silence(100),
+            mime_type="audio/wav",
+            suffix=".wav",
+            model=request.model,
+        )
+
+
 class RecordingMlxAudioProvider(RecordingMimoProvider):
     id = "mlx-audio"
     name = "MLX Audio"
@@ -217,6 +228,14 @@ def _client(
         env_values={"MIMO_API_KEY": "test-key" if has_api_key else ""},
     )
     return TestClient(app), provider
+
+
+def _poll_podcast_job(client: TestClient, job_id: str) -> dict[str, object]:
+    for _ in range(20):
+        payload = client.get(f"/v1/podcast/jobs/{job_id}").json()
+        if payload["status"] in {"completed", "failed", "cancelled"}:
+            return payload
+    raise AssertionError("podcast job did not reach a terminal state")
 
 
 def _write_rich_transcript_artifact(tmp_path: Path) -> str:
@@ -2276,3 +2295,137 @@ def test_tts_mode_persisted_in_artifact_metadata(tmp_path: Path) -> None:
     listed = client.get("/v1/artifacts").json()["artifacts"]
     by_id = {item["id"]: item for item in listed}
     assert by_id[builtin_id]["metadata"]["tts_mode"] == "builtin"
+
+
+def test_podcast_job_generates_audio_and_manifest(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    created = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "model": "fake-tts",
+            "script": "Alice: Hello\nBob: Hi [pause:25]",
+            "script_format": "speaker_colon",
+            "default_pause_ms": "40",
+            "speaker_voices": json.dumps({"alice": "Mia", "bob": "Dean"}),
+        },
+    )
+
+    assert created.status_code == 200
+    payload = created.json()
+    assert payload["status"] in {"queued", "running", "completed"}
+    job = _poll_podcast_job(client, payload["job_id"])
+    assert job["status"] == "completed"
+    assert job["artifact"]["operation"] == "podcast"  # type: ignore[index]
+    assert job["artifact"]["metadata"]["podcast_segment_count"] == 2  # type: ignore[index]
+    assert [request.voice_id for request in provider.tts_requests] == ["Mia", "Dean"]
+
+    artifact_id = job["artifact"]["id"]  # type: ignore[index]
+    sidecar = next((tmp_path / "data" / "artifacts").glob(f"*/{artifact_id}.podcast.json"))
+    manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert manifest["segments"][0]["speaker_name"] == "Alice"
+    assert manifest["segments"][1]["pause_after_ms"] == 25
+
+
+def test_podcast_job_manifest_records_decoded_timing(tmp_path: Path) -> None:
+    provider = RecordingWavProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    client = TestClient(app)
+
+    created = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "model": "fake-tts",
+            "script": "Alice: Hello [pause:25]\nBob: Hi",
+            "script_format": "speaker_colon",
+            "default_pause_ms": "40",
+            "speaker_voices": json.dumps({"alice": "Mia", "bob": "Dean"}),
+        },
+    )
+    job = _poll_podcast_job(client, created.json()["job_id"])
+
+    artifact_id = job["artifact"]["id"]  # type: ignore[index]
+    sidecar = next((tmp_path / "data" / "artifacts").glob(f"*/{artifact_id}.podcast.json"))
+    manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert manifest["segments"][0]["start_ms"] == 0
+    assert manifest["segments"][0]["audio_duration_ms"] > 0
+    assert manifest["segments"][1]["start_ms"] == (
+        manifest["segments"][0]["end_ms"] + manifest["segments"][0]["pause_after_ms"]
+    )
+
+
+def test_podcast_job_rejects_missing_voice_mapping(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "script": "Alice: Hello\nBob: Hi",
+            "speaker_voices": json.dumps({"alice": "Mia"}),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Bob" in response.json()["detail"]
+    assert provider.tts_requests == []
+
+
+def test_podcast_job_rejects_unknown_voice_mapping(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "script": "Alice: Hello",
+            "speaker_voices": json.dumps({"alice": "Mia", "bob": "Dean"}),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "unknown speaker" in response.json()["detail"]
+    assert provider.tts_requests == []
+
+
+def test_podcast_job_rejects_oversized_script(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+
+    response = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "script": "A: " + ("x" * 200_001),
+            "speaker_voices": json.dumps({"a": "Mia"}),
+        },
+    )
+
+    assert response.status_code == 413
+    assert "script exceeds" in response.json()["detail"]
+    assert provider.tts_requests == []
+
+
+def test_podcast_job_records_provider_failure(tmp_path: Path) -> None:
+    client, provider = _client(tmp_path)
+    provider.tts_error_after_calls = 2
+
+    created = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "script": "Alice: Hello\nBob: Hi",
+            "speaker_voices": json.dumps({"alice": "Mia", "bob": "Dean"}),
+        },
+    )
+    job = _poll_podcast_job(client, created.json()["job_id"])
+
+    assert job["status"] == "failed"
+    assert job["failed_segment"]["index"] == 1  # type: ignore[index]
+    assert "chunk failed" in str(job["error_summary"])
