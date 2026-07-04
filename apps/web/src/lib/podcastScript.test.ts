@@ -15,6 +15,14 @@ describe("podcast script preview parser", () => {
     expect(parsed.errors[0].line).toBe(1);
   });
 
+  it("applies standalone pause lines to the previous segment", () => {
+    const parsed = parsePodcastScriptPreview("Alice: Hi\n[pause:1200]\nBob: Yo", "speaker_colon", 350);
+
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.speakers.map((speaker) => speaker.name)).toEqual(["Alice", "Bob"]);
+    expect(parsed.segments.map((segment) => segment.pauseAfterMs)).toEqual([1200, 350]);
+  });
+
   it("previews markdown and json scripts", () => {
     const markdown = parsePodcastScriptPreview("### Alice\nHi\n\n### Bob\nYo", "markdown", 350);
     const json = parsePodcastScriptPreview(

@@ -83,7 +83,12 @@ from voice_toolbox.normalizers.base import NormalizationRequest
 from voice_toolbox.normalizers.registry import NormalizerRegistry
 from voice_toolbox.pipeline import PreparedTTSRequest, prepare_tts_request
 from voice_toolbox.podcast.audio import PodcastAudioSegment, merge_podcast_audio
-from voice_toolbox.podcast.jobs import PodcastFailedSegment, PodcastJobStatus, PodcastJobStore
+from voice_toolbox.podcast.jobs import (
+    PodcastFailedSegment,
+    PodcastJobStatus,
+    PodcastJobStore,
+    PodcastJobStoreError,
+)
 from voice_toolbox.podcast.models import (
     PodcastManifest,
     PodcastManifestSegment,
@@ -774,7 +779,10 @@ def create_app(
             capability="tts.builtin",
             raw_provider_options=provider_options,
         )
-        job = http_request.app.state.podcast_jobs.create(total_segments=len(parsed.segments))
+        try:
+            job = http_request.app.state.podcast_jobs.create(total_segments=len(parsed.segments))
+        except PodcastJobStoreError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         background_tasks.add_task(
             _run_podcast_job,
             app=http_request.app,
@@ -2055,9 +2063,16 @@ def _validate_podcast_voice_ids(
     speaker_voice_ids: Mapping[str, str],
 ) -> None:
     available_voice_ids = {voice.id for voice in provider.list_voices()}
+    selected_model_voice_ids: set[str] | None = None
     for model_info in provider.list_models():
         if model_id is None or model_info.id == model_id:
-            available_voice_ids.update(voice.id for voice in model_info.voices)
+            model_voice_ids = {voice.id for voice in model_info.voices}
+            if model_id is not None and model_voice_ids:
+                selected_model_voice_ids = model_voice_ids
+                break
+            available_voice_ids.update(model_voice_ids)
+    if selected_model_voice_ids is not None:
+        available_voice_ids = selected_model_voice_ids
     if not available_voice_ids:
         return
     unknown = sorted(

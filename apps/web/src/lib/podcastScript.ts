@@ -19,6 +19,7 @@ const speakerLinePattern = /^\s*([^:\n]{1,80}):\s*(.*?)\s*$/;
 const headingPattern = /^\s{0,3}#{1,3}\s+(.+?)\s*$/m;
 const lineHeadingPattern = /^\s{0,3}#{1,3}\s+(.+?)\s*$/;
 const pausePattern = /\[pause:(\d+)\]\s*$/;
+const standalonePausePattern = /^\s*\[pause:(\d+)\]\s*$/;
 
 export function parsePodcastScriptPreview(
   script: string,
@@ -49,6 +50,20 @@ function parseSpeakerLinePreview(script: string, defaultPauseMs: number): Podcas
   for (const [offset, line] of script.split(/\r?\n/).entries()) {
     const lineNo = offset + 1;
     if (!line.trim()) continue;
+    const standalonePause = standalonePausePattern.exec(line);
+    if (standalonePause) {
+      if (segments.length === 0) {
+        errors.push({ line: lineNo, message: "Pause directive requires a preceding segment" });
+      } else {
+        const previous = segments[segments.length - 1];
+        segments[segments.length - 1] = { ...previous, pauseAfterMs: Number(standalonePause[1]) };
+      }
+      continue;
+    }
+    if (line.trim().startsWith("[pause:")) {
+      errors.push({ line: lineNo, message: "Invalid pause directive" });
+      continue;
+    }
     const match = speakerLinePattern.exec(line);
     if (!match) {
       errors.push({ line: lineNo, message: "Expected Speaker: text" });

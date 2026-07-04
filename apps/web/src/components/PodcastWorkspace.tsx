@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { Artifact, PodcastJobStatus, PodcastScriptFormat, Provider, TextFormat } from "../api";
 import { createPodcastJob, getPodcastJob } from "../api";
 import { useI18n } from "../i18n";
@@ -33,6 +33,7 @@ export function PodcastWorkspace({
   const [job, setJob] = useState<PodcastJobStatus | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState("");
+  const providerIdRef = useRef(providerId);
 
   const parsed = useMemo(
     () => parsePodcastScriptPreview(script, scriptFormat, defaultPauseMs),
@@ -43,6 +44,13 @@ export function PodcastWorkspace({
   const missingVoice = parsed.speakers.some((speaker) => !speakerVoices[speaker.id]);
   const canSubmit =
     Boolean(provider && selectedModel && parsed.segments.length > 0) && parsed.errors.length === 0 && !missingVoice;
+
+  useEffect(() => {
+    providerIdRef.current = providerId;
+    setJob(null);
+    setError("");
+    setState("idle");
+  }, [providerId]);
 
   useEffect(() => {
     onStateChange?.(state);
@@ -60,9 +68,11 @@ export function PodcastWorkspace({
 
   useEffect(() => {
     if (!job || (job.status !== "queued" && job.status !== "running")) return;
+    const pollingProviderId = providerId;
     const timer = window.setInterval(() => {
       void getPodcastJob(job.job_id)
         .then((next) => {
+          if (providerIdRef.current !== pollingProviderId) return;
           setJob(next);
           if (next.status === "completed" && next.artifact) {
             onResult(next.artifact);
@@ -75,12 +85,13 @@ export function PodcastWorkspace({
           }
         })
         .catch((err) => {
+          if (providerIdRef.current !== pollingProviderId) return;
           setError(err instanceof Error ? err.message : "Podcast generation failed");
           setState("error");
         });
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [job, onResult]);
+  }, [job, onResult, providerId]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -88,6 +99,7 @@ export function PodcastWorkspace({
     setState("loading");
     onResult(null);
     try {
+      const submittingProviderId = providerId;
       const created = await createPodcastJob({
         providerId,
         model: selectedModel,
@@ -96,6 +108,7 @@ export function PodcastWorkspace({
         defaultPauseMs,
         speakerVoices,
       });
+      if (providerIdRef.current !== submittingProviderId) return;
       setJob(created);
       if (created.status === "completed" && created.artifact) {
         onResult(created.artifact);
@@ -185,7 +198,7 @@ export function PodcastWorkspace({
               min={0}
               max={60000}
               value={defaultPauseMs}
-              onChange={(event) => setDefaultPauseMs(Number(event.target.value))}
+              onChange={(event) => setDefaultPauseMs(readPauseInput(event.target.value, defaultPauseMs))}
             />
           </label>
           {parsed.speakers.map((speaker) => (
@@ -236,4 +249,11 @@ export function PodcastWorkspace({
 
 function podcastFormatForTextImport(format: TextFormat): PodcastScriptFormat {
   return format === "markdown" ? "markdown" : "speaker_colon";
+}
+
+function readPauseInput(value: string, fallback: number): number {
+  if (!value.trim()) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(60000, Math.trunc(parsed)));
 }

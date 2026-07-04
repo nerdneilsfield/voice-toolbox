@@ -2424,6 +2424,44 @@ def test_podcast_job_rejects_unknown_voice_id(tmp_path: Path) -> None:
     assert provider.tts_requests == []
 
 
+def test_podcast_job_rejects_provider_voice_when_model_has_scoped_voices(
+    tmp_path: Path,
+) -> None:
+    class ModelScopedVoiceProvider(RecordingMimoProvider):
+        def list_models(self) -> list[ModelInfo]:
+            return [
+                ModelInfo(
+                    id="fake-tts",
+                    name="Fake TTS",
+                    capability="tts.builtin",
+                    voices=[VoiceInfo(id="model_voice", name="Model Voice")],
+                )
+            ]
+
+    provider = ModelScopedVoiceProvider(tmp_path)
+    app = create_app(
+        registry=ProviderRegistry([provider]),
+        artifact_root=tmp_path,
+        config=_test_config(),
+        env_values={"MIMO_API_KEY": "test-key"},
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/podcast/jobs",
+        data={
+            "provider_id": "mimo",
+            "model": "fake-tts",
+            "script": "Alice: Hello",
+            "speaker_voices": json.dumps({"alice": "Mia"}),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "unknown voice_id" in response.json()["detail"]
+    assert provider.tts_requests == []
+
+
 def test_podcast_job_rejects_large_pause(tmp_path: Path) -> None:
     client, provider = _client(tmp_path)
 

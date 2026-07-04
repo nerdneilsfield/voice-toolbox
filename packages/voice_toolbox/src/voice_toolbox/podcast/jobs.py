@@ -13,6 +13,10 @@ PodcastJobState = Literal["queued", "running", "completed", "failed", "cancelled
 ACTIVE_JOB_STATUSES: set[PodcastJobState] = {"queued", "running"}
 
 
+class PodcastJobStoreError(RuntimeError):
+    pass
+
+
 class PodcastFailedSegment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -47,6 +51,11 @@ class PodcastJobStore:
     def create(self, *, total_segments: int = 0) -> PodcastJobStatus:
         with self._lock:
             self.cleanup()
+            active_count = sum(
+                1 for job in self._jobs.values() if job.status in ACTIVE_JOB_STATUSES
+            )
+            if active_count >= self.max_jobs:
+                raise PodcastJobStoreError("too many active podcast jobs")
             job = PodcastJobStatus(
                 job_id=f"podcast-{uuid4().hex}",
                 status="queued",
