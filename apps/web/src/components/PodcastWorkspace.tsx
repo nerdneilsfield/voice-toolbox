@@ -30,6 +30,7 @@ export function PodcastWorkspace({
   const [script, setScript] = useState("Alice: Welcome to the show.\nBob: Glad to be here.");
   const [scriptFormat, setScriptFormat] = useState<PodcastScriptFormat>("speaker_colon");
   const [defaultPauseMs, setDefaultPauseMs] = useState(350);
+  const [segmentWorkers, setSegmentWorkers] = useState(8);
   const [speakerVoices, setSpeakerVoices] = useState<Record<string, string>>({});
   const [job, setJob] = useState<PodcastJobStatus | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
@@ -111,6 +112,7 @@ export function PodcastWorkspace({
         script,
         scriptFormat,
         defaultPauseMs,
+        segmentWorkers,
         speakerVoices,
       });
       if (providerIdRef.current !== submittingProviderId) return;
@@ -222,6 +224,16 @@ export function PodcastWorkspace({
               onChange={(event) => setDefaultPauseMs(readPauseInput(event.target.value, defaultPauseMs))}
             />
           </label>
+          <label className="field">
+            <span className="field-title">{t("podcast.segmentWorkers")}</span>
+            <input
+              type="number"
+              min={1}
+              max={16}
+              value={segmentWorkers}
+              onChange={(event) => setSegmentWorkers(readBoundedInteger(event.target.value, segmentWorkers, 1, 16))}
+            />
+          </label>
           {parsed.speakers.map((speaker) => (
             <label key={speaker.id} className="field">
               <span className="field-title">{speaker.name}</span>
@@ -298,8 +310,12 @@ function podcastFormatForTextImport(format: TextFormat): PodcastScriptFormat {
 }
 
 function readPauseInput(value: string, fallback: number): number {
+  return readBoundedInteger(value, fallback, 0, 60000);
+}
+
+function readBoundedInteger(value: string, fallback: number, min: number, max: number): number {
   if (!value.trim()) return fallback;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(0, Math.min(60000, Math.trunc(parsed)));
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
 }

@@ -117,7 +117,8 @@ MAX_TEXT_INPUT_LENGTH = 200_000
 MAX_PODCAST_PAUSE_MS = 60_000
 MAX_PODCAST_TOTAL_PAUSE_MS = 3_600_000
 MAX_PODCAST_WORKERS = 8
-MAX_PODCAST_SEGMENT_WORKERS = 8
+DEFAULT_PODCAST_SEGMENT_WORKERS = 8
+MAX_PODCAST_SEGMENT_WORKERS = 16
 LOCAL_PODCAST_PROVIDER_IDS = {"mlx-audio", "mlx_audio"}
 PROVIDER_NATIVE_UPLOAD_FORMATS = {"wav", "mp3"}
 DOWNLOAD_AUDIO_FORMATS: set[DownloadAudioFormat] = {
@@ -772,6 +773,9 @@ def create_app(
         chunking_mode: Annotated[Literal["off", "auto", "force"] | None, Form()] = None,
         chunk_max_chars: Annotated[int | None, Form()] = None,
         chunk_silence_ms: Annotated[int | None, Form()] = None,
+        segment_workers: Annotated[
+            int, Form(ge=1, le=MAX_PODCAST_SEGMENT_WORKERS)
+        ] = DEFAULT_PODCAST_SEGMENT_WORKERS,
     ) -> dict[str, Any]:
         _ensure_provider_configured_for_operation(http_request, provider_id)
         provider = _get_provider(_registry_from_request(http_request), provider_id)
@@ -813,6 +817,7 @@ def create_app(
                 chunking_mode=chunking_mode,
                 chunk_max_chars=chunk_max_chars,
                 chunk_silence_ms=chunk_silence_ms,
+                segment_workers=segment_workers,
                 script_preview_source=script,
             )
         except RuntimeError as exc:
@@ -2138,6 +2143,7 @@ def _run_podcast_job(
     chunking_mode: Literal["off", "auto", "force"] | None,
     chunk_max_chars: int | None,
     chunk_silence_ms: int | None,
+    segment_workers: int,
     script_preview_source: str,
 ) -> None:
     store: PodcastJobStore = app.state.podcast_jobs
@@ -2161,6 +2167,7 @@ def _run_podcast_job(
             chunking_mode=chunking_mode,
             chunk_max_chars=chunk_max_chars,
             chunk_silence_ms=chunk_silence_ms,
+            requested_workers=segment_workers,
         )
         audio_segments = [result.audio_segment for result in segment_results]
         manifest_segments = [result.manifest_segment for result in segment_results]
@@ -2279,9 +2286,15 @@ def _synthesize_podcast_segments(
     chunking_mode: Literal["off", "auto", "force"] | None,
     chunk_max_chars: int | None,
     chunk_silence_ms: int | None,
+    requested_workers: int,
 ) -> list[_PodcastSegmentSynthesis]:
     segment_count = len(parsed.segments)
-    worker_count = _podcast_segment_worker_count(provider_id, provider, segment_count)
+    worker_count = _podcast_segment_worker_count(
+        provider_id,
+        provider,
+        segment_count,
+        requested_workers,
+    )
     if worker_count == 1:
         results: list[_PodcastSegmentSynthesis] = []
         for index, segment in enumerate(parsed.segments):
@@ -2446,14 +2459,19 @@ def _cancel_pending_futures(futures: Mapping[Future[_PodcastSegmentSynthesis], i
         pending.cancel()
 
 
-def _podcast_segment_worker_count(provider_id: str, provider: Any, segment_count: int) -> int:
+def _podcast_segment_worker_count(
+    provider_id: str,
+    provider: Any,
+    segment_count: int,
+    requested_workers: int,
+) -> int:
     if segment_count <= 0:
         return 1
     if provider_id in LOCAL_PODCAST_PROVIDER_IDS or provider.__class__.__module__.endswith(
         ".mlx_audio"
     ):
         return 1
-    return min(MAX_PODCAST_SEGMENT_WORKERS, segment_count)
+    return min(MAX_PODCAST_SEGMENT_WORKERS, max(1, requested_workers), segment_count)
 
 
 def _synthesize_prepared_segment(

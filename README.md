@@ -131,9 +131,9 @@ the script to one built-in voice from that same model, then generate. The web UI
 creates a queued job, polls progress, and can cancel a queued/running job.
 
 The server can run up to 8 podcast jobs at once. Within one podcast, remote
-provider segments are synthesized in parallel with up to 8 segment workers, then
-merged back in script order. Local `mlx_audio` providers stay serial to avoid
-Metal/GPU memory contention.
+provider segments are synthesized in parallel with 1-16 segment workers
+(default 8), then merged back in script order. Local `mlx_audio` providers stay
+serial to avoid Metal/GPU memory contention.
 
 Supported speaker-line scripts:
 

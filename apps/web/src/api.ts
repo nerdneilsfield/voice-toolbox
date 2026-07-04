@@ -217,6 +217,7 @@ export type PodcastJobCreate = {
   script: string;
   scriptFormat: PodcastScriptFormat;
   defaultPauseMs: number;
+  segmentWorkers?: number;
   speakerVoices: Record<string, string>;
   providerOptions?: Record<string, unknown>;
   chunkingMode?: ChunkingMode;
@@ -331,6 +332,9 @@ export function createPodcastJob(form: PodcastJobCreate): Promise<PodcastJobStat
   body.set("script", form.script);
   body.set("script_format", form.scriptFormat);
   body.set("default_pause_ms", String(form.defaultPauseMs));
+  if (form.segmentWorkers !== undefined) {
+    body.set("segment_workers", String(form.segmentWorkers));
+  }
   body.set("speaker_voices", JSON.stringify(form.speakerVoices));
   appendProviderOptions(body, form.providerOptions);
   appendChunking(body, form);

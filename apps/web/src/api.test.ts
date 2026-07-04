@@ -239,6 +239,7 @@ describe("api client", () => {
       script: "Alice: hello",
       scriptFormat: "speaker_colon",
       defaultPauseMs: 350,
+      segmentWorkers: 12,
       speakerVoices: { alice: "Mia" },
     });
 
@@ -250,6 +251,7 @@ describe("api client", () => {
     expect(body.get("script")).toBe("Alice: hello");
     expect(body.get("script_format")).toBe("speaker_colon");
     expect(body.get("default_pause_ms")).toBe("350");
+    expect(body.get("segment_workers")).toBe("12");
     expect(body.get("speaker_voices")).toBe(JSON.stringify({ alice: "Mia" }));
   });
 
