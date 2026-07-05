@@ -7,7 +7,7 @@ Local-first voice toolbox for MiMo, Fish Audio, and OpenRouter TTS/ASR providers
 Install Python dependencies with `uv`:
 
 ```bash
-rtk uv sync --extra dev
+uv sync --extra dev
 ```
 
 Audio format conversion uses `pydub`; Python 3.13+ also installs `audioop-lts`
@@ -17,13 +17,13 @@ for mp3, m4a, flac, ogg, webm, and aac decoding/encoding.
 Install frontend dependencies with `bun`:
 
 ```bash
-rtk bun install --cwd apps/web
+bun install --cwd apps/web
 ```
 
 Create local environment config:
 
 ```bash
-rtk cp -n .env.example .env
+cp -n .env.example .env
 ```
 
 Edit `.env` and set `MIMO_API_KEY`, `FISH_AUDIO_API_KEY`, and/or `OPENROUTER_API_KEY`. For configurable providers, copy
@@ -31,7 +31,7 @@ Edit `.env` and set `MIMO_API_KEY`, `FISH_AUDIO_API_KEY`, and/or `OPENROUTER_API
 settings there.
 
 ```bash
-rtk cp -n voice_toolbox.toml.example voice_toolbox.toml
+cp -n voice_toolbox.toml.example voice_toolbox.toml
 ```
 
 Config discovery order:
@@ -58,7 +58,7 @@ provider-specific options yet.
 MLX Audio is optional and local-only. Install it only on Apple Silicon macOS:
 
 ```bash
-rtk uv sync --extra mac
+uv sync --extra mac
 ```
 
 Enable it with a provider block:
@@ -112,13 +112,13 @@ https://api.xiaomimimo.com/v1
 Start API server from `voice_toolbox.toml` or fallback config:
 
 ```bash
-rtk make backend-server
+make backend-server
 ```
 
 Start web dev server on `127.0.0.1:5173`:
 
 ```bash
-rtk make frontend-server
+make frontend-server
 ```
 
 The Vite dev server proxies `/v1/*` to `http://127.0.0.1:8000`.
@@ -169,10 +169,10 @@ voices, segment text, effective pauses, and timing when duration can be decoded.
 ## Make Targets
 
 ```bash
-rtk make test
-rtk make check
-rtk make backend-server
-rtk make frontend-server
+make test
+make check
+make backend-server
+make frontend-server
 ```
 
 `make check` runs backend tests, `ruff`, `ty`, frontend lint/format/test checks, and the web build.
@@ -182,7 +182,7 @@ rtk make frontend-server
 Built-in TTS:
 
 ```bash
-rtk uv run --env-file .env voice-toolbox tts synthesize \
+uv run --env-file .env voice-toolbox tts synthesize \
   --text "你好，欢迎使用 MiMo 语音合成。" \
   --voice 冰糖 \
   --format wav
@@ -191,7 +191,7 @@ rtk uv run --env-file .env voice-toolbox tts synthesize \
 TTS from a `.txt` file:
 
 ```bash
-rtk uv run --env-file .env voice-toolbox tts synthesize \
+uv run --env-file .env voice-toolbox tts synthesize \
   --file smoke-inputs/tts-long.txt \
   --text-format plain \
   --voice 冰糖 \
@@ -202,7 +202,7 @@ rtk uv run --env-file .env voice-toolbox tts synthesize \
 TTS from Markdown:
 
 ```bash
-rtk uv run --env-file .env voice-toolbox tts synthesize \
+uv run --env-file .env voice-toolbox tts synthesize \
   --file smoke-inputs/tts-long.md \
   --text-format markdown \
   --voice 冰糖 \
@@ -228,7 +228,7 @@ silently reinterpreted.
 ASR:
 
 ```bash
-rtk uv run --env-file .env voice-toolbox asr transcribe \
+uv run --env-file .env voice-toolbox asr transcribe \
   --file smoke-inputs/asr-short.wav \
   --language auto
 ```
@@ -236,7 +236,7 @@ rtk uv run --env-file .env voice-toolbox asr transcribe \
 Backend ASR chunking:
 
 ```bash
-rtk uv run --env-file .env voice-toolbox asr transcribe \
+uv run --env-file .env voice-toolbox asr transcribe \
   --file smoke-inputs/asr-long.wav \
   --language auto \
   --chunking force \
@@ -274,7 +274,7 @@ or code-like fragments.
 Programmatic preview:
 
 ```bash
-rtk curl -s http://127.0.0.1:8000/v1/normalize/text \
+curl -s http://127.0.0.1:8000/v1/normalize/text \
   -H 'Content-Type: application/json' \
   -d '{"content":"# Title\n\nHello **MiMo**.","input_format":"markdown"}'
 ```
@@ -302,7 +302,8 @@ ASR has two chunking paths:
   provider payload limit before chunking. The planner also caps chunk duration
   by the provider byte budget, so high-bitrate WAV chunks stay under the
   per-call payload limit.
-- Browser chunking: the web client slices WAV audio in the browser, creates
+- Browser chunking: the web client slices PCM WAV audio directly, or tries
+  ffmpeg wasm for browser-unsupported compressed formats, then creates
   `/v1/asr/chunk-sessions`, uploads chunks to
   `/v1/asr/chunk-sessions/{session_id}/chunks`, then calls
   `/v1/asr/chunk-sessions/{session_id}/finish`.

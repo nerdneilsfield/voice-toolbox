@@ -1,3 +1,5 @@
+import { transcodeAudioToWavWithFfmpeg } from "./ffmpegTranscode";
+
 export type BrowserAudioChunk = {
   blob: Blob;
   offsetMs: number;
@@ -31,7 +33,7 @@ export async function sliceWavFile(
 ): Promise<{ chunks: BrowserAudioChunk[]; sourceDurationMs: number }> {
   const buffer = await file.arrayBuffer();
   if (!isWavBuffer(buffer)) {
-    const wavBuffer = await decodeAudioFileToWav(buffer);
+    const wavBuffer = await decodeAudioFileToWav(file, buffer);
     return sliceParsedWavFile(wavBuffer, parseWav(wavBuffer), file, { targetSeconds, overlapMs });
   }
   const wav = parseWav(buffer);
@@ -79,17 +81,21 @@ function sliceParsedWavFile(
   return { chunks, sourceDurationMs: Math.round(wav.durationMs) };
 }
 
-async function decodeAudioFileToWav(buffer: ArrayBuffer): Promise<ArrayBuffer> {
+async function decodeAudioFileToWav(file: File, buffer: ArrayBuffer): Promise<ArrayBuffer> {
   const AudioContextCtor =
     globalThis.AudioContext ??
     (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextCtor) {
-    throw new Error("Browser chunking requires WAV input or browser audio decoding support.");
+    return transcodeAudioToWavWithFfmpeg(file);
   }
   const context = new AudioContextCtor();
   try {
-    const audioBuffer = await context.decodeAudioData(buffer.slice(0));
-    return audioBufferToWav(audioBuffer);
+    try {
+      const audioBuffer = await context.decodeAudioData(buffer.slice(0));
+      return audioBufferToWav(audioBuffer);
+    } catch {
+      return transcodeAudioToWavWithFfmpeg(file);
+    }
   } finally {
     await context.close().catch(() => undefined);
   }

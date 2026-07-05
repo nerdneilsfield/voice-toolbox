@@ -34,6 +34,7 @@ def test_loads_builtin_default_without_toml(
     assert config.config_path is None
     assert config.api.host == "127.0.0.1"
     assert config.api.port == 8000
+    assert config.chunking.asr.max_chunks == 200
     assert [provider.id for provider in config.providers] == ["mimo"]
     assert config.providers[0].base_url == "https://api.xiaomimimo.com/v1"
 

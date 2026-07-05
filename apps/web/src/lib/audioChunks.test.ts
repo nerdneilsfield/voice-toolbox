@@ -73,6 +73,31 @@ describe("browser audio chunk helpers", () => {
     expect(chunks[0].blob.type).toBe("audio/wav");
   });
 
+  it("falls back to ffmpeg wasm when browser decoding fails", async () => {
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        async decodeAudioData() {
+          throw new Error("unsupported codec");
+        }
+
+        async close() {
+          return undefined;
+        }
+      },
+    );
+    vi.stubGlobal("__VOICE_TOOLBOX_FFMPEG_TRANSCODE__", async () =>
+      makeWavBuffer({ sampleRate: 1000, channels: 1, bitsPerSample: 16, frames: 2500 }),
+    );
+    const file = new File(["compressed"], "meeting.flac", { type: "audio/flac" });
+
+    const { chunks, sourceDurationMs } = await sliceWavFile(file, { targetSeconds: 1, overlapMs: 250 });
+
+    expect(sourceDurationMs).toBe(2500);
+    expect(chunks).toHaveLength(4);
+    expect(chunks[0].fileName).toBe("meeting.0.wav");
+  });
+
   it("throws for non-PCM WAV input so callers can fallback to backend upload", async () => {
     const wav = makeWavFile("float.wav", {
       sampleRate: 1000,
@@ -104,6 +129,23 @@ function makeWavFile(
     audioFormat?: number;
   },
 ) {
+  const buffer = makeWavBuffer({ sampleRate, channels, bitsPerSample, frames, audioFormat });
+  return new File([buffer], name, { type: "audio/wav" });
+}
+
+function makeWavBuffer({
+  sampleRate,
+  channels,
+  bitsPerSample,
+  frames,
+  audioFormat = 1,
+}: {
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+  frames: number;
+  audioFormat?: number;
+}) {
   const bytesPerSample = bitsPerSample / 8;
   const blockAlign = channels * bytesPerSample;
   const byteRate = sampleRate * blockAlign;
@@ -123,7 +165,7 @@ function makeWavFile(
   view.setUint16(34, bitsPerSample, true);
   writeAscii(view, 36, "data");
   view.setUint32(40, dataSize, true);
-  return new File([buffer], name, { type: "audio/wav" });
+  return buffer;
 }
 
 function writeAscii(view: DataView, offset: number, value: string) {

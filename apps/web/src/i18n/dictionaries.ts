@@ -117,7 +117,7 @@ export const en = {
   "asr.uploadStrategy.browser": "prefer browser chunks",
   "asr.uploadStrategy.backend": "backend upload",
   "asr.uploadHint.browser":
-    "Browser-decodable audio is sliced locally; unsupported formats fall back to backend upload.",
+    "Audio is sliced locally; unsupported browser codecs try ffmpeg wasm before backend upload.",
   "asr.uploadHint.backend": "The whole file is uploaded once and chunked server-side.",
   "asr.uploadHint.auto": "Audio is sliced locally when possible or when provider payload limits require it.",
   "asr.timestamps": "Timestamps",
@@ -326,7 +326,7 @@ export const zh: Record<keyof typeof en, string> = {
   "asr.uploadStrategy.auto": "自动",
   "asr.uploadStrategy.browser": "优先浏览器分片",
   "asr.uploadStrategy.backend": "后端上传",
-  "asr.uploadHint.browser": "浏览器可解码的音频会在本地切片；不支持的格式回退到后端上传。",
+  "asr.uploadHint.browser": "音频会在本地切片；浏览器不支持的编码会先尝试 ffmpeg wasm，再回退到后端上传。",
   "asr.uploadHint.backend": "整个文件一次性上传，由服务端分段。",
   "asr.uploadHint.auto": "音频会在可行时或触及提供方负载限制时本地切片。",
   "asr.timestamps": "时间戳",

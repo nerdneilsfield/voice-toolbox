@@ -63,7 +63,7 @@ class ASRChunkingConfig(BaseModel):
     mode: ChunkingMode = "auto"
     target_seconds: int = Field(default=90, ge=10, le=600)
     overlap_ms: int = Field(default=1200, ge=0, le=10000)
-    max_chunks: int = Field(default=80, ge=1, le=500)
+    max_chunks: int = Field(default=200, ge=1, le=500)
     max_upload_mb: int = Field(default=250, ge=1, le=2048)
     browser_upload: bool = True
     session_ttl_seconds: int = Field(default=3600, ge=60, le=86400)

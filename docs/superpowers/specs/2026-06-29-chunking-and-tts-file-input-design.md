@@ -78,7 +78,7 @@ repeat_leading_audio_tags = true
 mode = "auto"          # "off" | "auto" | "force"
 target_seconds = 90
 overlap_ms = 1200
-max_chunks = 80
+max_chunks = 200
 max_upload_mb = 250
 browser_upload = true
 session_ttl_seconds = 3600
@@ -103,7 +103,7 @@ class ASRChunkingConfig(BaseModel):
     mode: ChunkingMode = "auto"
     target_seconds: int = Field(default=90, ge=10, le=600)
     overlap_ms: int = Field(default=1200, ge=0, le=10000)
-    max_chunks: int = Field(default=80, ge=1, le=500)
+    max_chunks: int = Field(default=200, ge=1, le=500)
     max_upload_mb: int = Field(default=250, ge=1, le=2048)
     browser_upload: bool = True
     session_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
@@ -711,13 +711,13 @@ Session creation returns:
 {
   "session_id": "...",
   "expires_at": "...",
-  "max_chunks": 80,
+  "max_chunks": 200,
   "browser_slice_formats": ["wav"],
   "backend_accept_formats": ["wav", "mp3", "m4a", "aac", "flac", "ogg", "webm"]
 }
 ```
 
-`browser_slice_formats` is the subset the frontend should upload after browser-side slicing. V1 uses WAV chunks because providers accept WAV and browser-side mp3/m4a/aac/ogg/webm encoders are not consistently available. The v1 browser helper slices PCM WAV only; non-PCM WAV or other formats fall back to backend whole-file upload. `backend_accept_formats` intentionally excludes raw `pcm` for browser chunk upload because raw PCM has no self-describing sample rate/channel metadata.
+`browser_slice_formats` is the subset the frontend should upload after browser-side slicing. V1 uses WAV chunks because providers accept WAV and browser-side mp3/m4a/aac/ogg/webm encoders are not consistently available. The browser helper slices PCM WAV directly, tries ffmpeg wasm for non-WAV formats that the browser cannot decode natively, then falls back to backend whole-file upload. `backend_accept_formats` intentionally excludes raw `pcm` for browser chunk upload because raw PCM has no self-describing sample rate/channel metadata.
 
 Chunk upload returns safe progress only:
 
@@ -829,10 +829,10 @@ ASR:
   - Overlap milliseconds
 - Add upload strategy:
   - `Backend upload`: current whole-file upload; backend chunks if needed.
-  - `Prefer browser chunk upload`: browser slices and uploads chunks to `/v1/asr/chunk-sessions`, with backend upload fallback when browser slicing fails.
+  - `Prefer browser chunk upload`: browser slices and uploads chunks to `/v1/asr/chunk-sessions`, with ffmpeg wasm transcode fallback before backend upload when native browser decoding fails.
 - Browser chunk upload uses sequential uploads with visible progress: `uploaded N / total`.
 - Browser chunk upload aborts in-flight create/upload/finish requests when the user cancels, then best-effort deletes the session.
-- If browser cannot decode/slice a file, or if the WAV is non-PCM, fall back to backend upload with a clear local message.
+- If browser cannot decode/slice a file after ffmpeg wasm fallback, or if the WAV is non-PCM, fall back to backend upload with a clear local message.
 - Add transcript options:
   - request timestamps when provider/model declares support
   - request speakers when provider/model declares support
