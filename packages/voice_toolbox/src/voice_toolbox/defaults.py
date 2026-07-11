@@ -13,6 +13,129 @@ from voice_toolbox.models import (
 DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
 DEFAULT_FISH_AUDIO_BASE_URL = "https://api.fish.audio"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_VOLCENGINE_BASE_URL = "https://openspeech.bytedance.com/api/v3/plan"
+
+VOLCENGINE_MODELS: list[ModelInfo] = [
+    ModelInfo(id="seed-tts-2.0", name="Doubao Seed TTS 2.0", capability="tts.builtin"),
+    ModelInfo(
+        id="volc.seedasr.sauc.duration",
+        name="Doubao Seed ASR 2.0",
+        capability="asr.transcribe",
+        transcript_capabilities=TranscriptCapabilities(timestamps=True, segments=True),
+    ),
+]
+
+_VOLCENGINE_URANUS_VOICES = [
+    ("Vivi 2.0", "zh_female_vv_uranus_bigtts", "zh,ja,id,es-MX"),
+    ("小何 2.0", "zh_female_xiaohe_uranus_bigtts", "zh"),
+    ("云舟 2.0", "zh_male_m191_uranus_bigtts", "zh"),
+    ("小天 2.0", "zh_male_taocheng_uranus_bigtts", "zh"),
+    ("刘飞 2.0", "zh_male_liufei_uranus_bigtts", "zh"),
+    ("魅力苏菲 2.0", "zh_female_sophie_uranus_bigtts", "zh"),
+    ("清新女声 2.0", "zh_female_qingxinnvsheng_uranus_bigtts", "zh"),
+    ("知性灿灿 2.0", "zh_female_cancan_uranus_bigtts", "zh"),
+    ("撒娇学妹 2.0", "zh_female_sajiaoxuemei_uranus_bigtts", "zh"),
+    ("甜美小源 2.0", "zh_female_tianmeixiaoyuan_uranus_bigtts", "zh"),
+    ("甜美桃子 2.0", "zh_female_tianmeitaozi_uranus_bigtts", "zh"),
+    ("爽快思思 2.0", "zh_female_shuangkuaisisi_uranus_bigtts", "zh"),
+    ("佩奇猪 2.0", "zh_female_peiqi_uranus_bigtts", "zh"),
+    ("邻家女孩 2.0", "zh_female_linjianvhai_uranus_bigtts", "zh"),
+    ("少年梓辛 2.0", "zh_male_shaonianzixin_uranus_bigtts", "zh"),
+    ("猴哥 2.0", "zh_male_sunwukong_uranus_bigtts", "zh"),
+    ("Tina老师 2.0", "zh_female_yingyujiaoxue_uranus_bigtts", "zh,en-GB"),
+    ("暖阳女声 2.0", "zh_female_kefunvsheng_uranus_bigtts", "zh"),
+    ("儿童绘本 2.0", "zh_female_xiaoxue_uranus_bigtts", "zh"),
+    ("大壹 2.0", "zh_male_dayi_uranus_bigtts", "zh"),
+    ("黑猫侦探社咪仔 2.0", "zh_female_mizai_uranus_bigtts", "zh"),
+    ("鸡汤女 2.0", "zh_female_jitangnv_uranus_bigtts", "zh"),
+    ("魅力女友 2.0", "zh_female_meilinvyou_uranus_bigtts", "zh"),
+    ("流畅女声 2.0", "zh_female_liuchangnv_uranus_bigtts", "zh"),
+    ("儒雅逸辰 2.0", "zh_male_ruyayichen_uranus_bigtts", "zh"),
+    ("Tim", "en_male_tim_uranus_bigtts", "en-US"),
+    ("Dacey", "en_female_dacey_uranus_bigtts", "en-US"),
+    ("Stokie", "en_female_stokie_uranus_bigtts", "en-US"),
+    ("温柔妈妈 2.0", "zh_female_wenroumama_uranus_bigtts", "zh"),
+    ("解说小明 2.0", "zh_male_jieshuoxiaoming_uranus_bigtts", "zh"),
+    ("TVB女声 2.0", "zh_female_tvbnv_uranus_bigtts", "zh"),
+    ("译制片男 2.0", "zh_male_yizhipiannan_uranus_bigtts", "zh"),
+    ("俏皮女声 2.0", "zh_female_qiaopinv_uranus_bigtts", "zh"),
+    ("直率英子 2.0", "zh_female_zhishuaiyingzi_uranus_bigtts", "zh"),
+    ("邻家男孩 2.0", "zh_male_linjiananhai_uranus_bigtts", "zh"),
+    ("四郎 2.0", "zh_male_silang_uranus_bigtts", "zh"),
+    ("儒雅青年 2.0", "zh_male_ruyaqingnian_uranus_bigtts", "zh"),
+    ("擎苍 2.0", "zh_male_qingcang_uranus_bigtts", "zh"),
+    ("熊二 2.0", "zh_male_xionger_uranus_bigtts", "zh"),
+    ("樱桃丸子 2.0", "zh_female_yingtaowanzi_uranus_bigtts", "zh"),
+    ("温暖阿虎 2.0", "zh_male_wennuanahu_uranus_bigtts", "zh"),
+    ("奶气萌娃 2.0", "zh_male_naiqimengwa_uranus_bigtts", "zh"),
+    ("婆婆 2.0", "zh_female_popo_uranus_bigtts", "zh"),
+    ("高冷御姐 2.0", "zh_female_gaolengyujie_uranus_bigtts", "zh"),
+    ("傲娇霸总 2.0", "zh_male_aojiaobazong_uranus_bigtts", "zh"),
+    ("懒音绵宝 2.0", "zh_male_lanyinmianbao_uranus_bigtts", "zh"),
+    ("反卷青年 2.0", "zh_male_fanjuanqingnian_uranus_bigtts", "zh"),
+    ("温柔淑女 2.0", "zh_female_wenroushunv_uranus_bigtts", "zh"),
+    ("古风少御 2.0", "zh_female_gufengshaoyu_uranus_bigtts", "zh"),
+    ("活力小哥 2.0", "zh_male_huolixiaoge_uranus_bigtts", "zh"),
+    ("霸气青叔 2.0", "zh_male_baqiqingshu_uranus_bigtts", "zh"),
+    ("悬疑解说 2.0", "zh_male_xuanyijieshuo_uranus_bigtts", "zh"),
+    ("萌丫头 2.0", "zh_female_mengyatou_uranus_bigtts", "zh"),
+    ("贴心女声 2.0", "zh_female_tiexinnvsheng_uranus_bigtts", "zh"),
+    ("鸡汤妹妹 2.0", "zh_female_jitangmei_uranus_bigtts", "zh"),
+    ("磁性解说男声 2.0", "zh_male_cixingjieshuonan_uranus_bigtts", "zh"),
+    ("亮嗓萌仔 2.0", "zh_male_liangsangmengzai_uranus_bigtts", "zh"),
+    ("开朗姐姐 2.0", "zh_female_kailangjiejie_uranus_bigtts", "zh"),
+    ("高冷沉稳 2.0", "zh_male_gaolengchenwen_uranus_bigtts", "zh"),
+    ("深夜播客 2.0", "zh_male_shenyeboke_uranus_bigtts", "zh"),
+    ("鲁班七号 2.0", "zh_male_lubanqihao_uranus_bigtts", "zh"),
+    ("娇喘女声 2.0", "zh_female_jiaochuannv_uranus_bigtts", "zh"),
+    ("林潇 2.0", "zh_female_linxiao_uranus_bigtts", "zh"),
+    ("玲玲姐姐 2.0", "zh_female_lingling_uranus_bigtts", "zh"),
+    ("春日部姐姐 2.0", "zh_female_chunribu_uranus_bigtts", "zh"),
+    ("唐僧 2.0", "zh_male_tangseng_uranus_bigtts", "zh"),
+    ("庄周 2.0", "zh_male_zhuangzhou_uranus_bigtts", "zh"),
+    ("开朗弟弟 2.0", "zh_male_kailangdidi_uranus_bigtts", "zh"),
+    ("猪八戒 2.0", "zh_male_zhubajie_uranus_bigtts", "zh"),
+    ("感冒电音姐姐 2.0", "zh_female_ganmaodianyin_uranus_bigtts", "zh"),
+    ("谄媚女声 2.0", "zh_female_chanmeinv_uranus_bigtts", "zh"),
+    ("女雷神 2.0", "zh_female_nvleishen_uranus_bigtts", "zh"),
+    ("亲切女声 2.0", "zh_female_qinqienv_uranus_bigtts", "zh"),
+    ("快乐小东 2.0", "zh_male_kuailexiaodong_uranus_bigtts", "zh"),
+    ("开朗学长 2.0", "zh_male_kailangxuezhang_uranus_bigtts", "zh"),
+    ("悠悠君子 2.0", "zh_male_youyoujunzi_uranus_bigtts", "zh"),
+    ("文静毛毛 2.0", "zh_female_wenjingmaomao_uranus_bigtts", "zh"),
+    ("知性女声 2.0", "zh_female_zhixingnv_uranus_bigtts", "zh"),
+    ("清爽男大 2.0", "zh_male_qingshuangnanda_uranus_bigtts", "zh"),
+    ("渊博小叔 2.0", "zh_male_yuanboxiaoshu_uranus_bigtts", "zh"),
+    ("阳光青年 2.0", "zh_male_yangguangqingnian_uranus_bigtts", "zh"),
+    ("清澈梓梓 2.0", "zh_female_qingchezizi_uranus_bigtts", "zh"),
+    ("甜美悦悦 2.0", "zh_female_tianmeiyueyue_uranus_bigtts", "zh"),
+    ("心灵鸡汤 2.0", "zh_female_xinlingjitang_uranus_bigtts", "zh"),
+    ("温柔小哥 2.0", "zh_male_wenrouxiaoge_uranus_bigtts", "zh"),
+    ("柔美女友 2.0", "zh_female_roumeinvyou_uranus_bigtts", "zh"),
+    ("东方浩然 2.0", "zh_male_dongfanghaoran_uranus_bigtts", "zh"),
+    ("温柔小雅 2.0", "zh_female_wenrouxiaoya_uranus_bigtts", "zh"),
+    ("天才童声 2.0", "zh_male_tiancaitongsheng_uranus_bigtts", "zh"),
+    ("武则天 2.0", "zh_female_wuzetian_uranus_bigtts", "zh"),
+    ("顾姐 2.0", "zh_female_gujie_uranus_bigtts", "zh"),
+    ("广告解说 2.0", "zh_male_guanggaojieshuo_uranus_bigtts", "zh"),
+    ("少儿故事 2.0", "zh_female_shaoergushi_uranus_bigtts", "zh"),
+]
+
+VOLCENGINE_VOICES: list[VoiceInfo] = [
+    VoiceInfo(
+        id=voice_id,
+        name=name,
+        language=language,
+        gender="female" if "_female_" in voice_id else "male",
+        note="Doubao Seed TTS 2.0 built-in voice; supports instruction following",
+    )
+    for name, voice_id, language in _VOLCENGINE_URANUS_VOICES
+]
+
+DEFAULT_VOLCENGINE_MODELS = ProviderDefaultModels(
+    tts_builtin="seed-tts-2.0",
+    asr="volc.seedasr.sauc.duration",
+)
 
 MIMO_MODELS: list[ModelInfo] = [
     ModelInfo(id="mimo-v2.5-tts", name="MiMo TTS", capability="tts.builtin"),
@@ -26,7 +149,7 @@ MIMO_MODELS: list[ModelInfo] = [
         name="MiMo Voice Clone",
         capability="tts.clone",
     ),
-    ModelInfo(id="mimo-v2.5-asr", name="MiMo ASR", capability="asr.transcribe"),
+    ModelInfo(id="mimo-v2.5-asr", name="MiMo V2.5 ASR", capability="asr.transcribe"),
 ]
 
 MIMO_VOICES: list[VoiceInfo] = [
@@ -532,4 +655,24 @@ def make_default_mlx_audio_provider_config(
         models=[model.model_copy() for model in MLX_AUDIO_MODELS],
         voices=[voice.model_copy() for voice in MLX_AUDIO_VOICES],
         options=[option.model_copy() for option in MLX_AUDIO_TTS_OPTIONS],
+    )
+
+
+def make_default_volcengine_provider_config(
+    *,
+    provider_id: str = "volcengine",
+    name: str = "Volcengine Speech",
+    base_url: str = DEFAULT_VOLCENGINE_BASE_URL,
+    api_key_env: str = "VOLCENGINE_SPEECH_API_KEY",
+) -> ConfiguredProvider:
+    return ConfiguredProvider(
+        id=provider_id,
+        type="volcengine",
+        name=name,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        default_voice=VOLCENGINE_VOICES[0].id,
+        default_models=DEFAULT_VOLCENGINE_MODELS.model_copy(deep=True),
+        models=[model.model_copy() for model in VOLCENGINE_MODELS],
+        voices=[voice.model_copy() for voice in VOLCENGINE_VOICES],
     )

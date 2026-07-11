@@ -4,6 +4,7 @@ from voice_toolbox.providers.fish_audio import FishAudioProvider
 from voice_toolbox.providers.mlx_audio import MlxAudioProvider
 from voice_toolbox.providers.openrouter import OpenRouterProvider
 from voice_toolbox.providers.registry import ASR_CAPABILITY, ProviderRegistry, TTS_MODE_CAPABILITIES
+from voice_toolbox.providers.volcengine import VolcengineProvider
 
 __all__ = [
     "ASR_CAPABILITY",
@@ -16,4 +17,5 @@ __all__ = [
     "TTS_MODE_CAPABILITIES",
     "UnsupportedCapability",
     "VoiceProvider",
+    "VolcengineProvider",
 ]

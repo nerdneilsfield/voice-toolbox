@@ -11,6 +11,7 @@ from voice_toolbox.providers.fish_audio import FishAudioProvider
 from voice_toolbox.providers.mlx_audio import MlxAudioProvider
 from voice_toolbox.providers.mimo import MimoProvider
 from voice_toolbox.providers.openrouter import OpenRouterProvider
+from voice_toolbox.providers.volcengine import VolcengineProvider
 from voice_toolbox.providers.registry import ProviderRegistry
 
 
@@ -60,6 +61,14 @@ def build_provider_registry(
             providers.append(
                 MlxAudioProvider(
                     config=provider_config,
+                    artifact_store=ArtifactStore(root),
+                )
+            )
+        elif provider_config.type == "volcengine":
+            providers.append(
+                VolcengineProvider(
+                    config=provider_config,
+                    api_key=_api_key_for_network_provider(provider_config, env),
                     artifact_store=ArtifactStore(root),
                 )
             )

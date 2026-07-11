@@ -37,6 +37,9 @@ from voice_toolbox.defaults import (
     MLX_AUDIO_VOICES,
     OPENROUTER_MODELS,
     OPENROUTER_VOICES,
+    DEFAULT_VOLCENGINE_MODELS,
+    VOLCENGINE_MODELS,
+    VOLCENGINE_VOICES,
 )
 from voice_toolbox.models import ModelInfo, ProviderOptionSpec
 
@@ -251,6 +254,13 @@ def _fill_provider_defaults(provider: dict[str, Any]) -> dict[str, Any]:
             voices=MLX_AUDIO_VOICES,
             options=MLX_AUDIO_TTS_OPTIONS,
             default_voice=MLX_AUDIO_DEFAULT_VOICE_ID,
+        )
+    if provider.get("type") == "volcengine":
+        return _fill_defaults_for_provider(
+            provider,
+            default_models=DEFAULT_VOLCENGINE_MODELS,
+            models=VOLCENGINE_MODELS,
+            voices=VOLCENGINE_VOICES,
         )
     return dict(provider)
 
