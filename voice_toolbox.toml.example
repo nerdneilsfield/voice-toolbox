@@ -70,7 +70,7 @@ capability = "tts.clone"
 
 [[providers.models]]
 id = "mimo-v2.5-asr"
-name = "MiMo ASR"
+name = "MiMo V2.5 ASR"
 capability = "asr.transcribe"
 
 # Provider/model-specific options are exposed by /v1/providers and rendered by
@@ -153,6 +153,39 @@ capability = "asr.transcribe"
 # id = "e58b0d7efca34eb38d5c4985e378abcb"
 # name = "Fish Audio default reference"
 # note = "Replace with your own Fish Audio reference_id or model id."
+#
+# OpenRouter example:
+# Volcengine Agent Plan speech example. These models cannot be selected through Auto.
+# Enable overage post-payment in the Volcengine console when required.
+#
+# [[providers]]
+# id = "volcengine"
+# type = "volcengine"
+# name = "Volcengine Speech"
+# base_url = "https://openspeech.bytedance.com/api/v3/plan"
+# api_key_env = "VOLCENGINE_SPEECH_API_KEY"
+# default_voice = "zh_female_vv_uranus_bigtts"
+#
+# [providers.default_models]
+# tts_builtin = "seed-tts-2.0"
+# asr = "volc.seedasr.sauc.duration"
+#
+# [[providers.models]]
+# id = "seed-tts-2.0"
+# name = "Doubao Seed TTS 2.0"
+# capability = "tts.builtin"
+#
+# [[providers.models]]
+# id = "volc.seedasr.sauc.duration"
+# name = "Doubao Seed ASR 2.0"
+# capability = "asr.transcribe"
+# [providers.models.transcript_capabilities]
+# timestamps = true
+# speakers = false
+# segments = true
+#
+# Omit providers.voices to load the built-in Volcengine voice catalog.
+# Defining any [[providers.voices]] entry replaces that catalog.
 #
 # OpenRouter example:
 #

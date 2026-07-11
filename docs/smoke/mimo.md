@@ -4,6 +4,9 @@ Manual real-provider checks for MiMo TTS and ASR.
 
 MiMo API default: `https://api.xiaomimimo.com/v1`.
 
+MiMo ASR smoke tests target the current V2.5 model ID: `mimo-v2.5-asr`.
+Legacy V2 ASR was taken offline on 2026-06-30 and should not be used.
+
 Token Plan base URL candidates are pending verification:
 
 - China: `https://token-plan-cn.xiaomimimo.com/v1`

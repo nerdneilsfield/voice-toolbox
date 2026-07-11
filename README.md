@@ -1,6 +1,6 @@
 # voice-toolbox
 
-Local-first voice toolbox for MiMo, Fish Audio, and OpenRouter TTS/ASR providers. Python core, Typer CLI, FastAPI API, and React web UI share one provider layer.
+Local-first voice toolbox for MiMo, Fish Audio, OpenRouter, Volcengine, and local MLX Audio TTS/ASR providers. Python core, Typer CLI, FastAPI API, and React web UI share one provider layer.
 
 ## Setup
 
@@ -26,7 +26,7 @@ Create local environment config:
 cp -n .env.example .env
 ```
 
-Edit `.env` and set `MIMO_API_KEY`, `FISH_AUDIO_API_KEY`, and/or `OPENROUTER_API_KEY`. For configurable providers, copy
+Edit `.env` and set `MIMO_API_KEY`, `FISH_AUDIO_API_KEY`, `OPENROUTER_API_KEY`, and/or `VOLCENGINE_SPEECH_API_KEY`. For configurable providers, copy
 `voice_toolbox.toml.example` to `voice_toolbox.toml` and edit non-secret provider
 settings there.
 
@@ -43,7 +43,7 @@ Config discovery order:
 
 `voice_toolbox.toml` stores provider IDs, model IDs, voices, logging, and local API
 binding. It stores only API key environment variable names such as
-`MIMO_API_KEY`, `MIMO_SGP_API_KEY`, `FISH_AUDIO_API_KEY`, or `OPENROUTER_API_KEY`; key values stay in `.env` or the process
+`MIMO_API_KEY`, `MIMO_SGP_API_KEY`, `FISH_AUDIO_API_KEY`, `OPENROUTER_API_KEY`, or `VOLCENGINE_SPEECH_API_KEY`; key values stay in `.env` or the process
 environment. When the API reports provider status, it exposes only whether a key
 is configured plus a masked local preview, never the full key.
 
@@ -89,9 +89,10 @@ models. Language hints include `auto`, `zh`, `yue`, `en`, `de`, `es`, `fr`,
 `it`, `pt`, `ru`, `ko`, and `ja`, matching the Qwen3 ASR language set. Upstream
 also ships Qwen3 ForcedAligner, but that model performs word-level alignment
 with transcript text; Voice Toolbox does not expose it as `asr.transcribe`.
-MiMo ASR keeps the official `auto`, `zh`, and `en` language set. Fish Audio ASR
-uses the multilingual set exposed in the web UI: `auto`, `zh`, `yue`, `en`,
-`de`, `es`, `fr`, `it`, `pt`, `ru`, `ko`, and `ja`.
+MiMo V2.5 ASR uses model ID `mimo-v2.5-asr` and keeps the official `auto`,
+`zh`, and `en` language set. Fish Audio ASR uses the multilingual set exposed in
+the web UI: `auto`, `zh`, `yue`, `en`, `de`, `es`, `fr`, `it`, `pt`, `ru`,
+`ko`, and `ja`.
 
 When `voice_toolbox.toml` exists, it is the source of truth for `base_url`,
 `api.host`, and `api.port`. The `.env` values `MIMO_BASE_URL`,
@@ -247,7 +248,8 @@ uv run --env-file .env voice-toolbox asr transcribe \
 More real-provider checks live in [docs/smoke/mimo.md](docs/smoke/mimo.md),
 [docs/smoke/fish-audio.md](docs/smoke/fish-audio.md),
 [docs/smoke/openrouter.md](docs/smoke/openrouter.md), and
-[docs/smoke/mlx-audio.md](docs/smoke/mlx-audio.md).
+[docs/smoke/mlx-audio.md](docs/smoke/mlx-audio.md), and
+[docs/smoke/volcengine.md](docs/smoke/volcengine.md).
 
 Fish Audio provider support:
 
