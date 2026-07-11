@@ -11,6 +11,7 @@ from voice_toolbox.defaults import (
     make_default_mimo_provider_config,
     make_default_mlx_audio_provider_config,
     make_default_openrouter_provider_config,
+    make_default_volcengine_provider_config,
 )
 from voice_toolbox.models import ASRRequest, ModelInfo, TTSMode, TTSRequest, VoiceInfo
 from voice_toolbox.providers.factory import build_provider_registry
@@ -142,6 +143,7 @@ def test_build_provider_registry_uses_config_and_env_values(tmp_path: Path) -> N
         (make_default_mimo_provider_config, "mimo", "MIMO_API_KEY"),
         (make_default_fish_audio_provider_config, "fish-audio", "FISH_AUDIO_API_KEY"),
         (make_default_openrouter_provider_config, "openrouter", "OPENROUTER_API_KEY"),
+        (make_default_volcengine_provider_config, "volcengine", "VOLCENGINE_SPEECH_API_KEY"),
     ],
 )
 @pytest.mark.parametrize("env_has_key", [True, False])
@@ -185,6 +187,7 @@ def test_default_provider_factories_copy_default_models() -> None:
         make_default_fish_audio_provider_config,
         make_default_openrouter_provider_config,
         make_default_mlx_audio_provider_config,
+        make_default_volcengine_provider_config,
     ]
 
     for factory in factories:
