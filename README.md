@@ -1,358 +1,388 @@
 # voice-toolbox
 
-Local-first voice toolbox for MiMo, Fish Audio, OpenRouter, Volcengine, and local MLX Audio TTS/ASR providers. Python core, Typer CLI, FastAPI API, and React web UI share one provider layer.
+本地优先的语音工具箱 — MiMo、Fish Audio、OpenRouter、Volcengine 及本地 MLX Audio 共享同一 Python 核心、Typer CLI、FastAPI API 和 React 前端。
 
-## Setup
+Local-first TTS & ASR toolbox — MiMo, Fish Audio, OpenRouter, Volcengine, and local MLX Audio share one Python core, Typer CLI, FastAPI API, and React web UI.
 
-Install Python dependencies with `uv`:
+![Voice Toolbox — TTS 工作区](docs/images/tts.webp)
+
+## 功能 | Features
+
+- **多供应商 | Multi-provider**: MiMo、Fish Audio、OpenRouter、Volcengine、本地 MLX Audio（Apple Silicon）
+- **TTS**: 内置合成、声音设计、声音克隆、长文本分块、Markdown 清洗
+- **ASR**: 后端音频分块、浏览器分块会话、转录下载（txt/srt/vtt/json）
+- **播客 | Podcast**: 多说话人脚本 → 单音频文件，支持队列任务和并行合成
+- **制品 | Artifacts**: 本地优先存储，含 `.podcast.json` 清单、脱敏附属文件、格式转换
+- **隐私 | Privacy**: API 密钥仅存 `.env`／环境变量；原始文本/音频/base64 绝不写入附属元数据
+
+## 目录 | Table of Contents
+
+- [快速开始 | Quick Start](#快速开始--quick-start)
+- [Web UI 使用指南 | Web UI Guide](#web-ui-使用指南--web-ui-guide)
+- [供应商 | Providers](#供应商--providers)
+- [CLI 示例 | CLI Examples](#cli-示例--cli-examples)
+- [API 端点 | API Endpoints](#api-端点--api-endpoints)
+- [播客生成 | Podcast Generation](#播客生成--podcast-generation)
+- [文档 | Documentation](#文档--documentation)
+- [开发 | Development](#开发--development)
+- [许可证 | License](#许可证--license)
+
+## 快速开始 | Quick Start
+
+**环境要求 | Requirements**: Python 3.11+、[uv](https://docs.astral.sh/uv/)、[bun](https://bun.sh)、系统安装 `ffmpeg`。
 
 ```bash
+# 1. 安装依赖 | Install dependencies
 uv sync --extra dev
-```
-
-Audio format conversion uses `pydub`; Python 3.13+ also installs `audioop-lts`
-because the stdlib `audioop` module was removed. Install `ffmpeg` on the host
-for mp3, m4a, flac, ogg, webm, and aac decoding/encoding.
-
-Install frontend dependencies with `bun`:
-
-```bash
 bun install --cwd apps/web
-```
 
-Create local environment config:
-
-```bash
+# 2. 配置供应商 | Configure providers
 cp -n .env.example .env
-```
-
-Edit `.env` and set `MIMO_API_KEY`, `FISH_AUDIO_API_KEY`, `OPENROUTER_API_KEY`, and/or `VOLCENGINE_SPEECH_API_KEY`. For configurable providers, copy
-`voice_toolbox.toml.example` to `voice_toolbox.toml` and edit non-secret provider
-settings there.
-
-```bash
 cp -n voice_toolbox.toml.example voice_toolbox.toml
+
+# 3. 编辑 .env，填入 API 密钥 | Edit .env — add your API keys
+#    MIMO_API_KEY、FISH_AUDIO_API_KEY、OPENROUTER_API_KEY、VOLCENGINE_SPEECH_API_KEY
+
+# 4. 在 voice_toolbox.toml 中取消注释供应商配置块
+#    Uncomment provider blocks in voice_toolbox.toml
+#    详见 docs/providers/ 中各供应商的配置示例
+
+# 5. 启动后端 + 前端 | Start backend + frontend
+make backend-server &    # API 监听 127.0.0.1:8000
+make frontend-server     # Web UI 监听 127.0.0.1:5173
 ```
 
-Config discovery order:
+Python 3.13+ 用户：`audioop-lts` 自动安装（标准库 `audioop` 已移除）。
 
-1. Explicit path passed by Python/API code.
-2. `VOICE_TOOLBOX_CONFIG`.
-3. `voice_toolbox.toml` in the current working directory.
-4. Built-in MiMo fallback config.
+## Web UI 使用指南 | Web UI Guide
 
-`voice_toolbox.toml` stores provider IDs, model IDs, voices, logging, and local API
-binding. It stores only API key environment variable names such as
-`MIMO_API_KEY`, `MIMO_SGP_API_KEY`, `FISH_AUDIO_API_KEY`, `OPENROUTER_API_KEY`, or `VOLCENGINE_SPEECH_API_KEY`; key values stay in `.env` or the process
-environment. When the API reports provider status, it exposes only whether a key
-is configured plus a masked local preview, never the full key.
+启动后浏览器打开 `http://127.0.0.1:5173`。整个界面分三块：**顶栏**（供应商/语言/主题）、**左侧导航**（选功能）、**主工作区 + 右侧输出/历史面板**。
 
-Provider and model-specific options also live in `voice_toolbox.toml`. The web
-UI reads option schemas from `/v1/providers` and renders only options that apply
-to the selected provider, model, and capability. Multipart API calls pass option
-values as a `provider_options` JSON object string. The CLI does not expose
-provider-specific options yet.
+Start the servers and open `http://127.0.0.1:5173`. The layout: **topbar** (provider / language / theme), **left sidebar** (pick a function), **main workspace + right output & history panel**.
 
-### MLX Audio on Apple Silicon
+### 顶栏与导航 | Topbar & navigation
 
-MLX Audio is optional and local-only. Install it only on Apple Silicon macOS:
+- **提供方 Provider** 下拉：切换供应商。切换会清空当前结果与历史预览（历史数据不丢，只是不再回填到工作区）。
+- **密钥状态徽章**：显示 `API 密钥已配置` / `API 密钥缺失` / `本地提供方`（MLX Audio 无需密钥）。缺失时下方连接详情会自动展开，提示该填哪个环境变量。
+- **语言** `EN` / `中文`、**主题** 浅色/深色/跟随系统。
+- **左侧导航**三个分区：TTS（内置/设计/克隆三个子模式）、Podcast、ASR（转录）。按钮在当前供应商不支持该能力时会置灰。
+
+### TTS — 文本转语音 | Text to speech
+
+TTS 有三个子模式，在左侧导航点切换。所有模式共享顶部「文本格式」（plain / markdown / auto）与「分段」控制；点「预览」可查看 Markdown 清洗后的效果（调 `/v1/normalize/text`）。
+
+![TTS — 内置模式](docs/images/tts.webp)
+
+<details>
+<summary><b>内置模式 Built-in</b>（最常用：选音色 → 输入文本 → 生成）</summary>
+
+1. 左侧导航点 🔊 **Built-in**。
+2. **音色 Voice**：下拉选一个内置音色（如「冰糖」）。
+3. **风格提示 Style prompt**（可选）：自然语言描述演绎方式，如"温柔、慢速、播报腔"。
+4. **脚本 Script**：输入要合成的文本，或点「从文件导入」读 `.txt`/`.md`。文本框旁的标签 chip（`(笑)` `(停顿)` `[laughter]` 等）点击即插入到光标处。
+5. 点 **生成语音**。结果出现在右侧：内嵌播放器 + 「下载格式」下拉（源格式/WAV/MP3/PCM/M4A/AAC/FLAC/OGG/WEBM）+ 下载链接。
+
+</details>
+
+<details>
+<summary><b>设计模式 Design</b>（用文字描述造一个新音色）</summary>
+
+![TTS — 设计模式](docs/images/tts_design.webp)
+
+1. 左侧导航点 ✨ **Design**。
+2. **音色描述 Voice description**：用自然语言描写音色特征——音质、年龄、口音、能量、语速、场景。例如"年轻女性，清亮，中等语速，适合有声书"。
+3. **自动优化 Auto-optimize**（默认开）：开启时下方脚本变可选；关闭则脚本必填，用于精确控制试听文本。
+4. 点 **生成语音**。该模式没有音色下拉——音色由描述生成。
+
+</details>
+
+<details>
+<summary><b>克隆模式 Clone</b>（用一段参考音频复刻音色）</summary>
+
+![TTS — 克隆模式](docs/images/tts_clone.webp)
+
+1. 左侧导航点 🎙️ **Clone**。
+2. **克隆样本 Clone sample**：上传一段参考音频（wav/mp3/flac/m4a 等）。界面会显示预估的 Base64 大小，超过 10 MiB 会报错并禁用提交。
+3. **样本转录 Sample transcript**（可选）：样本对应的文字。Fish Audio 直接克隆时必填。
+4. **脚本 Script**：要合成的文本（必填）。
+5. **风格与授权**：可选的风格提示 + **必勾**的授权确认（"我有权使用该声音样本进行合成"）。
+6. 点 **生成语音**。
+
+</details>
+
+### 播客 — 多说话人合成 | Podcast
+
+![Podcast 工作区](docs/images/podcast.webp)
+
+左侧填脚本、看解析预览；右侧给每个说话人配音色、调参数。
+
+1. 左侧导航点 🎧 **Podcast**。
+2. **播客脚本 Podcast script**：输入脚本（格式见[下文](#脚本格式--script-formats)），或「从文件导入」。旁边的 **脚本格式** 下拉可强制指定（默认 Auto 自动识别）。
+3. **解析预览 Parse preview**：实时显示解析出的段落数、每段说话人/文本/停顿（ms）。有语法错误会在此红色提示（带行号）。
+4. 右侧 **说话人 Speakers** 卡：
+   - **模型 Model**：选一个支持 `tts.builtin` 的模型。
+   - **默认停顿 Default pause**（ms，默认 350）、**并行片段数 Parallel segments**（1–16，默认 8）。
+   - **说话人 → 音色**：解析出的每个说话人都会有一个下拉，**必须为每个说话人选音色**，否则提示"请为每个说话人选择音色"且禁用提交。
+5. 点 **生成播客**。生成中显示进度（`当前/总 · 说话人`）和已用/预计剩余时间，可随时 **取消**。完成后右侧出现播放器和下载。
+
+### ASR — 语音转文字 | Speech to text
+
+![ASR 转录工作区](docs/images/asr.webp)
+
+1. 左侧导航点 📝 **Transcribe**。
+2. **音频文件 Audio file**：上传 wav/mp3/flac/m4a 等。
+3. **语言 Language**：`auto` 自动识别，或指定 zh/en/粤语/日语/韩语 等（视供应商支持而定）。
+4. **分段 Chunking**：off / auto / force。长音频建议 auto 或 force，配「分段秒数」（默认 90）和「重叠毫秒」（默认 1200）。
+5. **上传策略 Upload strategy**：
+   - `auto`（默认）：需要时本地切片。
+   - `优先浏览器分片`：本地切片逐段上传，不支持的编码先试 ffmpeg wasm 再回退后端。
+   - `后端上传`：整文件上传，服务端分段。
+6. **时间戳 / 说话人**（仅模型支持时出现）：勾选后可下载带时间戳或说话人标注的转录。
+7. 点 **转录**。结果区显示纯文本预览，支持复制，以及「下载格式」TXT / SRT / VTT（需时间戳）/ JSON。
+
+### 历史与复用 | History & reuse
+
+右侧 **历史** 面板列出最近 20 条制品（TTS/ASR/播客）。每条显示类型、供应商·模型、预览片段、时间。点 **播放**（音频）或 **查看**（转录）会把该制品回填到对应工作区并切过去——例如点一条克隆 TTS 的历史，会自动切到克隆模式并加载结果，方便对照重做。
+
+## 供应商 | Providers
+
+| 供应商 Provider | TTS 内置 | 声音设计 | 声音克隆 | ASR | 备注 Notes |
+|---|---|---|---|---|---|
+| [MiMo](docs/providers/mimo.md) | ✓ | ✓ | ✓ | ✓ | 默认供应商；v2.5 模型 |
+| [Fish Audio](docs/providers/fish-audio.md) | ✓ | ✓ | ✓ | ✓ | 通过 MessagePack 引用直接克隆 |
+| [OpenRouter](docs/providers/openrouter.md) | ✓ | — | — | ✓ | OpenAI 兼容端点；MP3 输出 |
+| [Volcengine](docs/providers/volcengine.md) | ✓ | — | — | ✓ | 豆包 Seed TTS/ASR；Agent Plan 语音 |
+| [MLX Audio](docs/providers/mlx-audio.md) | ✓ | — | ✓ | ✓ | Apple Silicon 纯本地 |
+
+完整配置参考见 [docs/configuration.md](docs/configuration.md)。各供应商配置见 [docs/providers/](docs/providers/)。
+
+See [docs/configuration.md](docs/configuration.md) for full config reference. Per-provider setup in [docs/providers/](docs/providers/).
+
+## CLI 示例 | CLI Examples
 
 ```bash
-uv sync --extra mac
-```
-
-Enable it with a provider block:
-
-```toml
-[[providers]]
-id = "mlx-audio"
-type = "mlx_audio"
-name = "MLX Audio"
-default_voice = "Ryan"
-```
-
-The first MLX Audio version supports `tts.builtin`, `tts.clone`, and
-`asr.transcribe`. Voice clone models require `clone_reference_text` so MLX Audio
-can pass `ref_audio` and `ref_text` to the upstream model. Clone-capable defaults
-include Qwen3 TTS Base, LongCat AudioDiT, Ming Omni/BailingMM, and Higgs Audio
-v3.
-
-MLX Audio voices are model-specific. Qwen3 builtin TTS exposes preset speakers
-`Ryan`, `Aiden`, `Vivian`, `Serena`, `Uncle_Fu`, `Dylan`, and `Eric`. LongCat,
-Ming Omni, and Higgs Audio v3 do not use the Qwen3 preset speaker list; they use
-zero-shot generation, reference audio, reference text, and/or inline control
-tokens depending on the model. Ming Omni may need `onnx` and `safetensors` if
-campplus conversion runs.
-
-The built-in MLX ASR list includes Qwen3 ASR 0.6B and 1.7B 8-bit transcription
-models. Language hints include `auto`, `zh`, `yue`, `en`, `de`, `es`, `fr`,
-`it`, `pt`, `ru`, `ko`, and `ja`, matching the Qwen3 ASR language set. Upstream
-also ships Qwen3 ForcedAligner, but that model performs word-level alignment
-with transcript text; Voice Toolbox does not expose it as `asr.transcribe`.
-MiMo V2.5 ASR uses model ID `mimo-v2.5-asr` and keeps the official `auto`,
-`zh`, and `en` language set. Fish Audio ASR uses the multilingual set exposed in
-the web UI: `auto`, `zh`, `yue`, `en`, `de`, `es`, `fr`, `it`, `pt`, `ru`,
-`ko`, and `ja`.
-
-When `voice_toolbox.toml` exists, it is the source of truth for `base_url`,
-`api.host`, and `api.port`. The `.env` values `MIMO_BASE_URL`,
-`VOICE_TOOLBOX_API_HOST`, and `VOICE_TOOLBOX_API_PORT` are fallback-only aliases
-used when no TOML config is active. Legacy `API_HOST` and `API_PORT` are also
-accepted only in that no-TOML fallback path.
-
-The default local API binding is `127.0.0.1:8000`, so the backend listens on the
-loopback interface unless you deliberately change `[api]` in `voice_toolbox.toml`
-or use the fallback env vars without TOML. Default `MIMO_BASE_URL` is:
-
-```text
-https://api.xiaomimimo.com/v1
-```
-
-## Run
-
-Start API server from `voice_toolbox.toml` or fallback config:
-
-```bash
-make backend-server
-```
-
-Start web dev server on `127.0.0.1:5173`:
-
-```bash
-make frontend-server
-```
-
-The Vite dev server proxies `/v1/*` to `http://127.0.0.1:8000`.
-
-## Podcast Generation
-
-The Podcast workspace turns a multi-speaker script into one audio file. A v1
-podcast uses one TTS provider/model for the whole episode; map each speaker in
-the script to one built-in voice from that same model, then generate. The web UI
-creates a queued job, polls progress, and can cancel a queued/running job.
-
-The server can run up to 8 podcast jobs at once. Within one podcast, remote
-provider segments are synthesized in parallel with 1-16 segment workers
-(default 8), then merged back in script order. Local `mlx_audio` providers stay
-serial to avoid Metal/GPU memory contention.
-
-Supported speaker-line scripts:
-
-```text
-Alice: Welcome to the show. [pause:600]
-Bob: Thanks for having me.
-[pause:800]
-```
-
-Markdown headings are also accepted:
-
-```markdown
-### Alice
-Welcome to the show.
-
-### Bob
-Thanks for having me.
-```
-
-`[pause:N]` and `pause_after_ms` are segment-after pauses in milliseconds. A
-standalone pause line applies to the previous segment. The final segment has no
-following segment, so its pause is ignored and recorded as `0` in the manifest.
-
-JSON/YAML accepts a `lines` list with:
-
-- `speaker`: speaker display name.
-- `text`: segment text.
-- `pause_after_ms`: optional segment-after pause in milliseconds.
-
-The generated artifact includes a `.podcast.json` manifest with speakers,
-voices, segment text, effective pauses, and timing when duration can be decoded.
-
-## Make Targets
-
-```bash
-make test
-make check
-make backend-server
-make frontend-server
-```
-
-`make check` runs backend tests, `ruff`, `ty`, frontend lint/format/test checks, and the web build.
-
-## CLI Examples
-
-Built-in TTS:
-
-```bash
+# 内置 TTS | Built-in TTS
 uv run --env-file .env voice-toolbox tts synthesize \
   --text "你好，欢迎使用 MiMo 语音合成。" \
-  --voice 冰糖 \
-  --format wav
-```
+  --voice 冰糖 --format wav
 
-TTS from a `.txt` file:
-
-```bash
+# 从文件 TTS（纯文本，自动分块） | TTS from file (plain text, auto-chunked)
 uv run --env-file .env voice-toolbox tts synthesize \
-  --file smoke-inputs/tts-long.txt \
-  --text-format plain \
-  --voice 冰糖 \
-  --chunking auto \
-  --format wav
-```
+  --file smoke-inputs/tts-long.txt --text-format plain \
+  --voice 冰糖 --chunking auto --format wav
 
-TTS from Markdown:
-
-```bash
+# 从 Markdown TTS | TTS from Markdown
 uv run --env-file .env voice-toolbox tts synthesize \
-  --file smoke-inputs/tts-long.md \
-  --text-format markdown \
-  --voice 冰糖 \
-  --chunking auto \
-  --format wav
-```
+  --file smoke-inputs/tts-long.md --text-format markdown \
+  --voice 冰糖 --chunking auto --format wav
 
-MiMo and Fish Audio currently accept `wav` output through Voice Toolbox. OpenRouter
-TTS uses its OpenAI-compatible speech endpoint and stores browser-friendly MP3
-artifacts, so use `--format mp3` when targeting the OpenRouter provider.
-
-The API can convert generated audio on download with
-`/v1/artifacts/{id}/download?format=wav|mp3|pcm|m4a|aac|flac|ogg|webm`.
-Converted download names use `YYYYMMDD-HHMMSS-<hash>.<ext>` instead of exposing
-internal operation IDs. Raw `pcm` is 24 kHz mono int16 little-endian. API and web
-ASR/voice-clone uploads accept common audio inputs (`wav`, `mp3`, `pcm`, `m4a`,
-`flac`, `ogg`, `webm`, `aac`) and convert non-native inputs to a
-provider-compatible format before calling the provider. CLI ASR and voice-clone
-commands currently accept `wav` and `mp3` paths only. `audio/L16` uploads must
-include `rate=24000; channels=1`; other L16 rates are rejected instead of being
-silently reinterpreted.
-
-ASR:
-
-```bash
+# ASR | ASR
 uv run --env-file .env voice-toolbox asr transcribe \
-  --file smoke-inputs/asr-short.wav \
-  --language auto
-```
+  --file smoke-inputs/asr-short.wav --language auto
 
-Backend ASR chunking:
-
-```bash
+# 后端 ASR 分块（长音频） | Backend ASR chunking (long audio)
 uv run --env-file .env voice-toolbox asr transcribe \
-  --file smoke-inputs/asr-long.wav \
-  --language auto \
-  --chunking force \
-  --chunk-seconds 90 \
-  --chunk-overlap-ms 1200
+  --file smoke-inputs/asr-long.wav --language auto \
+  --chunking force --chunk-seconds 90 --chunk-overlap-ms 1200
 ```
 
-More real-provider checks live in [docs/smoke/mimo.md](docs/smoke/mimo.md),
-[docs/smoke/fish-audio.md](docs/smoke/fish-audio.md),
-[docs/smoke/openrouter.md](docs/smoke/openrouter.md), and
-[docs/smoke/mlx-audio.md](docs/smoke/mlx-audio.md), and
-[docs/smoke/volcengine.md](docs/smoke/volcengine.md).
+格式支持：MiMo 和 Fish Audio → `wav`；OpenRouter → `mp3`。API 下载格式转换：`/v1/artifacts/{id}/download?format=wav|mp3|pcm|m4a|aac|flac|ogg|webm`。
 
-Fish Audio provider support:
+Format support: MiMo & Fish Audio → `wav`; OpenRouter → `mp3`. API download conversion at `/v1/artifacts/{id}/download?format=wav|mp3|pcm|m4a|aac|flac|ogg|webm`.
 
-- `tts.builtin`: calls `POST /v1/tts` with Fish `reference_id` from `voice_id`.
-- `tts.design`: calls `POST /v1/voice-design`; optional preview text maps to `reference_text` and must be at most 150 chars.
-- `tts.clone`: calls `POST /v1/tts` with `application/msgpack` direct references; provide the uploaded sample transcript as clone reference text.
-- `asr.transcribe`: calls `POST /v1/asr` with multipart audio upload.
+## API 端点 | API Endpoints
 
-OpenRouter provider support:
+| 方法 Method | 路径 Path | 说明 Description |
+|---|---|---|
+| `GET` | `/v1/providers` | 供应商注册表、模型、语音、选项 schema |
+| `POST` | `/v1/tts/synthesize` | TTS 合成（multipart: `text_file` + `provider_options`） |
+| `POST` | `/v1/asr/transcribe` | 后端 ASR（multipart: `audio_file`） |
+| `POST` | `/v1/asr/chunk-sessions` | 创建浏览器分块会话 |
+| `POST` | `/v1/asr/chunk-sessions/{id}/chunks` | 上传分块 |
+| `POST` | `/v1/asr/chunk-sessions/{id}/finish` | 完成并转录 |
+| `POST` | `/v1/normalize/text` | 预览 Markdown 清洗结果 |
+| `GET` | `/v1/artifacts/{id}/download` | 下载音频（支持格式转换） |
+| `GET` | `/v1/artifacts/{id}/transcript` | 下载转录（txt/srt/vtt/json） |
+| `POST` | `/v1/podcast/jobs` | 发起播客任务（multipart） |
+| `GET` | `/v1/podcast/jobs/{id}` | 查询任务状态 |
+| `DELETE` | `/v1/podcast/jobs/{id}` | 取消任务 |
 
-- `tts.builtin`: calls `POST /api/v1/audio/speech`; Voice Toolbox v1 requests `mp3` from OpenRouter and stores `.mp3` artifacts. OpenRouter `pcm` output is not exposed yet. Style prompts are sent as OpenAI provider instructions.
-- `asr.transcribe`: calls `POST /api/v1/audio/transcriptions` with base64 `input_audio`.
-- `tts.design` and `tts.clone`: not enabled because OpenRouter docs only define the standard TTS endpoint.
+## 播客生成 | Podcast Generation
 
-## TTS Text Input And Cleanup
+![Podcast 工作区](docs/images/podcast.webp)
 
-The API and web UI can preview Markdown cleanup before synthesis. In the web UI,
-set the text format to Markdown or Auto, then use `Preview cleaned text`.
-Cleanup is intentionally conservative: it removes common Markdown markup while
-preserving text that could affect TTS pronunciation, so it may leave some
-spacing around punctuation when that is safer than changing numbers, CJK text,
-or code-like fragments.
+多说话人脚本 → 单音频文件。将每个说话人映射到同一 TTS 供应商/模型的内置语音，投递任务并轮询完成。服务端最多 8 个并发任务；单任务内，远程分段并行合成（1–16 worker，默认 8），再按脚本顺序合并。MLX Audio 串行合成，避免 Metal/GPU 争用。
 
-Programmatic preview:
+Multi-speaker scripts → single audio file. Map speakers to built-in voices from one TTS provider/model, queue a job, and poll for completion. Server runs up to 8 concurrent jobs; within a job, remote segments synthesize in parallel (1–16 workers, default 8), then merge in script order. MLX Audio synthesis runs serial to avoid Metal/GPU contention.
 
-```bash
-curl -s http://127.0.0.1:8000/v1/normalize/text \
-  -H 'Content-Type: application/json' \
-  -d '{"content":"# Title\n\nHello **MiMo**.","input_format":"markdown"}'
+### 脚本格式 | Script formats
+
+`script_format` 省略时默认 `auto`，按下面顺序自动识别：以 `{`/`[` 开头 → JSON；含 `#`/`##`/`###` 标题 → Markdown；含 `lines:` 键 → YAML；否则 → 说话人文本行。
+
+<details>
+<summary><b>说话人文本行 | Speaker-colon</b>（最简单，推荐手写）</summary>
+
+每行 `说话人名: 文本`，分隔符是**英文冒号 `:`**（中文全角 `：` 会报错）。空行跳过。`[pause:N]` 只能出现在行尾或独占一行，单位毫秒，调整该段之后的停顿。最后一段的停顿会被忽略。
+
+```
+主持人: 欢迎收听本期播客，今天我们来聊聊本地大模型。
+主持人: 先做个简单的自我介绍吧。 [pause:600]
+嘉宾: 大家好，我是研究语音合成的工程师。 [pause:800]
+主持人: 那就从最基础的概念开始？
+[pause:400]
+嘉宾: 好的。简单来说，就是把文字变成听起来自然的人声。
 ```
 
-TTS accepts inline text or `.txt` / `.md` uploads. The API uses multipart
-`text_file`; the CLI uses `--file`. Long text can be split with
-`chunking_mode=auto|force`, `chunk_max_chars`, and `chunk_silence_ms`; the
-backend calls the selected provider once per chunk and writes one merged audio
-artifact. All first-class fields and validated `provider_options` are copied to
-each chunk request.
+</details>
 
-Voice design does not enter the chunked path in v1. It treats chunking as `off`;
-if the design source text or uploaded file exceeds the single-call `max_chars`,
-the API returns 422 instead of chunking.
+<details>
+<summary><b>Markdown 标题</b>（适合从笔记复制）</summary>
 
-## ASR Chunking
+`#`/`##`/`###`（1–3 个）都等价于"切说话人"——没有层级嵌套，都只是说话人切换。标题名即说话人，该说话人持续生效直到下一个标题。空行分段：标题下连续多行会拼成一段；遇空行则另起一段（同一说话人）。第一段文本前必须有标题，否则报错。
 
-ASR has two chunking paths:
+```
+## 主持人
+欢迎收听本期播客，今天我们来聊聊本地大模型。
 
-- Backend chunking: upload one audio file to `/v1/asr/transcribe` or use the CLI
-  `--chunking force|auto`. The backend converts/splits audio, transcribes each
-  chunk, then deduplicates overlap text into one transcript artifact.
-  Oversized supported container uploads such as `m4a`, `flac`, `ogg`, `webm`,
-  and `aac` are allowed into this path instead of being rejected by the per-call
-  provider payload limit before chunking. The planner also caps chunk duration
-  by the provider byte budget, so high-bitrate WAV chunks stay under the
-  per-call payload limit.
-- Browser chunking: the web client slices PCM WAV audio directly, or tries
-  ffmpeg wasm for browser-unsupported compressed formats, then creates
-  `/v1/asr/chunk-sessions`, uploads chunks to
-  `/v1/asr/chunk-sessions/{session_id}/chunks`, then calls
-  `/v1/asr/chunk-sessions/{session_id}/finish`.
-  Browser chunk duration is also capped by the same byte budget before upload.
+先做个简单的自我介绍吧。
 
-Browser chunk session rules:
+## 嘉宾
+大家好，我是研究语音合成的工程师。
 
-- `source_duration_ms` is required when creating a session.
-- `provider_options` is a JSON object string on create/finish; malformed JSON,
-  arrays, unknown keys, invalid choices, more than 32 keys, or more than 4096
-  UTF-8 bytes return 422.
-- If browser chunk upload is disabled by config, session routes return 422.
-- Missing or expired sessions return 404.
-- Duplicate chunk indexes return 409.
-- Finish-time provider/model/language/transcript option mismatches return 409.
-- Raw `provider_options` values are not written to session metadata JSON. A
-  fingerprint is stored instead; clients resend `provider_options` on finish so a
-  process restart can still complete the session without exposing raw values.
+## 主持人
+那就从最基础的概念开始？
 
-## Transcript Downloads
+## 嘉宾
+好的。简单来说，就是把文字变成听起来自然的人声。
+```
 
-Transcript artifacts can be downloaded as the source `.txt`, or rendered through:
+</details>
+
+<details>
+<summary><b>JSON / YAML</b>（程序生成，适合大模型产出）</summary>
+
+顶层必须是 `{"lines": [...]}`（YAML 同理）。每个 item 需 `speaker` 与 `text`；可选 `pause_after_ms`（非负整数，毫秒）。顶层若有 `speakers` 块会被**忽略**——说话人完全由 `lines[].speaker` 决定。
+
+```yaml
+lines:
+  - speaker: 主持人
+    text: 欢迎收听本期播客，今天我们来聊聊本地大模型。
+    pause_after_ms: 350
+  - speaker: 主持人
+    text: 先做个简单的自我介绍吧。
+    pause_after_ms: 600
+  - speaker: 嘉宾
+    text: 大家好，我是研究语音合成的工程师。
+    pause_after_ms: 800
+  - speaker: 主持人
+    text: 那就从最基础的概念开始？
+    pause_after_ms: 400
+  - speaker: 嘉宾
+    text: 好的。简单来说，就是把文字变成听起来自然的人声。
+```
+
+```json
+{"lines":[
+  {"speaker":"主持人","text":"欢迎收听本期播客。"},
+  {"speaker":"嘉宾","text":"大家好，我是研究语音合成的工程师。","pause_after_ms":800}
+]}
+```
+
+</details>
+
+### 用大模型生成脚本 | Generating scripts with an LLM
+
+想让 GPT/Claude 等帮你写播客脚本？把下面这段 instruction 贴进 prompt，模型就会按本工具能直接解析的 YAML 格式输出。把"主题/说话人/时长"换成你的需求即可。
+
+<details>
+<summary><b>LLM 提示词模板（复制即用）</b></summary>
 
 ```text
-/v1/artifacts/{id}/transcript?format=txt|srt|vtt|json
+你是播客脚本撰写人。请根据下方"主题"，为两位说话人生成一段自然、口语化的中文播客脚本，目标时长约 5 分钟。
+
+说话人：
+- 主持人：引导话题、提问、总结
+- 嘉宾：回答问题、给出具体例子
+
+输出要求（严格遵守，否则下游解析会失败）：
+1. 只输出 YAML，不要任何解释、前后缀、``` 代码围栏。
+2. 顶层为一个对象，含唯一的键 lines，其值为 segment 列表。
+3. 每个 segment 恰好包含三个字段：
+   - speaker：说话人名（只能是"主持人"或"嘉宾"）
+   - text：该说话人要说的话，中文，口语化，单段不超过 3 句。
+   - pause_after_ms：说完后的停顿，整数毫秒。常用值：
+     句末陈述 350，句尾强调 600–800，话题切换 800–1200。
+     每段都必须给出该字段，最后一段也写 350。
+4. 单段 text 控制在 80 字以内；全文 lines 数量在 30–60 段之间。
+5. 不要出现 [pause:] 这类标记，停顿一律用 pause_after_ms 表达。
+6. 不要输出 YAML 以外的任何内容（不要 speakers 块、不要注释）。
+
+主题：本地大模型在语音合成中的应用
 ```
 
-For `txt`, `timestamps=true` and `speakers=true` add available timestamp/speaker
-labels. SRT/VTT are available only when the provider returns complete timestamp
-segments. Audio artifacts return 422 from the transcript endpoint, and transcript
-artifacts return 422 for converted audio downloads.
+</details>
 
-## Privacy Boundaries
+### 发起任务 | Submitting a job
 
-Voice Toolbox stores generated artifacts and redacted sidecars under local
-`data/artifacts/YYYYMMDD/`. It does not write raw TTS text, transcript text,
-base64 audio, clone sample bytes, or unsafe provider option values to sidecar
-metadata or logs. Safe provider option metadata is intentionally narrow:
-booleans/numbers/enums may be stored when marked `safe_metadata=true`, while
-free text stores keys only. Multiselect options store `<key>_count`.
+<details>
+<summary><b>curl 示例（含说话人→声音映射）</b></summary>
 
-Browser chunk session metadata stores file name, chunk indexes, offsets,
-durations, and redacted option keys. Chunk audio is deleted when the session is
-finished, explicitly deleted, expired, or cleaned up on startup/session activity.
+播客只走 API（CLI 暂不支持）。`speaker_voices` 是 JSON 对象，把每个说话人名映射到所选供应商/模型下的内置语音 id。**每个说话人都必须映射**，否则 422。非 ASCII 说话人名（如"主持人"）请用名字作 key（不要用 slug id，会冲突）。
 
-## Local Data
+```bash
+# 1. 查可用语音 id
+curl -s 127.0.0.1:8000/v1/providers | jq '.providers.mimo.models[].voices[] | {id,name}'
 
-Generated audio, transcripts, and redacted sidecar metadata are local-first artifacts under `data/artifacts/YYYYMMDD/`. SQLite metadata uses `data/voice_toolbox.sqlite`.
+# 2. 投递播客任务
+curl -s -X POST 127.0.0.1:8000/v1/podcast/jobs \
+  -F 'provider_id=mimo' \
+  -F 'script_format=speaker_colon' \
+  -F 'default_pause_ms=350' \
+  -F 'segment_workers=8' \
+  -F 'speaker_voices={"主持人":"<voice-id-host>","嘉宾":"<voice-id-guest>"}' \
+  -F 'script=主持人: 欢迎收听本期播客。
+嘉宾: 大家好。
+主持人: 我们开始吧。'
+# → {"job_id":"...", "status":"queued", "total_segments":3}
 
-Voice clone samples are temporary inputs only. API upload handlers spool them during a request and delete them afterward; clone samples are not stored as artifacts.
+# 3. 轮询状态
+curl -s 127.0.0.1:8000/v1/podcast/jobs/<job_id>
+# status: queued → running → completed (completed 后从 artifacts 接口下载 wav)
+```
+
+</details>
+
+### 规则与限制 | Rules & limits
+
+- 分隔符是英文冒号 `:`；`[pause:N]` 是整数毫秒（不是 `500ms`），只能行尾或独占一行，不能出现在句子中间。
+- 上限：200 段 / 200,000 字符；单段停顿 ≤ 60,000 ms；累计停顿 ≤ 1 小时；默认停顿 ≤ 60,000 ms。最后一段的停顿不生效。
+- JSON/YAML 的顶层 `speakers` 块会被忽略；说话人完全由 `lines[].speaker` 决定。
+- 产物含 `.podcast.json` 清单（说话人、voice id、每段起止时间、总时长），与音频一同存入 artifacts。
+
+## 文档 | Documentation
+
+| 文档 | 内容 |
+|---|---|
+| [配置 Configuration](docs/configuration.md) | `.env`、`voice_toolbox.toml`、发现顺序、分块、日志 |
+| [MiMo](docs/providers/mimo.md) | 默认供应商、模型、Token Plan URL |
+| [Fish Audio](docs/providers/fish-audio.md) | 模型、声音设计、直接克隆、引用语音 |
+| [OpenRouter](docs/providers/openrouter.md) | OpenAI 兼容 TTS/ASR、instructions 选项 |
+| [Volcengine](docs/providers/volcengine.md) | 豆包 Seed TTS/ASR、Agent Plan 语音 |
+| [MLX Audio](docs/providers/mlx-audio.md) | Apple Silicon 本地模型、语音、依赖 |
+
+冒烟测试指南 Smoke test guides: [MiMo](docs/smoke/mimo.md)、[Fish Audio](docs/smoke/fish-audio.md)、[OpenRouter](docs/smoke/openrouter.md)、[Volcengine](docs/smoke/volcengine.md)、[MLX Audio](docs/smoke/mlx-audio.md)。
+
+## 开发 | Development
+
+```bash
+make test           # 后端 + 前端测试 | backend + frontend tests
+make check          # 测试 + lint + 类型检查 + 前端构建
+make backend-server # 启动 FastAPI
+make frontend-server # 启动 Vite 开发服务器
+```
+
+`make check` 运行：`ruff`、`ty`、后端测试、前端 lint/format/test 及 web 构建。
+
+## 许可证 | License
+
+MIT © 2026 DengQi
